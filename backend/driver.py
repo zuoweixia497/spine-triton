@@ -395,3 +395,19 @@ class CPUDriver(DriverBase):
 
     def assemble_tensormap_to_arg(self, tensormaps_info, args):
         return args
+
+    def get_device_interface(self):
+        import torch
+        return torch
+
+    def get_empty_cache_for_benchmark(self):
+        import torch
+
+        # We maintain a buffer of 256 MB that we clear
+        # before each kernel call to make sure that the L2 cache
+        # doesn't contain any input data before the run
+        cache_size = 256 * 1024 * 1024
+        return torch.empty(int(cache_size // 4), dtype=torch.int, device='cpu')
+
+    def clear_cache(self, cache):
+        cache.zero_()
