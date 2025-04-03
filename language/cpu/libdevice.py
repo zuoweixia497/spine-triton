@@ -8,8 +8,8 @@ def erf(arg0, _builder=None):
 def pow(arg0, arg1, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0, arg1], {
-            (core.dtype("fp32"), core.dtype("fp32")): ("__rvv_powf", core.dtype("fp32")),
-            (core.dtype("fp64"), core.dtype("fp64")): ("__rvv_powd", core.dtype("fp64")),
+            (core.dtype("fp32"), core.dtype("fp32")): ("linalg.powf", core.dtype("fp32")),
+            (core.dtype("fp64"), core.dtype("fp64")): ("linalg.powf", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
 
 @core.extern
@@ -23,8 +23,8 @@ def exp2(arg0):
 def tanh(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"), ): ("__rvv_tanhf", core.dtype("fp32")),
-            (core.dtype("fp64"), ): ("__rvv_tanhd", core.dtype("fp64")),
+            (core.dtype("fp32"), ): ("linalg.tanh", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("linalg.tanh", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
 
 def trunc(arg0):
