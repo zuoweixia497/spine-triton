@@ -9,18 +9,11 @@ pushd triton/python
 
 TRITON_BUILD_PROTON=false TRITON_BUILD_WITH_CLANG_LLD=false \
     TRITON_BUILD_WITH_CCACHE=false LLVM_ROOT_DIR=${LLVM_INSTALL_DIR} MAX_JOBS=20 \
-    python3 setup.py build_py
-
+    python3 setup.py install --prefix=${TRITON_PLUGIN_DIRS}/build
 popd
 
-mkdir -p build
+rm -rf build/triton
+cp -r build/lib/python*/site-packages/triton build/
+rm -rf build/lib
 
-pushd build
-
-cp -r ../triton/python/build/lib*/triton ./
-
-cp ../triton/python/build/cmake*/third_party/triton_shared/tools/triton-shared-opt/triton-shared-opt ./
-
-cp -r ${TRITON_PLUGIN_DIRS}/backend ./triton/triton_shared
-
-popd
+cp triton/python/build/cmake*/third_party/triton_shared/tools/triton-shared-opt/triton-shared-opt build
