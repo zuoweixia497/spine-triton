@@ -6,11 +6,11 @@ def acos(arg0, _builder=None):
 
 @core.extern
 def acosh(arg0, _builder=None):
-    return core.tensor(_builder.create_acosh(arg0.handle), arg0.type) 
+    return core.tensor(_builder.create_acosh(arg0.handle), arg0.type)
 
 @core.extern
 def asin(arg0, _builder=None):
-    return core.tensor(_builder.create_asin(arg0.handle), arg0.type)   
+    return core.tensor(_builder.create_asin(arg0.handle), arg0.type)
 
 @core.extern
 def asinh(arg0, _builder=None):
@@ -100,7 +100,7 @@ def tanh(arg0, _builder=None):
 @core.extern
 def trunc(arg0, _builder=None):
     return core.tensor(_builder.create_trunc(arg0.handle), arg0.type)
-    
+
 @core.extern
 def erf(arg0, _builder=None):
     return core.tensor(_builder.create_erf(arg0.handle), arg0.type)
@@ -141,8 +141,8 @@ def div_rz(arg0, arg1, _builder=None):
         "", "", [arg0, arg1], {
             (core.dtype("fp32"), core.dtype("fp32")): ("linalg.div_rz", core.dtype("fp32")),
             (core.dtype("fp64"), core.dtype("fp64")): ("linalg.div_rz", core.dtype("fp64")),
-        }, is_pure=True, _builder=_builder) 
-   
+        }, is_pure=True, _builder=_builder)
+
 @core.extern
 def div_rd(arg0, arg1, _builder=None):
     return core.extern_elementwise(
@@ -176,14 +176,14 @@ def rint(arg0, _builder=None):
             (core.dtype("fp32"), ): ("linalg.rint", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.rint", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
- 
+
 
 @core.extern
 def finitef(arg0, _builder=None):
     return core.extern_elementwise("", "", [arg0], {
         (core.dtype("fp32"), ): ("linalg.finitef", core.dtype("int32")),
     }, is_pure=True, _builder=_builder).to(core.int1, _builder=_builder)
-   
+
 
 @core.extern
 def isinf(arg0, _builder=None):
