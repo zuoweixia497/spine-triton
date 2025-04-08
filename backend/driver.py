@@ -298,10 +298,8 @@ def compile_module(launcher_src, kernel_placeholder_name):
 
 
 @dataclass(frozen=True)
-class AICPUTarget(object):
-    # Target backend, e.g., cuda, hip
+class AICPUTarget(GPUTarget):
     backend: str
-    # Target architecture, e.g., 90 (for cuda compute capability), gfx940 (for hip)
     arch: str
     core: int
     ai_core: int
