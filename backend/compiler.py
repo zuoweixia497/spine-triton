@@ -19,6 +19,13 @@ def _get_triton_shared_opt_path() -> str:
     return path
 
 
+def _get_spine_mlir_opt_path() -> str:
+    path = os.getenv("SPINE_MLIR_OPT_PATH", "")
+    if path == "":
+        print("SPINE_MLIR_OPT_PATH is not set.")
+    return path
+
+
 def _get_llvm_bin_path(bin_name: str) -> str:
     path = os.getenv("LLVM_BINARY_DIR", "")
     if path == "":
@@ -103,6 +110,28 @@ def _ttsharedir_to_llir(ttsharedir: str):
         _dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
         return Path(llir_path).read_text()
 
+def _spine_mlir_ttsharedir_to_llir(ttsharedir: str):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ttshared_path = os.path.join(tmpdir, "ttshared.mlir")
+        llmlir_path = os.path.join(tmpdir, "ll.mlir")
+        llir_path = os.path.join(tmpdir, "ll.ir")
+        Path(ttshared_path).write_text(ttsharedir)
+        spine_mlir_path = _get_spine_mlir_opt_path()
+        # TritonShared-MLIR to LLVM-MLIR
+        subprocess.check_call([spine_mlir_path, ttshared_path,
+            "--spine-triton-pipeline",
+            "-o",
+            llmlir_path])
+
+        # LLVM-MLIR to LLVM-IR
+        mlir_translate_path = _get_llvm_bin_path("mlir-translate")
+        subprocess.check_call([mlir_translate_path, llmlir_path,
+            "--mlir-to-llvmir",
+            "-o",
+            llir_path])
+        _dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
+        return Path(llir_path).read_text()
+
 
 def _optimize_llir(llir: str):
     # We don't apply any optimizations now, but we can add passes if needed.
@@ -121,7 +150,6 @@ def _llir_to_bin(llir: str, metadata):
         llc_path = _get_llvm_bin_path("llc")
         subprocess.check_call([llc_path, src_path, "-filetype=obj", "-o", dst_path])
         return Path(dst_path).read_bytes()
-
 
 
 @dataclass(frozen=True)
@@ -206,7 +234,14 @@ class CPUBackend(BaseBackend):
     def add_stages(self, stages, options):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
         stages["ttsharedir"] = lambda src, metadata: _optimize_ttsharedir(_ttir_to_ttsharedir(src))
-        stages["llir"] = lambda src, metadata: _optimize_llir(_ttsharedir_to_llir(src))
+
+        spine_mlir_path = _get_spine_mlir_opt_path()
+
+        if os.path.isfile(spine_mlir_path):
+            stages["llir"] = lambda src, metadata: _optimize_llir(_spine_mlir_ttsharedir_to_llir(src))
+        else:
+            stages["llir"] = lambda src, metadata: _optimize_llir(_ttsharedir_to_llir(src))
+
         stages["obj"] = lambda src, metadata: _llir_to_bin(src, metadata)
 
 

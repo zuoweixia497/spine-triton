@@ -5,9 +5,11 @@ import sysconfig
 import os, subprocess, tempfile, platform
 import importlib.util
 import sys
-
+from dataclasses import dataclass
 from pathlib import Path
-
+import time
+import triton
+import triton._C
 from triton.runtime.cache import get_cache_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
@@ -295,6 +297,16 @@ def compile_module(launcher_src, kernel_placeholder_name):
     return launch
 
 
+@dataclass(frozen=True)
+class AICPUTarget(object):
+    # Target backend, e.g., cuda, hip
+    backend: str
+    # Target architecture, e.g., 90 (for cuda compute capability), gfx940 (for hip)
+    arch: str
+    core: int
+    ai_core: int
+
+
 class CPULauncher(object):
 
     def __init__(self, src, metadata):
@@ -352,6 +364,59 @@ class CPUUtils(object):
           None        # n_spills
         )
 
+class CPUDeviceInterface:
+
+    class HooksTimeAccessor:
+
+        def __init__(self, di):
+            self.di = di
+            self.record_idx = 0
+
+        def elapsed_time(self, end_event) -> float:
+            total_time = 0
+            for i in range(self.record_idx, end_event.record_idx):
+                total_time += self.di.kernel_times[i]
+            return total_time * 1000
+
+        def record(self):
+            self.record_idx = len(self.di.kernel_times)
+
+    class TimerEvent:
+
+        def __init__(self):
+            self.timer = 0
+
+        def elapsed_time(self, end_event) -> float:
+            return (end_event.timer - self.timer) * 1000
+
+        def record(self):
+            self.timer = time.perf_counter()
+
+    def __init__(self):
+        self.kernel_times = []
+        self.last_start = 0
+        self.use_hooks = False
+        triton.compiler.CompiledKernel.launch_enter_hook = None
+        triton.compiler.CompiledKernel.launch_exit_hook = None
+
+    def enable_hook_timing(self):
+        self.use_hooks = True
+        triton.compiler.CompiledKernel.launch_enter_hook = lambda arg: self._enter_hook()
+        triton.compiler.CompiledKernel.launch_exit_hook = lambda arg: self._exit_hook()
+
+    def synchronize(self):
+        pass
+
+    def _enter_hook(self):
+        self.last_start = time.perf_counter()
+
+    def _exit_hook(self):
+        self.kernel_times.append(time.perf_counter() - self.last_start)
+
+    def Event(self, enable_timing=True):
+        if self.use_hooks:
+            return CPUDeviceInterface.HooksTimeAccessor(self)
+        return CPUDeviceInterface.TimerEvent()
 
 class CPUDriver(DriverBase):
 
@@ -387,7 +452,8 @@ class CPUDriver(DriverBase):
         return
 
     def get_current_target(self):
-        return GPUTarget("cpu", 0, 0)
+        # TODO For os detect
+        return AICPUTarget("cpu", "a60", 8, 4)
 
     def get_active_torch_device(self):
         import torch
@@ -397,8 +463,7 @@ class CPUDriver(DriverBase):
         return args
 
     def get_device_interface(self):
-        import torch
-        return torch
+        return CPUDeviceInterface()
 
     def get_empty_cache_for_benchmark(self):
         import torch
