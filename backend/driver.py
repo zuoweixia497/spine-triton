@@ -451,7 +451,7 @@ class CPUDriver(DriverBase):
 
     def get_current_target(self):
         # TODO For os detect
-        return AICPUTarget("cpu", "a60", 8, 4)
+        return AICPUTarget("cpu", "a60", 0, 8, 4)
 
     def get_active_torch_device(self):
         import torch
