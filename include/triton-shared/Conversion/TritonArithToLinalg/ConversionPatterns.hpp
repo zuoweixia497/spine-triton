@@ -1577,7 +1577,7 @@ public:
     } else {
       return failure();
     }
-    
+
     auto loc = op.getLoc();
 
     auto elemTypes = op.getElementTypes();
@@ -2013,6 +2013,34 @@ public:
     rewriter.replaceOpWithNewOp<tensor::ReshapeOp>(op, outputType, input,
                                                    shape);
 
+    return success();
+  }
+};
+
+class ConvertExternElementwise : public OpConversionPattern<triton::ExternElementwiseOp> {
+public:
+  using OpConversionPattern<triton::ExternElementwiseOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto input = op.getSrcs().front();
+
+    // Create an empty tensor
+    auto dstType = mlir::cast<RankedTensorType>(op.getResult().getType());
+    auto init = rewriter.create<tensor::EmptyOp>(loc, dstType.getShape(), dstType.getElementType());
+
+    // Fill the tensor with a constant (e.g., zero)
+    auto constantAttr = rewriter.getFloatAttr(dstType.getElementType(), 0.0);
+    auto zero = rewriter.create<mlir::arith::ConstantOp>(loc, dstType.getElementType(), constantAttr);
+    auto filledTensor = rewriter.create<linalg::FillOp>(loc, ValueRange{zero}, ValueRange{init}).result();
+
+    // Apply the error function
+    auto result = rewriter.create<linalg::ErfOp>(loc, ValueRange{filledTensor}, ValueRange{init}).getResult(0);
+
+    // Replace the original operation with the result
+    rewriter.replaceOp(op, result);
     return success();
   }
 };

@@ -103,7 +103,11 @@ def trunc(arg0, _builder=None):
 
 @core.extern
 def erf(arg0, _builder=None):
-    return core.tensor(_builder.create_erf(arg0.handle), arg0.type)
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("linalg.erf", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("linalg.erf", core.dtype("fp64")),
+        }, is_pure=True, _builder=_builder)
 
 @core.extern
 def pow(arg0, arg1, _builder=None):
