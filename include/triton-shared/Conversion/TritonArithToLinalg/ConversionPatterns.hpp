@@ -2019,30 +2019,59 @@ public:
 
 class ConvertExternElementwise : public OpConversionPattern<triton::ExternElementwiseOp> {
 public:
-  using OpConversionPattern<triton::ExternElementwiseOp>::OpConversionPattern;
+    using OpConversionPattern<triton::ExternElementwiseOp>::OpConversionPattern;
 
-  LogicalResult
-  matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto input = op.getSrcs().front();
+    ConvertExternElementwise(MLIRContext *context) : OpConversionPattern(context) {
+        // Initialize opMap in the constructor
+        opMap = {
+            {"linalg.abs", createOpFunc<linalg::AbsOp>()},
+            {"linalg.ceil", createOpFunc<linalg::CeilOp>()},
+            {"linalg.exp", createOpFunc<linalg::ExpOp>()},
+            {"linalg.floor", createOpFunc<linalg::FloorOp>()},
+            {"linalg.log", createOpFunc<linalg::LogOp>()},
+            {"linalg.round", createOpFunc<linalg::RoundOp>()},
+            {"linalg.rsqrt", createOpFunc<linalg::RsqrtOp>()},
+            {"linalg.sqrt", createOpFunc<linalg::SqrtOp>()},
+            {"linalg.tanh", createOpFunc<linalg::TanhOp>()},
+            {"linalg.erf", createOpFunc<linalg::ErfOp>()},
+            {"linalg.powf", createOpFunc<linalg::PowFOp>()},
+        };
+    }
 
-    // Create an empty tensor
-    auto dstType = mlir::cast<RankedTensorType>(op.getResult().getType());
-    auto init = rewriter.create<tensor::EmptyOp>(loc, dstType.getShape(), dstType.getElementType());
+    LogicalResult matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
+                                  ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto input = op.getSrcs().front();
 
-    // Fill the tensor with a constant (e.g., zero)
-    auto constantAttr = rewriter.getFloatAttr(dstType.getElementType(), 0.0);
-    auto zero = rewriter.create<mlir::arith::ConstantOp>(loc, dstType.getElementType(), constantAttr);
-    auto filledTensor = rewriter.create<linalg::FillOp>(loc, ValueRange{zero}, ValueRange{init}).result();
+        // Create an empty tensor
+        auto dstType = mlir::cast<RankedTensorType>(op.getResult().getType());
+        auto init = rewriter.create<tensor::EmptyOp>(loc, dstType.getShape(), dstType.getElementType());
 
-    // Apply the error function
-    auto result = rewriter.create<linalg::ErfOp>(loc, ValueRange{filledTensor}, ValueRange{init}).getResult(0);
+        // Fill the tensor with a constant (e.g., zero)
+        auto constantAttr = rewriter.getFloatAttr(dstType.getElementType(), 0.0);
+        auto zero = rewriter.create<mlir::arith::ConstantOp>(loc, dstType.getElementType(), constantAttr);
+        auto filledTensor = rewriter.create<linalg::FillOp>(loc, ValueRange{zero}, ValueRange{init}).result();
 
-    // Replace the original operation with the result
-    rewriter.replaceOp(op, result);
-    return success();
-  }
+        if (auto it = opMap.find(op.getSymbol().str()); it != opMap.end()) {
+            auto result = it->second(rewriter, loc, ValueRange{filledTensor}, ValueRange{init});
+            rewriter.replaceOp(op, result->getResult(0));
+            return success();
+        } else {
+            return failure();
+        }
+    }
+
+private:
+    using CreateOpFunc = std::function<mlir::Operation*(mlir::ConversionPatternRewriter&, mlir::Location, ValueRange, ValueRange)>;
+
+    template<typename OpType>
+    static CreateOpFunc createOpFunc() {
+        return [](mlir::ConversionPatternRewriter &rewriter, mlir::Location loc, ValueRange a, ValueRange b) {
+            return rewriter.create<OpType>(loc, a, b);
+        };
+    }
+
+    std::unordered_map<std::string, CreateOpFunc> opMap;
 };
 
 class ExternElementwiseBinaryOpConverter
