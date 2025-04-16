@@ -2022,47 +2022,65 @@ public:
     using OpConversionPattern<triton::ExternElementwiseOp>::OpConversionPattern;
 
     ConvertExternElementwise(MLIRContext *context) : OpConversionPattern(context) {
-        // Initialize opMap in the constructor
+        // Initialize opMap with operation symbols, required operand counts and creation functions
         opMap = {
-            {"linalg.abs", createOpFunc<linalg::AbsOp>()},
-            {"linalg.ceil", createOpFunc<linalg::CeilOp>()},
-            {"linalg.exp", createOpFunc<linalg::ExpOp>()},
-            {"linalg.floor", createOpFunc<linalg::FloorOp>()},
-            {"linalg.log", createOpFunc<linalg::LogOp>()},
-            {"linalg.round", createOpFunc<linalg::RoundOp>()},
-            {"linalg.rsqrt", createOpFunc<linalg::RsqrtOp>()},
-            {"linalg.sqrt", createOpFunc<linalg::SqrtOp>()},
-            {"linalg.tanh", createOpFunc<linalg::TanhOp>()},
-            {"linalg.erf", createOpFunc<linalg::ErfOp>()},
-            {"linalg.powf", createOpFunc<linalg::PowFOp>()},
+            // unary operations (1 input)
+            {"linalg.exp", {1, createOpFunc<linalg::ExpOp>()}},
+            {"linalg.log", {1, createOpFunc<linalg::LogOp>()}},
+            {"linalg.abs", {1, createOpFunc<linalg::AbsOp>()}},
+            {"linalg.ceil", {1, createOpFunc<linalg::CeilOp>()}},
+            {"linalg.floor", {1, createOpFunc<linalg::FloorOp>()}},
+            {"linalg.round", {1, createOpFunc<linalg::RoundOp>()}},
+            {"linalg.rsqrt", {1, createOpFunc<linalg::RsqrtOp>()}},
+            {"linalg.sqrt", {1, createOpFunc<linalg::SqrtOp>()}},
+            {"linalg.tanh", {1, createOpFunc<linalg::TanhOp>()}},
+            {"linalg.erf", {1, createOpFunc<linalg::ErfOp>()}},
+            // binary operations (2 inputs)
+            {"linalg.powf", {2, createOpFunc<linalg::PowFOp>()}},
         };
     }
 
     LogicalResult matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto input = op.getSrcs().front();
+        auto srcs = op.getSrcs(); // Get all input operands
 
-        // Create an empty tensor
+        // Look up operation information
+        auto sysmbol = op.getSymbol().str();
+        auto it = opMap.find(sysmbol);
+        if (it == opMap.end()) {
+            return failure();
+        }
+
+        // Extract required operand count and creation function
+        int requiredOperands = it->second.numOperands;
+        auto createFunc = it->second.createFunc;
+
+        // Verify input operand sufficiency
+        if (srcs.size() < requiredOperands) {
+            return failure();
+        }
+
+        // Extract required input operands
+        ValueRange inputs = srcs.take_front(requiredOperands);
+
+        // Create destination empty tensor
         auto dstType = mlir::cast<RankedTensorType>(op.getResult().getType());
         auto init = rewriter.create<tensor::EmptyOp>(loc, dstType.getShape(), dstType.getElementType());
 
-        // Fill the tensor with a constant (e.g., zero)
-        auto constantAttr = rewriter.getFloatAttr(dstType.getElementType(), 0.0);
-        auto zero = rewriter.create<mlir::arith::ConstantOp>(loc, dstType.getElementType(), constantAttr);
-        auto filledTensor = rewriter.create<linalg::FillOp>(loc, ValueRange{zero}, ValueRange{init}).result();
-
-        if (auto it = opMap.find(op.getSymbol().str()); it != opMap.end()) {
-            auto result = it->second(rewriter, loc, ValueRange{filledTensor}, ValueRange{init});
-            rewriter.replaceOp(op, result->getResult(0));
-            return success();
-        } else {
-            return failure();
-        }
+        // Create corresponding Linalg operation
+        auto result = createFunc(rewriter, loc, inputs, ValueRange{init});
+        rewriter.replaceOp(op, result->getResult(0));
+        return success();
     }
 
 private:
+    // Operation information structure containing required operand count and creation function
     using CreateOpFunc = std::function<mlir::Operation*(mlir::ConversionPatternRewriter&, mlir::Location, ValueRange, ValueRange)>;
+    struct OpInfo {
+        int numOperands;
+        CreateOpFunc createFunc;
+    };
 
     template<typename OpType>
     static CreateOpFunc createOpFunc() {
@@ -2071,7 +2089,7 @@ private:
         };
     }
 
-    std::unordered_map<std::string, CreateOpFunc> opMap;
+    std::unordered_map<std::string, OpInfo> opMap;
 };
 
 class ExternElementwiseBinaryOpConverter
