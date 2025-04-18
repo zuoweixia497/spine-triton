@@ -15,6 +15,8 @@
 #include "triton-shared/Conversion/UnstructuredToMemref/UnstructuredToMemref.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton-shared/Conversion/AddTargetDescription/AddTargetDescription.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -42,7 +44,7 @@ public:
                 linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
                 tensor::TensorDialect, bufferization::BufferizationDialect,
                 memref::MemRefDialect, ttx::TritonTilingExtDialect,
-                tts::TritonStructuredDialect>();
+                tts::TritonStructuredDialect, DLTIDialect>();
   }
 
   void runOnOperation() override {
@@ -60,6 +62,7 @@ public:
     pm.addPass(createStructuredToMemrefPass());
     pm.addPass(createUnstructuredToMemrefPass());
     pm.addPass(createTritonPtrToMemrefPass());
+    pm.addPass(createAddTargetDescriptionPass());
     pm.addPass(createReconcileUnrealizedCastsPass());
 
     pm.addPass(createCSEPass());

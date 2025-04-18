@@ -229,6 +229,8 @@ class CPUBackend(BaseBackend):
         passes.common.add_licm(pm)
         passes.common.add_symbol_dce(pm)
         pm.run(mod)
+        cache_sizes = get_cache_sizes()
+        mod.set_attr("tt.cache_sizes", ir.make_attr(cache_sizes, mod.context))
         return mod
 
     def add_stages(self, stages, options):
@@ -252,3 +254,48 @@ class CPUBackend(BaseBackend):
     # The CPU backend does not use any extra python modules, return an empty dictionary
     def get_module_map(self) -> Dict[str, ModuleType]:
         return {}
+
+def get_cache_sizes():
+    try:
+        # Get CPU information using lscpu
+        output = subprocess.check_output("lscpu", shell=True).decode()
+    except Exception as e:
+        print(f"Command execution failed: {e}")
+        return [0, 0, 0]  # Return default values on failure
+
+    # Regex patterns for cache levels (order: L1, L2, L3)
+    patterns = {
+        "L1": r"L1\S*\s*cache:\s*(\d+)\s*([KMG]?i?B?)",  # Match L1, L1d, L1i, etc.
+        "L2": r"L2\s*cache:\s*(\d+)\s*([KMG]?i?B?)",
+        "L3": r"L3\s*cache:\s*(\d+)\s*([KMG]?i?B?)"
+    }
+
+    unit_map = {
+        'k': 1024,
+        'm': 1024**2,
+        'g': 1024**3,
+        '' : 1
+    }
+
+    results = []
+    for cache_level in ["L1", "L2", "L3"]:  # Enforce order
+        match = re.search(patterns[cache_level], output, re.IGNORECASE)
+        if not match:
+            results.append(0)
+            continue
+
+        try:
+            # Extract value and unit
+            value = int(match.group(1))
+            unit = match.group(2).lower().rstrip('ib')  # Remove trailing i/B
+
+            # Convert to bytes
+            base_unit = unit.rstrip('b').rstrip('i') or ''
+            multiplier = unit_map.get(base_unit[0].lower() if base_unit else '', 1)
+            results.append(value * multiplier)
+
+        except (ValueError, KeyError, IndexError) as e:
+            print(f"Failed to parse {cache_level} cache: {e}")
+            results.append(0)
+
+    return results  # Format: [L1_size, L2_size, L3_size] in bytes
