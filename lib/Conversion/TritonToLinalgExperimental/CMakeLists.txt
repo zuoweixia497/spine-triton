@@ -23,6 +23,7 @@ add_triton_library(TritonToLinalgExperimental
   TritonIR
   TritonTransforms
   TritonSharedAnalysis
+  MLIRDLTIDialect
 
   TritonArithToLinalg
   StructuredToMemref
@@ -30,4 +31,5 @@ add_triton_library(TritonToLinalgExperimental
   TritonToUnstructured
   TritonPtrToMemref
   UnstructuredToMemref
+  AddTargetDescription
 )
