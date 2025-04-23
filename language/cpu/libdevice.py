@@ -90,6 +90,13 @@ def pow(arg0, arg1, _builder=None):
             (core.dtype("fp64"), core.dtype("fp64")): ("linalg.powf", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
 
+@core.extern
+def geluTanh(arg0, _builder=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("linalg.geluTanh", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("linalg.geluTanh", core.dtype("fp64")),
+        }, is_pure=True, _builder=_builder)
 
 # TODO: the following lower implementation
 @core.extern

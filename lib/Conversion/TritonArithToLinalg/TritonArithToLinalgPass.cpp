@@ -219,6 +219,76 @@ public:
         func.erase();
       });
     }
+
+    bool foldFill2Generic = true;
+    if (foldFill2Generic) {
+        moduleOp.walk([&](linalg::GenericOp genericOp) {
+
+          OpBuilder builder(genericOp);
+          SmallVector<Value> inputs = genericOp.getInputs();
+          SmallVector<Value> outputs = genericOp.getOutputs();
+          auto indexingMaps = genericOp.getIndexingMapsAttr();
+          auto iteratorTypes = genericOp.getIteratorTypes();
+          auto resultTypes = genericOp->getResultTypes();
+
+          // Modify the input and index mapping
+          bool modified = false;
+          SmallVector<AffineMap> newIndexingMaps;
+          for (auto map : indexingMaps.getAsRange<AffineMapAttr>()) {
+              newIndexingMaps.push_back(map.getValue());
+          }
+
+          for (unsigned i = 0; i < inputs.size(); ++i) {
+              if (auto fillOp = inputs[i].getDefiningOp<linalg::FillOp>()) {
+
+                  Value fillValue = fillOp.value();
+                  if (!fillValue.getType().isIntOrFloat() ||
+                      mlir::isa<ShapedType>(fillValue.getType())) continue;
+
+                  newIndexingMaps[i] = AffineMap::get(
+                      genericOp.getNumParallelLoops(), 0, {}, builder.getContext());
+                  inputs[i] = fillOp.getOperand(0);
+                  modified = true;
+              }
+          }
+          if (!modified) return;
+
+          builder.setInsertionPoint(genericOp);
+          auto newGenericOp = builder.create<linalg::GenericOp>(
+              genericOp.getLoc(),
+              resultTypes,
+              inputs,
+              outputs,
+              builder.getAffineMapArrayAttr(newIndexingMaps),
+              iteratorTypes,
+              genericOp.getDocAttr(),
+              genericOp.getLibraryCallAttr()
+          );
+
+          IRMapping mapping;
+          genericOp.getRegion().cloneInto(&newGenericOp.getRegion(), mapping);
+
+          newGenericOp.getRegion().walk([&](linalg::YieldOp yieldOp) {
+              builder.setInsertionPoint(yieldOp);
+              auto newYield = builder.create<linalg::YieldOp>(
+                  yieldOp.getLoc(), yieldOp.getOperands());
+              yieldOp->replaceAllUsesWith(newYield);
+              yieldOp->erase();
+          });
+
+          for (auto result : llvm::zip(genericOp->getResults(),
+                                    newGenericOp->getResults())) {
+              std::get<0>(result).replaceAllUsesWith(std::get<1>(result));
+          }
+
+          if (genericOp->use_empty()) {
+              builder.setInsertionPointAfter(newGenericOp);
+              genericOp->erase();
+          } else {
+              newGenericOp->emitError("Failed to replace all uses");
+          }
+        });
+      }
   }
 };
 
