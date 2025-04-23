@@ -91,6 +91,7 @@ void mlir::triton::populateTritonArithToLinalgConversionPatterns(
   patterns.add<ArgMaxConverter>(patterns.getContext());
   patterns.add<ReduceConverter>(patterns.getContext());
   patterns.add<ConvertExternGeluThan>(patterns.getContext());
+  patterns.add<ConvertExternGeluNone>(patterns.getContext());
   // Note: the ordering here matters!
   // These patterns are added last to they will be tried last.
   linalg::populateElementwiseToLinalgConversionPatterns(patterns);
