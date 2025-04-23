@@ -22,6 +22,10 @@ def _get_spine_mlir_opt_path() -> str:
         print("SPINE_MLIR_OPT_PATH is not set.")
     return path
 
+def _get_spine_mlir_cc_debug() -> bool:
+    debug_or_not = int(os.getenv("SPINE_MLIR_DEBUG_MODE", "0"))
+    return debug_or_not == 1
+
 try:
     spine_mlir_opt_path = _get_spine_mlir_opt_path()
     if os.path.isfile(spine_mlir_opt_path):
@@ -270,6 +274,8 @@ def compile_module(launcher_src, kernel_placeholder_name):
           filename = f"{name}.so"
         cache_path = cache.get_file(filename)
 
+        spine_opt_debug = _get_spine_mlir_cc_debug()
+
         if cache_path is None:
           with tempfile.TemporaryDirectory() as tmpdir:
               if platform.system() == "Windows":
@@ -289,13 +295,25 @@ def compile_module(launcher_src, kernel_placeholder_name):
                   launcher_src_path = os.path.join(tmpdir, "main.cxx")
                   so_path = os.path.join(tmpdir, "kernel.so")
                   Path(obj_path).write_bytes(kernel_obj)
+
                   Path(launcher_src_path).write_text(src)
-                  # Compile it together.
-                  subprocess.check_call([
-                    "g++", "-std=c++17", launcher_src_path, obj_path,
-                    f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
-                    "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
-                  ])
+                  with open(launcher_src_path, "rb") as f:
+                    launcher_src_path = cache.put(f.read(), os.path.basename(launcher_src_path), binary=False)
+
+                  if spine_opt_debug:
+                    # Compile it together.
+                    subprocess.check_call([
+                      "g++", "-std=c++17", "-g", launcher_src_path, obj_path,
+                      f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
+                      "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
+                    ])
+                  else:
+                    # Compile it together.
+                    subprocess.check_call([
+                      "g++", "-std=c++17", launcher_src_path, obj_path,
+                      f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
+                      "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
+                    ])
 
               with open(so_path, "rb") as f:
                 cache_path = cache.put(f.read(), filename, binary=True)
