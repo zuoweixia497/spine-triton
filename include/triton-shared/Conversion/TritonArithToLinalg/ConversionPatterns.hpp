@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
+#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 
 #include "llvm/ADT/SmallVectorExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
@@ -2090,6 +2091,111 @@ private:
     }
 
     std::unordered_map<std::string, OpInfo> opMap;
+};
+
+struct ConvertExternGeluThan : public OpRewritePattern<triton::ExternElementwiseOp> {
+  using OpRewritePattern<triton::ExternElementwiseOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::ExternElementwiseOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getSymbol().str() != "linalg.geluTanh") {
+      return failure();
+    }
+
+    Value input = op.getOperand(0);
+    auto inputType = mlir::cast<RankedTensorType>(input.getType());
+    int64_t rank = inputType.getRank();
+    auto inputElemTy = inputType.getElementType();
+    auto outputType = mlir::cast<RankedTensorType>(op.getResult().getType());
+    auto outputElemTy = outputType.getElementType();
+
+    Location loc = op.getLoc();
+
+    Value initTensor = rewriter.create<tensor::EmptyOp>(
+        loc,
+        outputType.getShape(),
+        outputType.getElementType(),
+        ValueRange{}
+    );
+
+    SmallVector<AffineMap> indexingMaps;
+    auto ctx = rewriter.getContext();
+    AffineMap identityMap = AffineMap::getMultiDimIdentityMap(rank, ctx);
+    indexingMaps.push_back(identityMap);
+    indexingMaps.push_back(identityMap);
+
+    SmallVector<utils::IteratorType> iteratorTypes(rank, utils::IteratorType::parallel);
+    SmallVector<Attribute> iteratorAttrs;
+    for (auto type : iteratorTypes) {
+      iteratorAttrs.push_back(linalg::IteratorTypeAttr::get(
+          rewriter.getContext(), type));
+    }
+
+    auto genericOp = rewriter.create<linalg::GenericOp>(
+        loc,
+        initTensor.getType(),
+        input,
+        initTensor,
+        rewriter.getAffineMapArrayAttr(indexingMaps),
+        rewriter.getArrayAttr(iteratorAttrs),
+        nullptr,
+        nullptr
+    );
+
+    Block *body = new Block();
+    genericOp.getRegion().push_back(body);
+    body->addArguments(
+        {inputElemTy, outputElemTy},
+        {loc, loc}
+    );
+
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(body);
+
+    // 0.5 * x * (1 + tanh(x * 0.79788456 * (1 + 0.044715 * pow(x.to(tl.float32), 2))))
+    Value c0_5 = rewriter.create<arith::ConstantFloatOp>(
+        loc, APFloat(0.5f), rewriter.getF32Type());
+    Value c0_044715 = rewriter.create<arith::ConstantFloatOp>(
+        loc, APFloat(0.044715f), rewriter.getF32Type());
+    Value c0_797885 = rewriter.create<arith::ConstantFloatOp>(
+        loc, APFloat(0.79788456f), rewriter.getF32Type());
+    Value c1 = rewriter.create<arith::ConstantFloatOp>(
+        loc, APFloat(1.0f), rewriter.getF32Type());
+
+    Value x = body->getArgument(0);
+
+    // x²
+    Value xSq = rewriter.create<arith::MulFOp>(loc, x, x);
+
+    // 0.044715 * x²
+    Value term = rewriter.create<arith::MulFOp>(loc, c0_044715, xSq);
+
+    // 1 + 0.044715x²
+    Value poly = rewriter.create<arith::AddFOp>(loc, term, c1);
+
+    // x * poly
+    Value xPoly = rewriter.create<arith::MulFOp>(loc, x, poly);
+
+    // apply 0.79788456
+    Value scaled = rewriter.create<arith::MulFOp>(loc, xPoly, c0_797885);
+
+    // tanh
+    Value tanhVal = rewriter.create<math::TanhOp>(loc, scaled);
+
+    // 1 + tanh
+    Value sum = rewriter.create<arith::AddFOp>(loc, tanhVal, c1);
+
+    // 0.5 * x
+    Value halfX = rewriter.create<arith::MulFOp>(loc, x, c0_5);
+
+    Value result = rewriter.create<arith::MulFOp>(loc, halfX, sum);
+
+    rewriter.create<linalg::YieldOp>(loc, result);
+
+    rewriter.replaceOp(op, genericOp.getResult(0));
+
+    return success();
+  }
 };
 
 class ExternElementwiseBinaryOpConverter
