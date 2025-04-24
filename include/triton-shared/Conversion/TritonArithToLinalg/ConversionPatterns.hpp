@@ -2093,6 +2093,99 @@ private:
     std::unordered_map<std::string, OpInfo> opMap;
 };
 
+
+struct ConvertExternGeluNone : public OpRewritePattern<triton::ExternElementwiseOp> {
+  using OpRewritePattern<triton::ExternElementwiseOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::ExternElementwiseOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getSymbol().str() != "linalg.geluNone") {
+      return failure();
+    }
+
+    Value input = op.getOperand(0);
+    auto inputType = mlir::cast<RankedTensorType>(input.getType());
+    int64_t rank = inputType.getRank();
+    auto inputElemTy = inputType.getElementType();
+    auto outputType = mlir::cast<RankedTensorType>(op.getResult().getType());
+    auto outputElemTy = outputType.getElementType();
+
+    Location loc = op.getLoc();
+
+    Value initTensor = rewriter.create<tensor::EmptyOp>(
+        loc,
+        outputType.getShape(),
+        outputType.getElementType(),
+        ValueRange{}
+    );
+
+    SmallVector<AffineMap> indexingMaps;
+    auto ctx = rewriter.getContext();
+    AffineMap identityMap = AffineMap::getMultiDimIdentityMap(rank, ctx);
+    indexingMaps.push_back(identityMap);
+    indexingMaps.push_back(identityMap);
+
+    SmallVector<utils::IteratorType> iteratorTypes(rank, utils::IteratorType::parallel);
+    SmallVector<Attribute> iteratorAttrs;
+    for (auto type : iteratorTypes) {
+      iteratorAttrs.push_back(linalg::IteratorTypeAttr::get(
+          rewriter.getContext(), type));
+    }
+
+    auto genericOp = rewriter.create<linalg::GenericOp>(
+        loc,
+        initTensor.getType(),
+        input,
+        initTensor,
+        rewriter.getAffineMapArrayAttr(indexingMaps),
+        rewriter.getArrayAttr(iteratorAttrs),
+        nullptr,
+        nullptr
+    );
+
+    Block *body = new Block();
+    genericOp.getRegion().push_back(body);
+    body->addArguments(
+        {inputElemTy, outputElemTy},
+        {loc, loc}
+    );
+
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(body);
+
+    // output = 0.5 * x * (1 + erf(x * 0.7071067811))
+    Value c0_5 = rewriter.create<arith::ConstantFloatOp>(
+        loc, APFloat(0.5f), rewriter.getF32Type());
+    Value c0_07071067811 = rewriter.create<arith::ConstantFloatOp>(
+        loc, APFloat(0.7071067811f), rewriter.getF32Type());
+    Value c1 = rewriter.create<arith::ConstantFloatOp>(
+        loc, APFloat(1.0f), rewriter.getF32Type());
+
+    Value x = body->getArgument(0);
+
+    // x * 0.7071067811
+    Value xSq = rewriter.create<arith::MulFOp>(loc, x, c0_07071067811);
+
+    // erf(x * 0.7071067811)
+    Value xerf = rewriter.create<math::ErfOp>(loc, xSq);
+
+    // 1 + erf(x * 0.7071067811)
+    Value poly = rewriter.create<arith::AddFOp>(loc, xerf, c1);
+
+    // 0.5 * x
+    Value halfX = rewriter.create<arith::MulFOp>(loc, x, c0_5);
+
+    // 0.5 * x * (1 + erf(x * 0.7071067811))
+    Value result = rewriter.create<arith::MulFOp>(loc, halfX, poly);
+
+    rewriter.create<linalg::YieldOp>(loc, result);
+
+    rewriter.replaceOp(op, genericOp.getResult(0));
+
+    return success();
+  }
+};
+
 struct ConvertExternGeluThan : public OpRewritePattern<triton::ExternElementwiseOp> {
   using OpRewritePattern<triton::ExternElementwiseOp>::OpRewritePattern;
 
