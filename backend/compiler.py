@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import functools
+import platform
 from pathlib import Path
 
 def _get_triton_shared_opt_path() -> str:
@@ -139,6 +140,7 @@ def _optimize_llir(llir: str):
 
 
 def _llir_to_bin(llir: str, metadata):
+    cpu_arch = platform.machine()
     pattern = r"define void @(\w+)\(.+"
     matches = re.findall(pattern, llir)
     assert len(matches) == 1
@@ -148,7 +150,17 @@ def _llir_to_bin(llir: str, metadata):
         dst_path = os.path.join(tmpdir, "kernel.o")
         Path(src_path).write_text(llir)
         llc_path = _get_llvm_bin_path("llc")
-        subprocess.check_call([llc_path, src_path, "-filetype=obj", "-o", dst_path])
+        llc_flags = []
+        if cpu_arch == "riscv64":
+            llc_flags.extend(
+                [
+                 "--march=riscv64",
+                 "--float-abi=hard",
+                 "--mattr=64bit,a,b,c,d,f,i,m,v,zfh,zicbop,zicbom,zicboz"
+                ]
+            )
+
+        subprocess.check_call([llc_path, src_path, *llc_flags, "-filetype=obj", "-o", dst_path])
         return Path(dst_path).read_bytes()
 
 

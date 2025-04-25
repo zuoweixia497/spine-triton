@@ -241,6 +241,7 @@ PyMODINIT_FUNC PyInit___triton_shared_ref_cpu_kernel_launcher(void) {{
 
 def compile_module(launcher_src, kernel_placeholder_name):
     py_version = sys.version_info
+    cpu_arch = platform.machine()
     if platform.system() == "Windows":
         py_include_dir = os.path.join(sys.base_prefix, 'include')
         py_lib_dir = os.path.join(sys.base_prefix, 'libs')
@@ -300,20 +301,24 @@ def compile_module(launcher_src, kernel_placeholder_name):
                   with open(launcher_src_path, "rb") as f:
                     launcher_src_path = cache.put(f.read(), os.path.basename(launcher_src_path), binary=False)
 
+                  gcc_flags = []
+                  if cpu_arch == "riscv64":
+                    gcc_flags.extend(
+                      [
+                        "-march=rv64gcv_zfh_zba_zicbop",
+                        "-mabi=lp64d"
+                      ]
+                    )
                   if spine_opt_debug:
-                    # Compile it together.
-                    subprocess.check_call([
-                      "g++", "-std=c++17", "-g", launcher_src_path, obj_path,
-                      f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
-                      "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
-                    ])
-                  else:
-                    # Compile it together.
-                    subprocess.check_call([
-                      "g++", "-std=c++17", launcher_src_path, obj_path,
-                      f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
-                      "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
-                    ])
+                    gcc_flags.append("-g")
+
+                  # Compile it together.
+                  subprocess.check_call([
+                    "g++", "-std=c++17", *gcc_flags,
+                    launcher_src_path, obj_path,
+                    f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
+                    "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
+                  ])
 
               with open(so_path, "rb") as f:
                 cache_path = cache.put(f.read(), filename, binary=True)
