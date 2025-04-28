@@ -156,7 +156,8 @@ def _llir_to_bin(llir: str, metadata):
                 [
                  "--march=riscv64",
                  "--float-abi=hard",
-                 "--mattr=64bit,a,b,c,d,f,i,m,v,zfh,zicbop,zicbom,zicboz"
+                 "--mattr=64bit,a,b,c,d,f,i,m,v,zfh,zicbop,zicbom,zicboz",
+                 "--relocation-model=pic"
                 ]
             )
 
