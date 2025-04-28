@@ -6,6 +6,8 @@ echo "LLVM_INSTALL_DIR: ${LLVM_INSTALL_DIR}"
 
 export TRITON_PLUGIN_DIRS=${PWD}
 
+mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
+
 pushd triton/python
 
 TRITON_BUILD_PROTON=false TRITON_BUILD_WITH_CLANG_LLD=false \
