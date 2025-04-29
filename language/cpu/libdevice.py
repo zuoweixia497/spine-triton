@@ -91,19 +91,27 @@ def pow(arg0, arg1, _builder=None):
         }, is_pure=True, _builder=_builder)
 
 @core.extern
-def geluTanh(arg0, _builder=None):
+def gelu_tanh(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"), ): ("linalg.geluTanh", core.dtype("fp32")),
-            (core.dtype("fp64"), ): ("linalg.geluTanh", core.dtype("fp64")),
+            (core.dtype("fp32"), ): ("linalg.gelu_tanh", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("linalg.gelu_tanh", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
 
 @core.extern
-def geluNone(arg0, _builder=None):
+def gelu_none(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"), ): ("linalg.geluNone", core.dtype("fp32")),
-            (core.dtype("fp64"), ): ("linalg.geluNone", core.dtype("fp64")),
+            (core.dtype("fp32"), ): ("linalg.gelu_none", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("linalg.gelu_none", core.dtype("fp64")),
+        }, is_pure=True, _builder=_builder)
+
+@core.extern
+def silu(arg0, _builder=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("linalg.silu", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("linalg.silu", core.dtype("fp64")),
         }, is_pure=True, _builder=_builder)
 
 # TODO: the following lower implementation
