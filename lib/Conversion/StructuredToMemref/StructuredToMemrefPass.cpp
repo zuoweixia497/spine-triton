@@ -173,6 +173,63 @@ public:
     if (failed(applyPartialConversion(moduleOp, target, std::move(patterns)))) {
       signalPassFailure();
     }
+
+    // Change the second input of linalg powop to a scalar
+    bool PowTensorToScalar = true;
+    if (PowTensorToScalar) {
+      SmallVector<linalg::PowFOp> targetOps;
+      moduleOp.walk([&](linalg::PowFOp powfOp) {
+        // Check if the second operand is a bufferization.to_tensor result
+        if (auto toTensor = powfOp.getInputs()[1].getDefiningOp<bufferization::ToTensorOp>()) {
+          // Verify the memref comes from an alloc operation with shape [1]
+          if (auto alloc = toTensor.getMemref().getDefiningOp<memref::AllocOp>()) {
+            if (alloc.getType().getShape() == ArrayRef<int64_t>{1}) {
+              targetOps.push_back(powfOp);
+            }
+          }
+        }
+      });
+      for (auto powfOp : targetOps) {
+        OpBuilder builder(powfOp);
+        auto toTensor = powfOp.getInputs()[1].getDefiningOp<bufferization::ToTensorOp>();
+        Value memref = toTensor.getMemref();
+
+        // Create load operation to get the scalar value
+        Value loaded = builder.create<memref::LoadOp>(
+            toTensor.getLoc(),
+            memref,
+            ValueRange{builder.create<arith::ConstantIndexOp>(toTensor.getLoc(), 0)}
+        );
+
+        // Prepare new input list:
+        // - Keep first input unchanged
+        // - Replace second input with loaded scalar
+        SmallVector<Value> newInputs = {
+            powfOp.getInputs()[0],
+            loaded
+        };
+
+        auto newPowf = builder.create<linalg::PowFOp>(
+          powfOp.getLoc(),
+          powfOp.getResultTypes(),
+          newInputs,
+          powfOp.getOutputs()
+        );
+
+        powfOp.getResult(0).replaceAllUsesWith(newPowf.getResult(0));
+
+        powfOp.erase();
+
+        if (toTensor.use_empty()) {
+          toTensor.erase();
+          if (auto alloc = memref.getDefiningOp<memref::AllocOp>()) {
+            if (alloc.use_empty()) {
+              alloc.erase();
+            }
+          }
+        }
+      }
+    }
   }
 };
 } // namespace
