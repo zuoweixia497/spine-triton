@@ -99,6 +99,9 @@ def _generate_launcher(constants, signature, kernel_name):
 #include <assert.h>
 #include <stdbool.h>
 #include <Python.h>
+#include <omp.h>
+#include <memory>
+#include <optional>
 #include "ExecutionEngine/CRunnerUtils.h"
 #include "ExecutionEngine/CRunnerUtils.cpp"
 
@@ -109,21 +112,75 @@ extern "C" {{
                        int, int, int, int, int, int);
 }}
 
-static void _launch(int gridX, int gridY, int gridZ, {arg_decls}) {{
-  if (gridX*gridY*gridZ > 0) {{
-    // Cast "function" to the real function type.
-    for(int x = 0; x < gridX; x++) {{
-      for(int y = 0; y < gridY; y++) {{
-        for(int z = 0; z < gridZ; z++) {{
-          // Use some random type "char" here.
-          {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};' for i, ty in signature.items() if i not in constants and ty[0] == "*")}
-          {kernel_name}({kernel_parameters}
-                        gridX, gridY, gridZ, x, y, z);
-        }}
+static std::unique_ptr<uint32_t[][3]> get_all_grids(uint32_t gridX, uint32_t gridY, uint32_t gridZ) {{
+  std::unique_ptr<uint32_t[][3]> grids(new uint32_t[gridX * gridY * gridZ][3]);
+  for (uint32_t z = 0; z < gridZ; ++z) {{
+    for (uint32_t y = 0; y < gridY; ++y) {{
+      for (uint32_t x = 0; x < gridX; ++x) {{
+        grids[z * gridY * gridX + y * gridX + x][0] = x;
+        grids[z * gridY * gridX + y * gridX + x][1] = y;
+        grids[z * gridY * gridX + y * gridX + x][2] = z;
       }}
     }}
   }}
+  return grids;
 }}
+
+inline bool getBoolEnv(const std::string &env) {{
+  const char *s = std::getenv(env.c_str());
+  std::string str(s ? s : "");
+  std::transform(str.begin(), str.end(), str.begin(),
+                 [](unsigned char c) {{ return std::tolower(c); }});
+  return str == "on" || str == "true" || str == "1";
+}}
+
+inline std::optional<int64_t> getIntEnv(const std::string &env) {{
+  const char *cstr = std::getenv(env.c_str());
+  if (!cstr)
+    return std::nullopt;
+  char *endptr;
+  long int result = std::strtol(cstr, &endptr, 10);
+  if (endptr == cstr)
+    assert(false && "invalid integer");
+  return result;
+}}
+
+
+static void _launch(int gridX, int gridY, int gridZ, {arg_decls}) {{
+  if (gridX*gridY*gridZ <= 0) return;
+
+  auto all_grids = get_all_grids(gridX, gridY, gridZ);
+  size_t N = gridX * gridY * gridZ;
+
+  // single thread for debug
+  if (getBoolEnv("TRITON_SHARED_SINGLE_CORE")) {{
+    for (size_t i = 0; i < N; ++i) {{
+      auto x = all_grids[i][0];
+      auto y = all_grids[i][1];
+      auto z = all_grids[i][2];
+      {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
+                for i, ty in signature.items() if i not in constants and ty[0] == "*")}
+      {kernel_name}({kernel_parameters}
+                    gridX, gridY, gridZ, x, y, z);
+    }}
+    return;
+  }}
+
+  std::optional<int> max_threads = getIntEnv("TRITON_SHARED_MAX_THREADS");
+  int thread_num = max_threads.value_or(omp_get_max_threads());
+  thread_num = std::max(1, std::min(thread_num, omp_get_max_threads()));
+
+  #pragma omp parallel for schedule(static) num_threads(thread_num)
+  for (size_t i = 0; i < N; ++i) {{
+    auto x = all_grids[i][0];
+    auto y = all_grids[i][1];
+    auto z = all_grids[i][2];
+    {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
+              for i, ty in signature.items() if i not in constants and ty[0] == "*")}
+    {kernel_name}({kernel_parameters}
+                  gridX, gridY, gridZ, x, y, z);
+    }}
+  }}
 
 typedef struct _DevicePtrInfo {{
   void *dev_ptr;
@@ -312,6 +369,7 @@ def compile_module(launcher_src, kernel_placeholder_name):
                   if spine_opt_debug:
                     gcc_flags.append("-g")
 
+                  gcc_flags.append("-fopenmp")
                   # Compile it together.
                   subprocess.check_call([
                     "g++", "-std=c++17", *gcc_flags,
