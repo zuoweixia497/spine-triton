@@ -140,6 +140,10 @@ def atanh(arg0, _builder=None):
     return core.tensor(_builder.create_atanh(arg0.handle), arg0.type)
 
 @core.extern
+def atan2(arg0, _builder=None):
+    return core.tensor(_builder.create_atan2(arg0.handle), arg0.type)
+
+@core.extern
 def cbrt(arg0, _builder=None):
     return core.tensor(_builder.create_cbrt(arg0.handle), arg0.type)
 
