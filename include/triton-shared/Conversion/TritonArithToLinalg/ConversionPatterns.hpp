@@ -12,6 +12,7 @@
 #include "triton-shared/Analysis/OpFoldResultUtils.h"
 #include "triton-shared/Analysis/PtrAnalysis.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton-shared/Utils/Utils.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
@@ -350,9 +351,10 @@ public:
     if (!isa<ShapedType>(op.getResult().getType())) {
       auto sMemRef = PtrAnalysis::getScalarMemRef(op.getPtr(), adaptor.getPtr(),
                                                   loc, rewriter);
-      auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
-      auto loadOp = rewriter.create<affine::AffineLoadOp>(
-          op.getLoc(), sMemRef, zeroMap, std::nullopt);
+      auto index =
+          rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0))
+              .getResult();
+      auto loadOp = rewriter.create<memref::LoadOp>(loc, sMemRef, index);
       rewriter.replaceOp(op, loadOp.getResult());
       return success();
     }
@@ -510,9 +512,10 @@ struct StoreConverter : public OpConversionPattern<triton::StoreOp> {
     if (!isa<ShapedType>(val.getType())) {
       auto sMemRef =
           PtrAnalysis::getScalarMemRef(op.getPtr(), ptr, loc, rewriter);
-      auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
-      rewriter.create<affine::AffineStoreOp>(loc, val, sMemRef, zeroMap,
-                                             std::nullopt);
+      auto index =
+          rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0))
+              .getResult();
+      rewriter.create<memref::StoreOp>(loc, val, sMemRef, index);
       rewriter.eraseOp(op);
       return success();
     }
@@ -854,7 +857,7 @@ struct BitcastConverter : public OpConversionPattern<triton::BitcastOp> {
   matchAndRewrite(triton::BitcastOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     // arith::bitcast does not support casting pointers
-    if (isa<triton::PointerType>(op.getSrc().getType())) {
+    if (triton::isPtrTypeLike(op.getType())) {
       return failure();
     }
 
@@ -888,8 +891,9 @@ struct CallConverter : public OpConversionPattern<triton::CallOp> {
 
           if (argsNeed > args.size()) {
             int missing = argsNeed - args.size();
+            int missingArgsStart = argsParent - missing;
             for (int i = 0; i < missing; i++) {
-              args.push_back(parentInputs[args.size()]);
+              args.push_back(parentInputs[missingArgsStart + i]);
             }
           }
         }
@@ -1963,10 +1967,92 @@ class AddPtrConverter : public OpConversionPattern<triton::AddPtrOp> {
         op, op->getResultTypes(), op->getOperands(), outputs, indexingMaps,
         iteratorTypes,
         [&](OpBuilder &builder, Location loc, ValueRange regionArgs) {
-          auto resultTypes = llvm::to_vector<6>(
-              llvm::map_range(op->getResultTypes(), [](Type type) {
-                return cast<TensorType>(type).getElementType();
-              }));
+          auto resultTypes = llvm::map_to_vector(
+            op->getResultTypes(), [](Type type) {
+              return cast<TensorType>(type).getElementType();
+            });
+          auto *scalarOp =
+              builder.create(loc, op->getName().getIdentifier(),
+                             regionArgs.take_front(op->getNumOperands()),
+                             resultTypes, op->getAttrs());
+          builder.create<linalg::YieldOp>(loc, scalarOp->getResults());
+        });
+    return success();
+  }
+};
+
+// Convert triton op X operating on tensors of pointers to a linalg.generic
+// wrapping op X to operate on single pointer.
+// This pattern rewriter is almost identical to AddPtrConverter above, except
+// that the out param for the linalg op is an empty op instead of reusing one
+// of the existing operands. This is because depending on the templatized op,
+// the type of the operands might be different, so we cannot pick a default
+// operand to reuse for all cases.
+template <typename OpType>
+class TensorOpConverter : public OpConversionPattern<OpType> {
+  using OpConversionPattern<OpType>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(OpType op, typename OpType::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto resultTensorType = dyn_cast<RankedTensorType>(op.getResult().getType());
+    if (!resultTensorType) {
+      return failure();
+    }
+    auto rank = resultTensorType.getRank();
+    SmallVector<AffineMap> indexingMaps(
+        /*numResult + numOperands*/ op->getNumResults() + op->getNumOperands(),
+        rewriter.getMultiDimIdentityMap(rank));
+    SmallVector<utils::IteratorType> iteratorTypes(
+        rank, utils::IteratorType::parallel);
+    SmallVector<Value> outputs = {rewriter.create<tensor::EmptyOp>(
+        op->getLoc(), resultTensorType.getShape(),
+        resultTensorType.getElementType())};
+    rewriter.replaceOpWithNewOp<linalg::GenericOp>(
+        op, op->getResultTypes(), op->getOperands(), outputs, indexingMaps,
+        iteratorTypes,
+        [&](OpBuilder &builder, Location loc, ValueRange regionArgs) {
+          auto resultTypes = llvm::map_to_vector(
+            op->getResultTypes(), [](Type type) {
+              return cast<TensorType>(type).getElementType();
+            });
+          auto *scalarOp =
+              builder.create(loc, op->getName().getIdentifier(),
+                             regionArgs.take_front(op->getNumOperands()),
+                             resultTypes, op->getAttrs());
+          builder.create<linalg::YieldOp>(loc, scalarOp->getResults());
+        });
+    return success();
+  }
+};
+
+// Convert triton store op operating on tensors of pointers to a linalg.generic
+// wrapping op a triton store op on single pointer.
+// Note that this linalg.generic op has an empty `out` param.
+class StorePtrToLinalgConverter : public OpConversionPattern<triton::StoreOp> {
+  using OpConversionPattern<triton::StoreOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto storeTensorType = dyn_cast<RankedTensorType>(op.getValue().getType());
+    if (!storeTensorType) {
+      return failure();
+    }
+    auto rank = storeTensorType.getRank();
+    SmallVector<AffineMap> indexingMaps(
+        /*numResult + numOperands*/ op->getNumResults() + op.getNumOperands(),
+        rewriter.getMultiDimIdentityMap(rank));
+    SmallVector<utils::IteratorType> iteratorTypes(
+        rank, utils::IteratorType::parallel);
+    SmallVector<Value> outputs;
+    rewriter.replaceOpWithNewOp<linalg::GenericOp>(
+        op, op->getResultTypes(), op->getOperands(), outputs, indexingMaps,
+        iteratorTypes,
+        [&](OpBuilder &builder, Location loc, ValueRange regionArgs) {
+          auto resultTypes = llvm::map_to_vector(op->getResultTypes(), [](Type type) {
+            return cast<TensorType>(type).getElementType();
+          });
           auto *scalarOp =
               builder.create(loc, op->getName().getIdentifier(),
                              regionArgs.take_front(op->getNumOperands()),

@@ -6,10 +6,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "triton-shared/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton-shared/Utils/Utils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -122,10 +123,6 @@ public:
 
     target.addLegalOp<triton::FuncOp, triton::ReturnOp>();
 
-    target.addDynamicallyLegalOp<triton::BitcastOp>([](triton::BitcastOp op) {
-      return isa<triton::PointerType>(op.getSrc().getType());
-    });
-
     target.addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect>(
         [](Operation *op) {
           // Lower dense constant to linalg.fill
@@ -160,6 +157,28 @@ public:
       target.addDynamicallyLegalOp<triton::AddPtrOp>([](triton::AddPtrOp op) {
         return !isa<ShapedType>(op.getResult().getType());
       });
+    }
+
+    target.addDynamicallyLegalOp<triton::BitcastOp>(
+        [this](triton::BitcastOp op) {
+          if (!tensorPtrToLinalg) {
+            return triton::isPtrTypeLike(op.getType());
+          } else {
+            if (triton::isPtrTypeLike(op.getType())) {
+              return !isa<ShapedType>(op.getType());
+            }
+            return false;
+          }
+        });
+
+    // TODO: Might want to consolidate this flag with addptrToLinalg later.
+    if (tensorPtrToLinalg) {
+      target.addDynamicallyLegalOp<triton::LoadOp, triton::StoreOp,
+                                   triton::IntToPtrOp, triton::PtrToIntOp>(
+          [](auto op) {
+            return !isa<ShapedType>(op->getOperands()[0].getType());
+          });
+      populateTritonTensorPtrConversionPatterns(patterns);
     }
 
     if (!assertToCf) {
@@ -295,6 +314,8 @@ public:
 } // namespace
 
 std::unique_ptr<OperationPass<ModuleOp>>
-triton::createTritonArithToLinalgPass() {
-  return std::make_unique<TritonArithToLinalgPass>();
+triton::createTritonArithToLinalgPass(bool tensorPtrToLinalg) {
+  TritonArithToLinalgOptions options;
+  options.tensorPtrToLinalg = tensorPtrToLinalg;
+  return std::make_unique<TritonArithToLinalgPass>(options);
 }
