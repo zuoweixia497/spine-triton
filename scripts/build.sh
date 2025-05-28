@@ -4,11 +4,16 @@ BUILD_DIR=build-${2}
 
 echo "LLVM_INSTALL_DIR: ${LLVM_INSTALL_DIR}"
 
+HASH_FILE="triton-src-hash.txt"
+COMMIT_ID=$(grep -v '^\s*$\|^\s*#' "$HASH_FILE" | head -n 1 | tr -d '[:space:]')
+
 export TRITON_PLUGIN_DIRS=${PWD}
 
 mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
 
-pushd triton/python
+pushd triton
+
+# git checkout ${COMMIT_ID} 可以省略
 
 TRITON_BUILD_PROTON=false TRITON_BUILD_WITH_CLANG_LLD=false \
 TRITON_BUILD_WITH_CCACHE=false LLVM_ROOT_DIR=${LLVM_INSTALL_DIR} MAX_JOBS=20 \
@@ -24,4 +29,4 @@ elif [ "${2}" = "riscv64" ]; then
     rm -rf ${BUILD_DIR}/local
 fi
 
-cp triton/python/build/cmake.linux-${2}*/third_party/triton_shared/tools/triton-shared-opt/triton-shared-opt ${BUILD_DIR}
+cp triton/build/cmake.linux-${2}*/third_party/triton_shared/tools/triton-shared-opt/triton-shared-opt ${BUILD_DIR}
