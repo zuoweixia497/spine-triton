@@ -482,13 +482,67 @@ private:
     auto targetOffset =
         accumulateTargetOffset(op.getLoc(), op.getMixedOffsets(), rewriter);
     auto staticTargetOffset = getIntAttr(targetOffset);
-    auto resultType = getResultMemrefType(
+    auto loc = op->getLoc();
+    auto mixSizes = op.getMixedSizes();
+    auto mixShapes = op.getMixedShape();
+    auto mixOffsets = op.getMixedOffsets();
+    bool isBlockPtr1 = false;
+    SmallVector<OpFoldResult> actualSizes;
+
+    if(hasConstZero(mixShapes[0])){
+        isBlockPtr1=true;
+      }
+    memref::ReinterpretCastOp castOp;
+
+    if(!isBlockPtr1 && mixSizes.size() == mixOffsets.size() && mixShapes.size() == mixOffsets.size() && mixSizes.size() == mixShapes.size()){
+      mlir::Value actualOffset;
+      for(int32_t i=0; i<mixSizes.size(); i++){
+        auto offset = mixOffsets[i];
+        if (auto value = dyn_cast<mlir::Value>(offset)){
+          if(mlir::Operation *op = value.getDefiningOp()){
+            if(mlir::isa<mlir::arith::IndexCastOp>(op)){
+              actualOffset = value;
+            }
+            else if(mlir::isa<mlir::arith::AddIOp>(op)){
+              if(mlir::isa<mlir::arith::MulIOp>(op->getOperand(0).getDefiningOp())){
+                actualOffset = op->getOperand(0);
+              }else if(mlir::isa<mlir::arith::IndexCastOp>(op->getOperand(1).getDefiningOp())){
+                actualOffset = op->getOperand(1);
+              }
+            }
+            else if(mlir::isa<mlir::arith::MulIOp>(op)){
+              actualOffset = value;
+            }
+          }
+        }
+        auto remaining = subOFRs(mixShapes[i],actualOffset,loc,rewriter);
+        auto actualSize = minOFRs(mixSizes[i],remaining,loc,rewriter);
+        actualSizes.push_back(actualSize);
+      }
+      MemRefType resultType;
+      if(mixSizes.size() == 1){
+        resultType = getResultMemrefType(
+          op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
+          ShapedType::kDynamic);
+      }else if(mixSizes.size() == 2){
+        resultType = getResultMemrefType(
+          op, ShapedType::kDynamic,
+          SmallVector<int64_t>(resultShape.size(), ShapedType::kDynamic),
+          SmallVector<int64_t>{ShapedType::kDynamic,ShapedType::kDynamic});
+      }
+      castOp = rewriter.create<memref::ReinterpretCastOp>(
+          op.getLoc(), resultType, adaptor.getBase(), targetOffset,
+          actualSizes, mixedStrides);
+      // std::cout << "castOp: " << std::endl;
+      // castOp.dump();
+    }else{
+      auto resultType = getResultMemrefType(
         op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
         resultShape);
-
-    auto castOp = rewriter.create<memref::ReinterpretCastOp>(
+      castOp = rewriter.create<memref::ReinterpretCastOp>(
         op.getLoc(), resultType, adaptor.getBase(), targetOffset,
-        op.getMixedSizes(), mixedStrides);
+        mixSizes, mixedStrides);
+    }
 
     rewriter.replaceOp(op, castOp);
 
@@ -731,9 +785,26 @@ private:
         llvm_unreachable("unexpected wraparound type");
       }
     } else {
-      rewriter.create<memref::CopyOp>(loc, ptr, alloc);
+      auto ReinterpretCastOp = cast<memref::ReinterpretCastOp>(ptrDefiningOp);
+      Value dynamicSize = rewriter.create<memref::DimOp>(loc, ptr, 0);
+      int64_t  staticSize = tensorType.getShape()[0];
+      Value staticSizeVal = rewriter.create<arith::ConstantIndexOp>(loc, staticSize);
+      Value cmp = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::ult, dynamicSize, staticSizeVal
+      );
+      auto ifOp = rewriter.create<scf::IfOp>(
+          loc, cmp,
+          [&](OpBuilder &builder, Location loc) {
+              Value c0f32 = builder.create<arith::ConstantFloatOp>(
+                  loc, APFloat(0.0f), builder.getF32Type());
+              builder.create<linalg::FillOp>(
+                  loc, ValueRange{c0f32}, ValueRange{alloc});
+              builder.create<scf::YieldOp>(loc);
+          },
+          /*elseBuilder=*/nullptr
+      );
+        rewriter.create<memref::CopyOp>(loc, ptr, alloc);
     }
-
     Value tensor = rewriter.create<bufferization::ToTensorOp>(
         loc, tensorType, alloc, true /* restrict */, true /* writable */);
     rewriter.replaceOp(op, tensor);
@@ -744,6 +815,9 @@ private:
   LogicalResult rewriteMaskedLoad(tts::LoadOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const {
     assert(op.hasMask());
+    if (!op.getBoundaryCheck().empty()) {
+        return op.emitError("masked load cannot have boundary_check");
+    }
 
     auto loc = op->getLoc();
     auto ptr = adaptor.getPtr();

@@ -294,13 +294,16 @@ def TTS_LoadOp : TTS_Op<"load", [
 
   let arguments = (ins TT_PtrLike:$ptr,
                        Variadic<Index>:$mask_dims,
-                       DenseI64ArrayAttr:$static_mask_dims,
-                       Optional<AnyTypeOf<[TT_Float, TT_Int, TT_Ptr]>>:$other);
+                       DefaultValuedAttr<DenseI64ArrayAttr, "::llvm::ArrayRef<int64_t>{}">:$static_mask_dims,
+                       Optional<AnyTypeOf<[TT_Float, TT_Int, TT_Ptr]>>:$other,
+                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$boundaryCheck
+  );
+
 
   let results = (outs TT_Tensor:$result);
 
   let builders = [
-    OpBuilder<(ins "Value":$ptr, "ArrayRef<OpFoldResult>":$mask_dims, "Value":$other)>,
+    OpBuilder<(ins "Value":$ptr, "ArrayRef<OpFoldResult>":$mask_dims, "Value":$other, "ArrayRef<int32_t>":$boundaryCheck)>,
   ];
 
   let extraClassDeclaration = [{

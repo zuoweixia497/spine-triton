@@ -160,7 +160,7 @@ void MakeGatherScatterTensorPtrOp::build(OpBuilder &b, OperationState &state,
 }
 
 void LoadOp::build(OpBuilder &b, OperationState &state, Value ptr,
-                   ArrayRef<OpFoldResult> dims, Value other) {
+                   ArrayRef<OpFoldResult> dims, Value other, ArrayRef<int32_t> boundaryCheck) {
   SmallVector<int64_t> staticDims;
   SmallVector<Value> dynamicDims;
 
@@ -183,7 +183,7 @@ void LoadOp::build(OpBuilder &b, OperationState &state, Value ptr,
                                     tensorType.getElementType());
   }
   build(b, state, resType, ptr, dynamicDims, b.getDenseI64ArrayAttr(staticDims),
-        other);
+        other, boundaryCheck);
 }
 
 void StoreOp::build(OpBuilder &b, OperationState &state, Value ptr, Value value,

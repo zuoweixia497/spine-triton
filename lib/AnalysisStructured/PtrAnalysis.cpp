@@ -1386,6 +1386,16 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
   OpBuilder builder(op);
   // Analyze the mask operand to determine at runtime the size of the data we
   // are moving.
+
+  ArrayRef<int32_t> boundaryCheck;
+  if (auto boundaryCheckAttr = op->getAttrOfType<DenseI32ArrayAttr>("boundaryCheck")) {
+    boundaryCheck = boundaryCheckAttr.asArrayRef();
+  }else {
+    boundaryCheck = ArrayRef<int32_t>{};
+  }
+
+  Operation* newOp = nullptr;
+
   if (mask) {
     if (mstate.parse(mask, loc, builder).failed()) {
       op->emitRemark("MaskAnalysis failed");
@@ -1400,13 +1410,19 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
     scalarOther = utils::getScalarValue(other, loc, builder);
     if (!scalarOther) {
       op->emitRemark("other value used in masked load produced by "
-                     "unsupported instruction");
+                    "unsupported instruction");
       return failure();
     }
   }
+  newOp = builder.create<tts::LoadOp>(
+    loc,
+    ptr,
+    dims,
+    scalarOther,
+    boundaryCheck
+  );
 
-  auto loadOp = builder.create<tts::LoadOp>(loc, ptr, dims, scalarOther);
-
+  auto loadOp = cast<tts::LoadOp>(newOp);
   LLVM_DEBUG({
     llvm::dbgs() << "creating tts::load:\n";
     loadOp->dump();
