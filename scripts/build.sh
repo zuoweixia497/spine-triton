@@ -22,10 +22,10 @@ popd
 
 rm -rf ${BUILD_DIR}/triton
 if [ "${2}" = "x86_64" ]; then
-    cp -r ${BUILD_DIR}/lib/python*/site-packages/triton ${BUILD_DIR}/
+    cp -r ${BUILD_DIR}/lib/python*/site-packages/triton* ${BUILD_DIR}/
     rm -rf ${BUILD_DIR}/lib
 elif [ "${2}" = "riscv64" ]; then
-    cp -r ${BUILD_DIR}/local/lib/python*/dist-packages/triton ${BUILD_DIR}/
+    cp -r ${BUILD_DIR}/local/lib/python*/dist-packages/triton* ${BUILD_DIR}/
     rm -rf ${BUILD_DIR}/local
 fi
 
