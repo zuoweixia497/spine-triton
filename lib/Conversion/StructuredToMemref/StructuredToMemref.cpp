@@ -499,14 +499,21 @@ private:
       for(int32_t i=0; i<mixSizes.size(); i++){
         auto offset = mixOffsets[i];
         if (auto value = dyn_cast<mlir::Value>(offset)){
-          if(mlir::Operation *op = value.getDefiningOp()){
+          if(mlir::isa<mlir::BlockArgument>(value)){
+            actualOffset = value;
+          }
+          else if(mlir::Operation *op = value.getDefiningOp()){
             if(mlir::isa<mlir::arith::IndexCastOp>(op)){
               actualOffset = value;
             }
             else if(mlir::isa<mlir::arith::AddIOp>(op)){
-              if(mlir::isa<mlir::arith::MulIOp>(op->getOperand(0).getDefiningOp())){
+              if (mlir::isa<mlir::BlockArgument>(op->getOperand(1))) {
+                  actualOffset = op->getOperand(1);
+              }
+              else if(mlir::isa<mlir::arith::MulIOp>(op->getOperand(0).getDefiningOp())){
                 actualOffset = op->getOperand(0);
-              }else if(mlir::isa<mlir::arith::IndexCastOp>(op->getOperand(1).getDefiningOp())){
+              }
+              else if(mlir::isa<mlir::arith::IndexCastOp>(op->getOperand(1).getDefiningOp())){
                 actualOffset = op->getOperand(1);
               }
             }
