@@ -1535,6 +1535,15 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
 
   OpBuilder builder(op);
 
+  ArrayRef<int32_t> boundaryCheck;
+  if (auto boundaryCheckAttr = op->getAttrOfType<DenseI32ArrayAttr>("boundaryCheck")) {
+    boundaryCheck = boundaryCheckAttr.asArrayRef();
+  }else {
+    boundaryCheck = ArrayRef<int32_t>{};
+  }
+
+  Operation* newOp = nullptr;
+
   // Analyze the mask operand to determine at runtime the size of the data
   // are moving.
   if (mask) {
@@ -1545,7 +1554,15 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
     dims = mstate.dims;
   }
 
-  auto storeOp = builder.create<tts::StoreOp>(loc, ptr, val, dims);
+  newOp = builder.create<tts::StoreOp>(
+    loc,
+    ptr,
+    val,
+    dims,
+    boundaryCheck
+  );
+
+  auto storeOp = cast<tts::StoreOp>(newOp);
 
   LLVM_DEBUG({
     llvm::dbgs() << "creating tts::store:\n";

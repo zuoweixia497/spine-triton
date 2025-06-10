@@ -134,7 +134,7 @@ def TTS_MakeGatherScatterTensorPtrOp
   //       not_support = tl.load(b_ptr + ld_offsets)
   //       not_support2 = tl.load(b_ptr + ld_offsets * (offset_m[:,None]+offsets_n[None,:]))
   //       not_support3 = tl.load(b_ptr + (ld_offsets * (offset_m[:,None]+offsets_n[None,:]))[:, :, None] + offset_k[None,None,:])
-  //       
+  //
   //       # Support cases where one dimension is structured while the other is not.
   //       # For example, `offset_m[:, None] // K` is not structured, whereas `offset_n[None, :]` is structured in next line.
   //       supported = tl.load(b_ptr + offset_m[:, None] // K + offset_n[None, :])
@@ -331,10 +331,12 @@ def TTS_StoreOp : TTS_Op<"store", [
   let arguments = (ins TT_PtrLike:$ptr,
                        TT_Tensor:$value,
                        Variadic<Index>:$mask_dims,
-                       DenseI64ArrayAttr:$static_mask_dims);
+                       DefaultValuedAttr<DenseI64ArrayAttr, "::llvm::ArrayRef<int64_t>{}">:$static_mask_dims,
+                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$boundaryCheck
+                       );
 
   let builders = [
-    OpBuilder<(ins "Value":$ptr, "Value":$value, "ArrayRef<OpFoldResult>":$dims)>,
+    OpBuilder<(ins "Value":$ptr, "Value":$value, "ArrayRef<OpFoldResult>":$dims, "ArrayRef<int32_t>":$boundaryCheck)>,
   ];
 
   let extraClassDeclaration = [{

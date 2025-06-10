@@ -187,13 +187,13 @@ void LoadOp::build(OpBuilder &b, OperationState &state, Value ptr,
 }
 
 void StoreOp::build(OpBuilder &b, OperationState &state, Value ptr, Value value,
-                    ArrayRef<OpFoldResult> dims) {
+                    ArrayRef<OpFoldResult> dims, ArrayRef<int32_t> boundaryCheck) {
   SmallVector<int64_t> staticDims;
   SmallVector<Value> dynamicDims;
 
   dispatchIndexOpFoldResults(dims, dynamicDims, staticDims);
 
-  build(b, state, ptr, value, dynamicDims, b.getDenseI64ArrayAttr(staticDims));
+  build(b, state, ptr, value, dynamicDims, b.getDenseI64ArrayAttr(staticDims), boundaryCheck);
 }
 
 LogicalResult GetStructuredStateOp::verify() {
