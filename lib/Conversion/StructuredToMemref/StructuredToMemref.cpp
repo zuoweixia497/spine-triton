@@ -1136,7 +1136,18 @@ public:
       auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
           loc, srcSlice, dstSubview);
       storeOp.setWritable(true);
-    } else {
+    } else if(!op.getBoundaryCheck().empty()){
+      SmallVector<OpFoldResult> sizes;
+      if (auto castOp = ptr.getDefiningOp<memref::ReinterpretCastOp>()){
+        sizes = castOp.getMixedSizes();
+      }
+      auto srcSlice =
+        getExtractSlice(rank, sizes, storeValue, loc, rewriter);
+      auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
+        loc, srcSlice, ptr);
+      storeOp.setWritable(true);
+    }
+    else {
       auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
           loc, storeValue, ptr);
       storeOp.setWritable(true);
