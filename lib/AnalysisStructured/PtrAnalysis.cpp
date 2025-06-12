@@ -29,6 +29,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/LogicalResult.h"
+#include "llvm/ADT/DenseMap.h"
 #include <cassert>
 #include <cstddef>
 #include <optional>
@@ -220,6 +221,9 @@ LogicalResult PtrState::addState(const PtrState &lhsState,
       auto newStride =
           addOFRs(lhsState.strides[i], rhsState.strides[i], loc, builder);
       strides.push_back(newStride);
+      auto newOrig = addOFRs(lhsState.origiOffsets[i], rhsState.origiOffsets[i],
+                             op->getLoc(), builder);
+      origiOffsets.push_back(newOrig);
     } else {
       // Set stride to 1 when not continuous.
       strides.push_back(builder.getIndexAttr(1));
@@ -328,6 +332,8 @@ void PtrState::dump() const {
 
   llvm::dbgs() << "offsets:\n";
   llvm::interleave(offsets, llvm::dbgs(), "\n");
+  llvm::dbgs() << "\norigiOffsets:\n";
+  llvm::interleave(origiOffsets, llvm::dbgs(), "\n");
   llvm::dbgs() << "\nstrides:\n";
   llvm::interleave(strides, llvm::dbgs(), "\n");
   llvm::dbgs() << "\nsizes:\n";
@@ -420,6 +426,7 @@ LogicalResult PtrState::mulState(const PtrState &lhsState,
 }
 
 tts::MakeTensorPtrOp PtrState::createTTSMakeTensorPtrOp(OpBuilder &builder,
+                                                        SmallVector<OpFoldResult> origiOffsets,
                                                         Location loc) {
   SmallVector<int64_t> staticSizes;
   for (size_t i = 0; i < getRank(); i++) {
@@ -427,9 +434,19 @@ tts::MakeTensorPtrOp PtrState::createTTSMakeTensorPtrOp(OpBuilder &builder,
     assert(s.has_value());
     staticSizes.push_back(s.value());
   }
+  SmallVector<OpFoldResult> origiIndexOffsets;
+  for(auto offset : origiOffsets){
+      auto value = dyn_cast<Value>(offset);
+      if(isa<IndexType>(value.getType())){
+        origiIndexOffsets.push_back(value);
+      }else{
+        auto cast_op = builder.create<arith::IndexCastOp>(loc, builder.getIndexType(), value);
+        origiIndexOffsets.push_back(cast_op.getResult());
+      }
+    }
 
   auto op = builder.create<mlir::tts::MakeTensorPtrOp>(
-      loc, source, staticSizes, strides, offsets, shape, order);
+      loc, source, staticSizes, strides, offsets, origiIndexOffsets, shape, order);
   LLVM_DEBUG({
     llvm::dbgs() << "creating tts::make_tensor_ptr:\n";
     op->dump();
@@ -823,8 +840,10 @@ LogicalResult PtrAnalysis::visitOperandConstSplat(arith::ConstantOp op,
   for (size_t i = 0; i < resultType.getShape().size(); i++) {
     if (i == 0) {
       state.offsets.push_back(constOp.getResult());
+      state.origiOffsets.push_back(constOp.getResult());
     } else {
       state.offsets.push_back(builder.getIndexAttr(0));
+      state.origiOffsets.push_back(builder.getIndexAttr(0));
     }
 
     state.sizes.push_back(builder.getIndexAttr(resultType.getShape()[i]));
@@ -846,6 +865,7 @@ LogicalResult PtrAnalysis::visitOperandMakeTPtr(tts::MakeTensorPtrOp makeTPtrOp,
   state.sizes = makeTPtrOp.getMixedSizes();
   state.strides = makeTPtrOp.getMixedStrides();
   state.shape = makeTPtrOp.getMixedShape();
+  state.origiOffsets = makeTPtrOp.getMixedOriginalOffsets();
   state.order = SmallVector<int32_t>(makeTPtrOp.getOrder());
 
   return success();
@@ -877,6 +897,7 @@ PtrAnalysis::visitOperandMakeTensorPtr(triton::MakeTensorPtrOp makeTPtrOp,
 
     auto offsetCst = builder.create<arith::IndexCastOp>(
         loc, builder.getIndexType(), makeTPtrOp.getOffsets()[i]);
+    state.origiOffsets.push_back(offsetCst.getResult());
 
     auto scaledOffset = builder.create<arith::MulIOp>(
         loc, offsetCst.getResult(), strideCst.getResult());
@@ -1037,7 +1058,7 @@ LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
 
   if (isa<RankedTensorType>(op.getPtr().getType())) {
     if (state.isStructured()) {
-      auto maketptrOp = state.createTTSMakeTensorPtrOp(builder, op.getLoc());
+      auto maketptrOp = state.createTTSMakeTensorPtrOp(builder, state.origiOffsets, op.getLoc());
       ptrMap.map(op.getResult(), maketptrOp.getResult());
     } else if (enableMakeGatherScatterTensorPtr) {
       // If there is only one dimension, return failure since there are no
@@ -1058,15 +1079,16 @@ LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
   return success();
 }
 
-LogicalResult PtrAnalysis::rewriteMakeTensorPtrOp(triton::MakeTensorPtrOp op) {
+LogicalResult PtrAnalysis::rewriteMakeTensorPtrOp(triton::MakeTensorPtrOp op, llvm::DenseMap<Value, SmallVector<OpFoldResult>> offsetMap) {
   OpBuilder builder(op);
 
   PtrState state;
   if (visitOperandMakeTensorPtr(op, state, op.getLoc(), builder).failed()) {
     return failure();
   }
+  SmallVector<OpFoldResult> origiOffsets = offsetMap[state.source];
 
-  auto maketptrOp = state.createTTSMakeTensorPtrOp(builder, op.getLoc());
+  auto maketptrOp = state.createTTSMakeTensorPtrOp(builder, origiOffsets, op.getLoc());
   knownPtrs[op.getResult()] = state;
   ptrMap.map(op.getResult(), maketptrOp.getResult());
   return success();
@@ -1087,8 +1109,9 @@ LogicalResult PtrAnalysis::rewriteAdvanceOp(triton::AdvanceOp op) {
   auto incrementOffsets = op.getOffsets();
 
   SmallVector<OpFoldResult> newOffsets;
-  for (auto [increment, offset, stride] :
-       llvm::zip(incrementOffsets, state.offsets, state.strides)) {
+  SmallVector<OpFoldResult> origiOffsets;
+  for (auto [increment, offset, origiOffset, stride] :
+       llvm::zip(incrementOffsets, state.offsets, state.origiOffsets, state.strides)) {
     Value offsetValue;
     if (auto offsetIntAttr = getIntAttr(offset)) {
       auto constOp = builder.create<arith::ConstantOp>(
@@ -1104,13 +1127,29 @@ LogicalResult PtrAnalysis::rewriteAdvanceOp(triton::AdvanceOp op) {
     auto addOp =
         builder.create<arith::AddIOp>(loc, mulOp.getResult(), offsetValue);
     newOffsets.push_back(addOp.getResult());
+
+    Value origiOffsetValue;
+    if (auto origiOffsetIntAttr = getIntAttr(origiOffset)) {
+      auto constOp = builder.create<arith::ConstantOp>(
+          loc, builder.getIndexAttr(origiOffsetIntAttr.value()));
+      origiOffsetValue = constOp.getResult();
+    } else {
+      origiOffsetValue = cast<Value>(origiOffset);
+    }
+
+    auto origiOffsetAddop =
+        builder.create<arith::AddIOp>(loc, castOp.getResult(), origiOffsetValue);
+    origiOffsets.push_back(origiOffsetAddop.getResult());
   }
 
   state.offsets = SmallVector<OpFoldResult>(newOffsets);
-
-  auto newOp = state.createTTSMakeTensorPtrOp(builder, loc);
+  state.origiOffsets = SmallVector<OpFoldResult>(origiOffsets);
+  auto newOp = state.createTTSMakeTensorPtrOp(builder, state.origiOffsets, loc);
   knownPtrs[op.getResult()] = state;
   ptrMap.map(op.getResult(), newOp.getResult());
+  // knownPtrs[op.getPtr()] = state;
+  // ptrMap.map(op.getPtr(), newOp.getResult());
+  // ptrMap.lookupOrNull(op.getPtr());
   return success();
 }
 
@@ -1191,6 +1230,9 @@ PtrState PtrAnalysis::reconcileLoopPtrState(
   } else {
     for (auto &offset : newState.offsets) {
       offset = getReplacementVal(forOp, cnt++);
+    }
+    for (auto &origiOffset : newState.origiOffsets) {
+      origiOffset = getReplacementVal(forOp, cnt++);
     }
 
     for (auto &stride : newState.strides) {
@@ -1277,7 +1319,7 @@ LogicalResult PtrAnalysis::rewriteForOp(scf::ForOp op) {
     if (isPointerType(arg.getType())) {
       if (state->getRank() != 0) {
         OpBuilder builder(op.getRegion());
-        auto maketptrOp = state->createTTSMakeTensorPtrOp(builder, op.getLoc());
+        auto maketptrOp = state->createTTSMakeTensorPtrOp(builder, state->origiOffsets, op.getLoc());
         ptrMap.map(arg, maketptrOp.getResult());
       }
     }
@@ -1316,8 +1358,10 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
   Value remappedValue =
       ptrMap.contains(tritonValue) ? ptrMap.lookup(tritonValue) : tritonValue;
 
-  SmallVector<Value> replacements{remappedValue};
+  SmallVector<Value> replacements;
   OpBuilder builder(op);
+
+  replacements.push_back(remappedValue);
 
   if (state.getRank() == 0) {
     // For scalar pointers, the scalar contains the offset and is the only
@@ -1333,6 +1377,17 @@ PtrAnalysis::rewriteGetStructuredStateOp(tts::GetStructuredStateOp op) {
     }
   } else {
     for (auto [j, s] : llvm::enumerate(state.offsets)) {
+      auto sIntAttr = getIntAttr(s);
+      if (sIntAttr) {
+        auto constOp = builder.create<arith::ConstantOp>(
+            op.getLoc(), builder.getIndexAttr(sIntAttr.value()));
+        replacements.push_back(constOp.getResult());
+      } else {
+        replacements.push_back(cast<Value>(s));
+      }
+    }
+
+    for (auto [j, s] : llvm::enumerate(state.origiOffsets)) {
       auto sIntAttr = getIntAttr(s);
       if (sIntAttr) {
         auto constOp = builder.create<arith::ConstantOp>(
@@ -1579,6 +1634,21 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
     rootOp->dump();
   });
 
+  llvm::DenseMap<Value, SmallVector<OpFoldResult>> offsetMap;
+
+  rootOp->walk<WalkOrder::PreOrder>([&](Operation *op) {
+    if (auto makeTPtrOp = dyn_cast<triton::MakeTensorPtrOp>(op)) {
+      Value source = makeTPtrOp.getBase();
+      auto offsets = makeTPtrOp.getOffsets();
+      SmallVector<OpFoldResult> foldOffsets;
+      foldOffsets.reserve(offsets.size());
+      for (mlir::Value offset : offsets) {
+        foldOffsets.push_back(offset);
+      }
+      offsetMap[source] = foldOffsets;
+    }
+  });
+
   rootOp->walk<WalkOrder::PreOrder>([&](Operation *op) {
     if (op == rootOp) {
       return WalkResult::advance();
@@ -1591,7 +1661,7 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
           return WalkResult::advance();
         })
         .Case<triton::MakeTensorPtrOp>([&](auto maketptr) {
-          if (rewriteMakeTensorPtrOp(maketptr).failed()) {
+          if (rewriteMakeTensorPtrOp(maketptr, offsetMap).failed()) {
             maketptr->emitRemark(
                 "PtrAnalysis: Failed to rewrite MakeTensorPtrOp");
           }

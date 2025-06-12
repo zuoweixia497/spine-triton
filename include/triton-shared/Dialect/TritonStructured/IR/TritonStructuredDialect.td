@@ -44,6 +44,7 @@ def TTS_MakeTensorPtrOp
   //          memory; if order is not present, it signifies the boundary by which addresses
   //          wraps around (constant zero indicates no wrap-around in the corresponding dimension).
   // offsets: Offset of the block along each dimension from base.
+  // originalOffsets: Original offsets before any adjustment (e.g. for padding)
   // result:  If order is present, this op produces a pointer to a tensor; otherwise,
   //          it produces a tensor of pointers.
 
@@ -51,9 +52,11 @@ def TTS_MakeTensorPtrOp
                        DenseI64ArrayAttr:$sizes,
                        Variadic<Index>:$strides,
                        Variadic<Index>:$offsets,
+                       Variadic<Index>:$originalOffsets,
                        Variadic<Index>:$shape,
                        DenseI64ArrayAttr:$static_strides,
                        DenseI64ArrayAttr:$static_offsets,
+                       DenseI64ArrayAttr:$static_originalOffsets,
                        DenseI64ArrayAttr:$static_shape,
                        DenseI32ArrayAttr:$order);
 
@@ -65,6 +68,8 @@ def TTS_MakeTensorPtrOp
     custom<DynamicIndexList>($strides, $static_strides)
     `` `,` `offsets` `` `:`
     custom<DynamicIndexList>($offsets, $static_offsets)
+    `` `,` `originalOffsets` `` `:`
+    custom<DynamicIndexList>($originalOffsets, $static_originalOffsets)
     `` `,` `shape` `` `:`
     custom<DynamicIndexList>($shape, $static_shape)
     `` `,` `order` `` `:` $order
@@ -79,6 +84,7 @@ def TTS_MakeTensorPtrOp
       "ArrayRef<int64_t>":$sizes,
       "ArrayRef<OpFoldResult>":$strides,
       "ArrayRef<OpFoldResult>":$offsets,
+      "ArrayRef<OpFoldResult>":$originalOffsets,
       "ArrayRef<OpFoldResult>":$shape,
       "ArrayRef<int32_t>":$order)>,
   ];
@@ -97,6 +103,10 @@ def TTS_MakeTensorPtrOp
     SmallVector<OpFoldResult> getMixedOffsets() {
       Builder b(getContext());
       return ::mlir::getMixedValues(getStaticOffsets(), getOffsets(), b);
+    }
+    SmallVector<OpFoldResult> getMixedOriginalOffsets() {
+      Builder b(getContext());
+      return ::mlir::getMixedValues(getStaticOriginalOffsets(), getOriginalOffsets(), b);
     }
     SmallVector<OpFoldResult> getMixedShape() {
       Builder b(getContext());
@@ -220,20 +230,20 @@ def TTS_MakeGatherScatterTensorPtrOp
 
 def TTS_GetStructuredStateOp : TTS_Op<"get_structured_state", [AttrSizedResultSegments, Pure]> {
   let summary = "Placeholder for the structured pointer states computed during PtrAnalysis.";
-  let description = "Used to pass the offsets and strides to scf.for op to simplify IR rewrites.";
+  let description = "Used to pass the offsets, origiOffsets, and strides to scf.for op to simplify IR rewrites.";
 
   let arguments = (ins AnyTypeOf<[TT_PtrLike, I32Tensor]>:$input);
-  let results = (outs AnyTypeOf<[TT_PtrLike, I32Tensor]>:$structured, Variadic<Index>:$offsets, Variadic<Index>:$strides);
+  let results = (outs AnyTypeOf<[TT_PtrLike, I32Tensor]>:$structured, Variadic<Index>:$offsets, Variadic<Index>:$origiOffsets, Variadic<Index>:$strides);
 
   let builders = [
     OpBuilder<(ins "Value":$input)>,
   ];
 
   let extraClassDeclaration = [{
-    static std::optional<std::pair<SmallVector<Type>, SmallVector<Type>>>
+    static std::optional<std::tuple<SmallVector<Type>, SmallVector<Type>, SmallVector<Type>>>
       getOffsetAndStrideTypes(MLIRContext *context, Type ptrLikeType);
 
-    static std::optional<std::pair<int32_t, int32_t>>
+    static std::optional<std::tuple<int32_t, int32_t, int32_t>>
       getOffsetAndStrideSegmentSizes(Type ptrLikeType);
   }];
 

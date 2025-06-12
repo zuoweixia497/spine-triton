@@ -103,12 +103,14 @@ void MakeTensorPtrOp::build(OpBuilder &b, OperationState &state, Value base,
                             ArrayRef<int64_t> sizes,
                             ArrayRef<OpFoldResult> strides,
                             ArrayRef<OpFoldResult> offsets,
+                            ArrayRef<OpFoldResult> originalOffsets,
                             ArrayRef<OpFoldResult> shape,
                             ArrayRef<int32_t> order) {
-  SmallVector<int64_t> staticStrides, staticOffsets, staticShape;
-  SmallVector<Value> dynamicStrides, dynamicOffsets, dynamicShape;
+  SmallVector<int64_t> staticStrides, staticOffsets, staticOriginalOffsets, staticShape;
+  SmallVector<Value> dynamicStrides, dynamicOffsets, dynamicOriginalOffsets, dynamicShape;
 
   dispatchIndexOpFoldResults(offsets, dynamicOffsets, staticOffsets);
+  dispatchIndexOpFoldResults(originalOffsets, dynamicOriginalOffsets, staticOriginalOffsets);
   dispatchIndexOpFoldResults(strides, dynamicStrides, staticStrides);
   dispatchIndexOpFoldResults(shape, dynamicShape, staticShape);
 
@@ -125,9 +127,10 @@ void MakeTensorPtrOp::build(OpBuilder &b, OperationState &state, Value base,
                                        basePtr.getAddressSpace());
   }
 
-  build(b, state, resType, base, sizes, dynamicStrides, dynamicOffsets,
+  build(b, state, resType, base, sizes, dynamicStrides, dynamicOffsets, dynamicOriginalOffsets,
         dynamicShape, b.getDenseI64ArrayAttr(staticStrides),
         b.getDenseI64ArrayAttr(staticOffsets),
+        b.getDenseI64ArrayAttr(staticOriginalOffsets),
         b.getDenseI64ArrayAttr(staticShape), order);
 }
 
@@ -204,7 +207,7 @@ LogicalResult GetStructuredStateOp::verify() {
     return failure();
   }
 
-  auto [expectedOffsetTypes, expectedStrideTypes] =
+  auto [expectedOffsetTypes, expectedOrigTypes, expectedStrideTypes] =
       *expectedOffsetAndStrideTypes;
 
   return success(expectedOffsetTypes.size() == getOffsets().size() &&
@@ -219,27 +222,30 @@ void GetStructuredStateOp::build(OpBuilder &b, OperationState &state,
 
   // Builder cannot fail, so we default to empty offset and stride types.
   // The invalid op will be rejected by the verifier later.
-  auto [offsetTypes, strideTypes] =
+  auto [offsetTypes, OrigoffsetTypes, strideTypes] =
       getOffsetAndStrideTypes(b.getContext(), type)
-          .value_or(std::make_pair(SmallVector<Type>{}, SmallVector<Type>{}));
+          .value_or(std::make_tuple(SmallVector<Type>{}, SmallVector<Type>{}, SmallVector<Type>{}));
 
-  build(b, state, val.getType(), offsetTypes, strideTypes, val);
+  build(b, state, val.getType(), offsetTypes, OrigoffsetTypes, strideTypes, val);
 }
 
-std::optional<std::pair<SmallVector<Type>, SmallVector<Type>>>
+std::optional<std::tuple<SmallVector<Type>, SmallVector<Type>, SmallVector<Type>>>
 GetStructuredStateOp::getOffsetAndStrideTypes(MLIRContext *context, Type type) {
   auto sizes = getOffsetAndStrideSegmentSizes(type);
   if (!sizes.has_value()) {
     return std::nullopt;
   }
-  return std::make_pair(
-      SmallVector<Type>(sizes->first, IndexType::get(context)),
-      SmallVector<Type>(sizes->second, IndexType::get(context)));
+  auto [offsetSize, origiSize, strideSize] = *sizes;
+  return std::make_tuple(
+      SmallVector<Type>(offsetSize, IndexType::get(context)),
+      SmallVector<Type>(origiSize, IndexType::get(context)),
+      SmallVector<Type>(strideSize, IndexType::get(context)));
 }
 
-std::optional<std::pair<int32_t, int32_t>>
+std::optional<std::tuple<int32_t, int32_t, int32_t>>
 GetStructuredStateOp::getOffsetAndStrideSegmentSizes(Type type) {
   int32_t offsetSegmentSize = 0;
+  int32_t origiOffsetSegmentSize = 0;
   int32_t strideSegmentSize = 0;
 
   if (auto tensorType = llvm::dyn_cast<RankedTensorType>(type)) {
@@ -249,13 +255,13 @@ GetStructuredStateOp::getOffsetAndStrideSegmentSizes(Type type) {
       // We only care about tensor of index / int (in addition to pointer type)
       // because only values of int and index type can potentially be part of a
       // pointer arithmetic sequence.
-      offsetSegmentSize = strideSegmentSize = tensorType.getRank();
+      offsetSegmentSize = origiOffsetSegmentSize = strideSegmentSize = tensorType.getRank();
     } else if (auto ptrType =
                    dyn_cast<triton::PointerType>(tensorType.getElementType())) {
       // Unstructured pointers (tensor<!tt.ptr<type>>)
       // Each tensor of rank k gets k values for its offsets and k values for
       // its strides, all of which has Index type.
-      offsetSegmentSize = strideSegmentSize = tensorType.getRank();
+      offsetSegmentSize = origiOffsetSegmentSize = strideSegmentSize = tensorType.getRank();
     }
   }
   // Block pointers (!tt.ptr<tensor<type>> or !tt.ptr<type>)
@@ -264,17 +270,17 @@ GetStructuredStateOp::getOffsetAndStrideSegmentSizes(Type type) {
             llvm::dyn_cast<RankedTensorType>(ptrType.getPointeeType())) {
       // Each tensor of rank k gets k values for its offsets and k values for
       // its strides, all of which has Index type.
-      offsetSegmentSize = strideSegmentSize = tensorType.getRank();
+      offsetSegmentSize = origiOffsetSegmentSize = strideSegmentSize = tensorType.getRank();
     } else {
       // The only relevant state that can be updated in loops for scalar
       // pointers are offset. No need to include stride here.
-      offsetSegmentSize = 1;
+      offsetSegmentSize = origiOffsetSegmentSize = 1;
     }
   } else {
     return std::nullopt;
   }
 
-  return std::make_pair(offsetSegmentSize, strideSegmentSize);
+  return std::make_tuple(offsetSegmentSize, origiOffsetSegmentSize, strideSegmentSize);
 }
 
 } // namespace tts

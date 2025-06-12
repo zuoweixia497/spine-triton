@@ -54,9 +54,10 @@ class TritonToStructuredPass
   using TritonToStructuredBase<TritonToStructuredPass>::TritonToStructuredBase;
   static TupleType getStructuredStateTupleType(MLIRContext *context, Type t) {
     SmallVector<Type> tupleTypes{t};
-    auto [offsetTypes, strideTypes] =
+    auto [offsetTypes, OrigoffsetTypes, strideTypes] =
         *tts::GetStructuredStateOp::getOffsetAndStrideTypes(context, t);
     tupleTypes.append(offsetTypes);
+    tupleTypes.append(OrigoffsetTypes);
     tupleTypes.append(strideTypes);
     return TupleType::get(context, tupleTypes);
   }

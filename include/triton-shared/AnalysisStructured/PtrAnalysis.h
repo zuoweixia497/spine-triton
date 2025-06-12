@@ -51,6 +51,7 @@ const extern std::string ptrAnalysisAttr;
 // of all the scalar strides.
 struct PtrState {
   SmallVector<OpFoldResult> offsets;
+  SmallVector<OpFoldResult> origiOffsets;
   SmallVector<OpFoldResult> sizes;
   SmallVector<OpFoldResult> strides;
   SmallVector<OpFoldResult> shape;
@@ -119,6 +120,7 @@ struct PtrState {
                          Operation *op, OpBuilder &builder);
 
   tts::MakeTensorPtrOp createTTSMakeTensorPtrOp(OpBuilder &builder,
+                                                SmallVector<OpFoldResult> origiOffsets,
                                                 Location loc);
   tts::MakeGatherScatterTensorPtrOp
   createTTSMakeGatherScatterTensorPtrOp(OpBuilder &builder, Location loc);
@@ -310,7 +312,7 @@ public:
   // PtrState for knownPtrs.
   LogicalResult rewriteAddptrOp(triton::AddPtrOp op);
 
-  LogicalResult rewriteMakeTensorPtrOp(triton::MakeTensorPtrOp op);
+  LogicalResult rewriteMakeTensorPtrOp(triton::MakeTensorPtrOp op, llvm::DenseMap<Value, SmallVector<OpFoldResult>> offsetMap);
 
   LogicalResult rewriteAdvanceOp(triton::AdvanceOp op);
 

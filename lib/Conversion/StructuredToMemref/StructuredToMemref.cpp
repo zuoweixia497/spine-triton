@@ -483,9 +483,10 @@ private:
         accumulateTargetOffset(op.getLoc(), op.getMixedOffsets(), rewriter);
     auto staticTargetOffset = getIntAttr(targetOffset);
     auto loc = op->getLoc();
-    auto mixSizes = op.getMixedSizes();
     auto mixShapes = op.getMixedShape();
+    auto mixSizes = op.getMixedSizes();
     auto mixOffsets = op.getMixedOffsets();
+    auto mixOrigOffsets = op.getMixedOriginalOffsets();
     bool isBlockPtr1 = false;
     SmallVector<OpFoldResult> actualSizes;
 
@@ -495,33 +496,9 @@ private:
     memref::ReinterpretCastOp castOp;
 
     if(!isBlockPtr1 && mixSizes.size() == mixOffsets.size() && mixShapes.size() == mixOffsets.size() && mixSizes.size() == mixShapes.size()){
-      mlir::Value actualOffset;
       for(int32_t i=0; i<mixSizes.size(); i++){
         auto offset = mixOffsets[i];
-        if (auto value = dyn_cast<mlir::Value>(offset)){
-          if(mlir::isa<mlir::BlockArgument>(value)){
-            actualOffset = value;
-          }
-          else if(mlir::Operation *op = value.getDefiningOp()){
-            if(mlir::isa<mlir::arith::IndexCastOp>(op)){
-              actualOffset = value;
-            }
-            else if(mlir::isa<mlir::arith::AddIOp>(op)){
-              if (mlir::isa<mlir::BlockArgument>(op->getOperand(1))) {
-                  actualOffset = op->getOperand(1);
-              }
-              else if(mlir::isa<mlir::arith::MulIOp>(op->getOperand(0).getDefiningOp())){
-                actualOffset = op->getOperand(0);
-              }
-              else if(mlir::isa<mlir::arith::IndexCastOp>(op->getOperand(1).getDefiningOp())){
-                actualOffset = op->getOperand(1);
-              }
-            }
-            else if(mlir::isa<mlir::arith::MulIOp>(op)){
-              actualOffset = value;
-            }
-          }
-        }
+        auto actualOffset = mixOrigOffsets[i];
         auto remaining = subOFRs(mixShapes[i],actualOffset,loc,rewriter);
         auto actualSize = minOFRs(mixSizes[i],remaining,loc,rewriter);
         actualSizes.push_back(actualSize);
@@ -793,24 +770,17 @@ private:
       }
     } else {
       auto ReinterpretCastOp = cast<memref::ReinterpretCastOp>(ptrDefiningOp);
-      Value dynamicSize = rewriter.create<memref::DimOp>(loc, ptr, 0);
-      int64_t  staticSize = tensorType.getShape()[0];
-      Value staticSizeVal = rewriter.create<arith::ConstantIndexOp>(loc, staticSize);
-      Value cmp = rewriter.create<arith::CmpIOp>(
-          loc, arith::CmpIPredicate::ult, dynamicSize, staticSizeVal
-      );
-      auto ifOp = rewriter.create<scf::IfOp>(
-          loc, cmp,
-          [&](OpBuilder &builder, Location loc) {
-              Value c0f32 = builder.create<arith::ConstantFloatOp>(
-                  loc, APFloat(0.0f), builder.getF32Type());
-              builder.create<linalg::FillOp>(
-                  loc, ValueRange{c0f32}, ValueRange{alloc});
-              builder.create<scf::YieldOp>(loc);
-          },
-          /*elseBuilder=*/nullptr
-      );
-        rewriter.create<memref::CopyOp>(loc, ptr, alloc);
+      auto sizes = ReinterpretCastOp.getMixedSizes();
+      Value c0f32 = rewriter.create<arith::ConstantFloatOp>(
+                  loc, APFloat(0.0f), rewriter.getF32Type());
+
+      fillWithValue(loc, alloc, c0f32, tensorType.getShape(),
+                    std::move(sizes), tensorType.getShape(), rewriter);
+      memref::SubViewOp srcSubview =
+          getSubview(tensorType.getRank(), sizes, ptr, loc, rewriter);
+      memref::SubViewOp dstSubview =
+          getSubview(tensorType.getRank(), sizes, alloc, loc, rewriter);
+      rewriter.create<memref::CopyOp>(loc, srcSubview, dstSubview);
     }
     Value tensor = rewriter.create<bufferization::ToTensorOp>(
         loc, tensorType, alloc, true /* restrict */, true /* writable */);
@@ -1143,8 +1113,9 @@ public:
       }
       auto srcSlice =
         getExtractSlice(rank, sizes, storeValue, loc, rewriter);
+      auto dstSubview = getSubview(rank, sizes, ptr, loc, rewriter);
       auto storeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
-        loc, srcSlice, ptr);
+        loc, srcSlice, dstSubview);
       storeOp.setWritable(true);
     }
     else {
