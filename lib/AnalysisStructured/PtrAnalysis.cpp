@@ -221,9 +221,6 @@ LogicalResult PtrState::addState(const PtrState &lhsState,
       auto newStride =
           addOFRs(lhsState.strides[i], rhsState.strides[i], loc, builder);
       strides.push_back(newStride);
-      auto newOrig = addOFRs(lhsState.origiOffsets[i], rhsState.origiOffsets[i],
-                             op->getLoc(), builder);
-      origiOffsets.push_back(newOrig);
     } else {
       // Set stride to 1 when not continuous.
       strides.push_back(builder.getIndexAttr(1));
@@ -435,15 +432,26 @@ tts::MakeTensorPtrOp PtrState::createTTSMakeTensorPtrOp(OpBuilder &builder,
     staticSizes.push_back(s.value());
   }
   SmallVector<OpFoldResult> origiIndexOffsets;
-  for(auto offset : origiOffsets){
-      auto value = dyn_cast<Value>(offset);
-      if(isa<IndexType>(value.getType())){
+  for (auto offset : origiOffsets) {
+    if (auto value = dyn_cast<Value>(offset)) {
+      if (isa<IndexType>(value.getType())) {
         origiIndexOffsets.push_back(value);
-      }else{
-        auto cast_op = builder.create<arith::IndexCastOp>(loc, builder.getIndexType(), value);
+      } else {
+        auto cast_op = builder.create<arith::IndexCastOp>(
+            loc, builder.getIndexType(), value);
         origiIndexOffsets.push_back(cast_op.getResult());
       }
+    } else if (auto attr = dyn_cast<Attribute>(offset)){
+        if (auto intAttr = dyn_cast<IntegerAttr>(attr)){
+          auto constOp = builder.create<arith::ConstantOp>(
+              loc, builder.getIndexType(), intAttr);
+          origiIndexOffsets.push_back(constOp.getResult());
+      }
     }
+    else {
+        llvm_unreachable("Unsupported offset type in createTTSMakeTensorPtrOp");
+      }
+  }
 
   auto op = builder.create<mlir::tts::MakeTensorPtrOp>(
       loc, source, staticSizes, strides, offsets, origiIndexOffsets, shape, order);
@@ -541,7 +549,12 @@ LogicalResult PtrAnalysis::visitOperandAdd(arith::AddIOp addOp, PtrState &state,
       return failure();
   }
 
-  return state.addState(lhsState, rhsState, addOp, builder);
+  if (failed(state.addState(lhsState, rhsState, addOp, builder))) {
+    return failure();
+  }
+  state.origiOffsets = state.offsets;
+
+  return success();
 }
 
 LogicalResult PtrAnalysis::visitOperandMul(arith::MulIOp mulOp, PtrState &state,
@@ -576,7 +589,12 @@ LogicalResult PtrAnalysis::visitOperandMul(arith::MulIOp mulOp, PtrState &state,
       return failure();
   }
 
-  return state.mulState(lhsState, rhsState, mulOp, builder);
+  if (failed(state.mulState(lhsState, rhsState, mulOp, builder))) {
+    return failure();
+  }
+  state.origiOffsets = state.offsets;
+
+  return success();
 }
 
 LogicalResult PtrAnalysis::visitOperandRem(arith::RemSIOp remOp,
@@ -648,6 +666,7 @@ LogicalResult PtrAnalysis::visitOperandRem(arith::RemSIOp remOp,
     remOp->emitRemark("PtrAnalysis: unsupported modulo pattern");
     return failure();
   }
+  state.origiOffsets = state.offsets;
   return success();
 }
 
@@ -673,6 +692,7 @@ LogicalResult PtrAnalysis::visitOperandMakeRange(triton::MakeRangeOp rangeOp,
          "Expect make_range op to always return tensor of stride 1");
 
   state.offsets.push_back(builder.getIndexAttr(start));
+  state.origiOffsets.push_back(builder.getIndexAttr(start));
   state.sizes.push_back(builder.getIndexAttr(shape[0]));
   state.strides.push_back(builder.getIndexAttr(stride));
   state.shape.push_back(builder.getIndexAttr(0));
@@ -698,6 +718,7 @@ PtrAnalysis::visitOperandExpandDims(triton::ExpandDimsOp expandDimsOp,
 
   // insert dimension info
   state.offsets.insert(state.offsets.begin() + axis, builder.getIndexAttr(0));
+  state.origiOffsets = state.offsets;
   state.sizes.insert(state.sizes.begin() + axis, builder.getIndexAttr(1));
   state.strides.insert(state.strides.begin() + axis, builder.getIndexAttr(0));
   state.shape.insert(state.shape.begin() + axis, builder.getIndexAttr(0));
@@ -745,6 +766,7 @@ PtrAnalysis::visitOperandBroadcast(triton::BroadcastOp broadcastOp,
       llvm_unreachable("unexpected dimensions used in broadcast");
     }
   }
+  state.origiOffsets = state.offsets;
   return success();
 }
 
@@ -784,7 +806,7 @@ LogicalResult PtrAnalysis::visitOperandSplat(triton::SplatOp splatOp,
                         "has modulo and rank > 2");
     return failure();
   }
-
+  state.origiOffsets = state.offsets;
   return success();
 }
 
@@ -815,7 +837,12 @@ LogicalResult PtrAnalysis::visitOperandAddptr(triton::AddPtrOp addptrOp,
   assert(ptrState.getRank() == offsetState.getRank() &&
          "ptr and offset field should have the same rank");
 
-  return state.addState(ptrState, offsetState, addptrOp, builder);
+  if (failed(state.addState(ptrState, offsetState, addptrOp, builder))) {
+  return failure();
+  }
+
+  state.origiOffsets = ptrState.offsets;
+  return success();
 }
 
 LogicalResult PtrAnalysis::visitOperandConstSplat(arith::ConstantOp op,
@@ -1234,7 +1261,6 @@ PtrState PtrAnalysis::reconcileLoopPtrState(
     for (auto &origiOffset : newState.origiOffsets) {
       origiOffset = getReplacementVal(forOp, cnt++);
     }
-
     for (auto &stride : newState.strides) {
       stride = getReplacementVal(forOp, cnt++);
     }
