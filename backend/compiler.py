@@ -269,19 +269,6 @@ class CPUBackend(BaseBackend):
         return {}
 
 def get_cache_sizes():
-    try:
-        # Get CPU information using lscpu
-        output = subprocess.check_output("lscpu", shell=True).decode()
-    except Exception as e:
-        print(f"Command execution failed: {e}")
-        return [0, 0, 0]  # Return default values on failure
-
-    # Regex patterns for cache levels (order: L1, L2, L3)
-    patterns = {
-        "L1": r"L1\S*\s*cache:\s*(\d+)\s*([KMG]?i?B?)",  # Match L1, L1d, L1i, etc.
-        "L2": r"L2\s*cache:\s*(\d+)\s*([KMG]?i?B?)",
-        "L3": r"L3\s*cache:\s*(\d+)\s*([KMG]?i?B?)"
-    }
 
     unit_map = {
         'k': 1024,
@@ -290,25 +277,30 @@ def get_cache_sizes():
         '' : 1
     }
 
+    cache_cmd = {
+        "L1": "lscpu | grep -E 'L1d|Cache|一级数据' | grep -v 'combined' | awk '{print $3, $4, $5, $6}'",
+        "L2": "lscpu | grep -E 'L2|Cache|二级数据' | grep -v 'combined' | awk '{print $3, $4, $5, $6}'",
+        "L3": "lscpu | grep -E 'L3|Cache|三级数据' | grep -v 'combined' | awk '{print $3, $4, $5, $6}'",
+    }
+
     results = []
     for cache_level in ["L1", "L2", "L3"]:  # Enforce order
-        match = re.search(patterns[cache_level], output, re.IGNORECASE)
+        try:
+            output = subprocess.check_output(cache_cmd[cache_level], shell=True).decode()
+        except Exception as e:
+            print(f"Command execution failed: {e}")
+            results.append(0)
+            continue
+
+        match = re.search(r'(\d+)\s*([KMG]?i?B)\s*\((\d+)\s*instances\)', output)
         if not match:
             results.append(0)
             continue
 
-        try:
-            # Extract value and unit
-            value = int(match.group(1))
-            unit = match.group(2).lower().rstrip('ib')  # Remove trailing i/B
+        total_size, unit, instances = match.groups()
+        unit = unit.lower().rstrip('ib')
+        bytes_per_instance = (int(total_size) * unit_map[unit]) // int(instances)
+        results.append(bytes_per_instance)
 
-            # Convert to bytes
-            base_unit = unit.rstrip('b').rstrip('i') or ''
-            multiplier = unit_map.get(base_unit[0].lower() if base_unit else '', 1)
-            results.append(value * multiplier)
-
-        except (ValueError, KeyError, IndexError) as e:
-            print(f"Failed to parse {cache_level} cache: {e}")
-            results.append(0)
 
     return results  # Format: [L1_size, L2_size, L3_size] in bytes
