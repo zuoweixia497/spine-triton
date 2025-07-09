@@ -51,7 +51,11 @@ def _ttir_to_ttsharedir(mod):
         Path(src_path).write_text(ttir_code)
         _dump_ir_if_needed([src_path])
         triton_shared_opt_path = _get_triton_shared_opt_path()
-        subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-linalg-experimental", "--mlir-print-debuginfo", "-o", dst_path])
+        # subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-linalg-experimental", "--mlir-print-debuginfo", "-o", dst_path])
+        subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-structured", "--cse", "--canonicalize", "--triton-to-unstructured",
+                               "--triton-arith-to-linalg", "--structured-to-memref", "--unstructured-to-memref", "--triton-ptr-to-memref",
+                               "--triton-to-ptr", "--add-target-description", "--reconcile-unrealized-casts", "--reconcile-ptr-casts",
+                               "--reconcile-llvmptr-casts", "--cse", "--canonicalize", "-o", dst_path])
         return Path(dst_path).read_text()
 
 

@@ -30,13 +30,18 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/MathExtras.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "TypeConverter.hpp"
+
 #include <numeric>
 #include <optional>
 #include <type_traits>
 
-using namespace mlir;
-using namespace triton;
-
+namespace mlir {
+namespace triton {
 //===----------------------------------------------------------------------===//
 // Utilities
 //===----------------------------------------------------------------------===//
@@ -156,8 +161,6 @@ static std::optional<unsigned> getBitWidth(Type a) {
 //===----------------------------------------------------------------------===//
 // Op Lowering Patterns
 //===----------------------------------------------------------------------===//
-
-namespace {
 
 //-----------------------------
 // Begin of monolithic only
@@ -2151,14 +2154,37 @@ public:
         // Extract required input operands
         ValueRange inputs = srcs.take_front(requiredOperands);
 
-        // Create destination empty tensor
-        auto dstType = mlir::cast<RankedTensorType>(op.getResult().getType());
-        auto init = rewriter.create<tensor::EmptyOp>(loc, dstType.getShape(), dstType.getElementType());
+        auto resultType = op.getResult().getType();
 
-        // Create corresponding Linalg operation
-        auto result = createFunc(rewriter, loc, inputs, ValueRange{init});
-        rewriter.replaceOp(op, result->getResult(0));
-        return success();
+        if (auto elementType = cast<FloatType>(resultType)) {
+             SmallVector<Value> tensorInputs;
+            for (auto input : inputs) {
+                auto tensorType = RankedTensorType::get({}, input.getType());
+                tensorInputs.push_back(rewriter.create<tensor::FromElementsOp>(
+                    loc, tensorType, ValueRange{input}));
+            }
+
+            auto resultTensorType = RankedTensorType::get({}, elementType);
+            auto init = rewriter.create<tensor::EmptyOp>(loc, resultTensorType.getShape(), elementType);
+
+            auto resultTensor = createFunc(rewriter, loc, tensorInputs, ValueRange{init})->getResult(0);
+
+            auto scalar = rewriter.create<tensor::ExtractOp>(loc, resultTensor, ValueRange{});
+            rewriter.replaceOp(op, scalar);
+            return success();
+        }
+
+        if (auto dstType = cast<RankedTensorType>(resultType)) {
+            auto init = rewriter.create<tensor::EmptyOp>(
+                loc, dstType.getShape(), dstType.getElementType()
+            );
+
+            auto result = createFunc(rewriter, loc, inputs, ValueRange{init});
+
+            rewriter.replaceOp(op, result->getResult(0));
+            return success();
+        }
+        return failure();
     }
 
 private:
@@ -2461,6 +2487,33 @@ struct ConvertExternSilu : public OpRewritePattern<triton::ExternElementwiseOp> 
   }
 };
 
+struct TritonPtrToIntPattern
+    : public OpConversionPattern<triton::PtrToIntOp> {
+private:
+  using OpConversionPattern::OpConversionPattern;
+
+public:
+  TritonPtrToIntPattern(const TypeConverter &typeConverter,
+                        MLIRContext *context)
+      : OpConversionPattern<triton::PtrToIntOp>(typeConverter, context) {}
+
+  LogicalResult
+  matchAndRewrite(
+      triton::PtrToIntOp op, OpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+
+    Location loc = op.getLoc();
+    Value src = adaptor.getSrc();
+    Type targetType = rewriter.getIntegerType(64);
+
+    rewriter.replaceOpWithNewOp<LLVM::PtrToIntOp>(
+        op,
+        targetType,
+        src
+    );
+    return success();
+  }
+};
 
 class ExternElementwiseBinaryOpConverter
     : public OpConversionPattern<triton::ExternElementwiseOp> {
@@ -2565,6 +2618,7 @@ static void populateExternElementwiseOpToMLIROps(RewritePatternSet &patterns) {
                ExternElementwiseUnaryOpConverter>(patterns.getContext());
 }
 
-} // namespace
+}
+}
 
 #endif

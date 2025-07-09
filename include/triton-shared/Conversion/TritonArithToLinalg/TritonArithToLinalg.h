@@ -5,6 +5,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "TypeConverter.hpp"
 
 namespace mlir {
 namespace triton {
@@ -18,7 +19,8 @@ void populateTritonArithToLinalgCanonicalizationPatterns(
 void populateTritonArithToLinalgConversionPatterns(bool pidsToFuncArgs,
                                                    bool addptrToLinalg,
                                                    bool assertToCf,
-                                                   RewritePatternSet &patterns);
+                                                   RewritePatternSet &patterns,
+                                                   TritonLinalgTypeConverter &converter);
 
 // Expand the triton pointer ops operating on pointers to linalg
 void populateTritonTensorPtrConversionPatterns(RewritePatternSet &patterns);

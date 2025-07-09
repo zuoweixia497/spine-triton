@@ -27,6 +27,7 @@
 
 #define DEBUG_TYPE "triton-arith-to-linalg"
 #include "triton-shared/Conversion/TritonArithToLinalg/ConversionPatterns.hpp"
+#include "triton-shared/Conversion/TritonArithToLinalg/TypeConverter.hpp"
 
 using namespace mlir;
 using namespace triton;
@@ -50,7 +51,7 @@ void mlir::triton::populateTritonTensorPtrConversionPatterns(
 
 void mlir::triton::populateTritonArithToLinalgConversionPatterns(
     bool pidsToFuncArgs, bool addptrToLinalg, bool assertToCf,
-    RewritePatternSet &patterns) {
+    RewritePatternSet &patterns, mlir::triton::TritonLinalgTypeConverter &converter) {
 
   if (pidsToFuncArgs) {
     patterns.add<GetProgramIDConverter, GetNumProgramsConverter>(
@@ -62,6 +63,7 @@ void mlir::triton::populateTritonArithToLinalgConversionPatterns(
   if (assertToCf) {
     patterns.add<AssertConverter>(patterns.getContext());
   }
+  patterns.add<TritonPtrToIntPattern>(converter, patterns.getContext());
   patterns.add<BroadcastConverter>(patterns.getContext());
   patterns.add<TransposeConverter>(patterns.getContext());
   patterns.add<MakeRangeConverter>(patterns.getContext());

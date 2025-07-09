@@ -10,6 +10,7 @@
 #include "triton-shared/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
 #include "triton-shared/Conversion/TritonPtrToMemref/TritonPtrToMemref.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
+#include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcileLlvmPtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimental.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToPtr.h"
 #include "triton-shared/Conversion/TritonToStructured/TritonToStructured.h"
@@ -28,6 +29,8 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Support/LLVM.h"
 
 using namespace mlir;
 using namespace triton;
@@ -48,7 +51,7 @@ public:
                 scf::SCFDialect, tensor::TensorDialect,
                 bufferization::BufferizationDialect, memref::MemRefDialect,
                 ttx::TritonTilingExtDialect, tts::TritonStructuredDialect,
-                tptr::TPtrDialect, ptr::PtrDialect, DLTIDialect>();
+                tptr::TPtrDialect, ptr::PtrDialect, DLTIDialect, LLVM::LLVMDialect>();
   }
 
   void runOnOperation() override {
@@ -79,6 +82,7 @@ public:
     pm.addPass(createAddTargetDescriptionPass());
     pm.addPass(createReconcileUnrealizedCastsPass());
     pm.addPass(createReconcilePtrCastsPass());
+    pm.addPass(createReconcileLlvmPtrCastsPass());
 
     pm.addPass(createCSEPass());
     pm.addPass(createCanonicalizerPass());

@@ -29,4 +29,9 @@ def TritonToPtr : Pass<"triton-to-ptr", "mlir::ModuleOp"> {
   let constructor = "triton::createTritonToPtrPass()";
 }
 
+def ReconcileLlvmPtrCasts : Pass<"reconcile-llvmptr-casts", "mlir::ModuleOp"> {
+  let summary = "Convert unrealized_cast op llvm.ptr";
+  let constructor = "triton::createReconcileLlvmPtrCastsPass()";
+}
+
 #endif

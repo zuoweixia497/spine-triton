@@ -9,6 +9,8 @@
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "triton-shared/Conversion/StructuredToMemref/Passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Support/LLVM.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
@@ -37,6 +39,7 @@ inline void registerTritonSharedDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerTritonToStructuredPass();
   mlir::triton::registerTritonPtrToMemref();
   mlir::triton::registerReconcilePtrCasts();
+  mlir::triton::registerReconcileLlvmPtrCasts();
   mlir::triton::registerTritonToPtr();
   mlir::triton::registerUnstructuredToMemref();
   mlir::triton::registerTritonToUnstructuredPasses();
@@ -46,7 +49,7 @@ inline void registerTritonSharedDialects(mlir::DialectRegistry &registry) {
 
   // TODO: register Triton & TritonGPU passes
   registry.insert<
-      mlir::tptr::TPtrDialect, mlir::ptr::PtrDialect,
+      mlir::LLVM::LLVMDialect, mlir::tptr::TPtrDialect, mlir::ptr::PtrDialect,
       mlir::ttx::TritonTilingExtDialect, mlir::tts::TritonStructuredDialect,
       mlir::triton::TritonDialect, mlir::cf::ControlFlowDialect,
       mlir::math::MathDialect, mlir::arith::ArithDialect, mlir::scf::SCFDialect,

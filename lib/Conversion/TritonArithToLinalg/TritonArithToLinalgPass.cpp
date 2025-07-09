@@ -21,6 +21,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/Support/Debug.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Support/LLVM.h"
+#include "triton-shared/Conversion/TritonArithToLinalg/TypeConverter.hpp"
 
 #define DEBUG_TYPE "triton-arith-to-linalg"
 
@@ -95,7 +98,7 @@ public:
                 linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
                 tensor::TensorDialect, bufferization::BufferizationDialect,
                 triton::TritonDialect, ttx::TritonTilingExtDialect,
-                tts::TritonStructuredDialect>();
+                tts::TritonStructuredDialect, mlir::LLVM::LLVMDialect>();
   }
 
   void runOnOperation() override {
@@ -121,7 +124,7 @@ public:
 
     target.addLegalOp<ModuleOp>();
 
-    target.addLegalOp<triton::FuncOp, triton::ReturnOp>();
+    target.addLegalOp<triton::FuncOp, triton::ReturnOp, LLVM::PtrToIntOp>();
 
     target.addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect>(
         [](Operation *op) {
@@ -185,8 +188,9 @@ public:
       target.addLegalOp<triton::AssertOp>();
     }
 
+    triton::TritonLinalgTypeConverter converter;
     triton::populateTritonArithToLinalgConversionPatterns(
-        pidsToFuncArgs, addptrToLinalg, assertToCf, patterns);
+        pidsToFuncArgs, addptrToLinalg, assertToCf, patterns, converter);
 
     if (pidsToFuncArgs) {
       for (auto func : getOperation().getOps<triton::FuncOp>()) {
