@@ -153,6 +153,7 @@ def _llir_to_bin(llir: str, metadata):
         subprocess.check_call(
             [llc_path, src_path, *llc_flags, "-filetype=obj", "-o", dst_path]
         )
+        dump_ir_if_needed([dst_path])
         return Path(dst_path).read_bytes()
 
 
