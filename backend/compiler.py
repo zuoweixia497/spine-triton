@@ -27,28 +27,13 @@ def _ttir_to_ttsharedir(mod):
         src_path = os.path.join(tmpdir, "tt.mlir")
         dst_path = os.path.join(tmpdir, "ttshared.mlir")
         Path(src_path).write_text(ttir_code)
-<<<<<<< HEAD   (2c5a12 support for batch_norm)
-        _dump_ir_if_needed([src_path])
-        triton_shared_opt_path = _get_triton_shared_opt_path()
+        dump_ir_if_needed([src_path])
+        triton_shared_opt_path = get_triton_shared_opt_path()
         # subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-linalg-experimental", "--mlir-print-debuginfo", "-o", dst_path])
         subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-structured", "--cse", "--canonicalize", "--triton-to-unstructured",
                                "--triton-arith-to-linalg", "--structured-to-memref", "--unstructured-to-memref", "--triton-ptr-to-memref",
                                "--triton-to-ptr", "--add-target-description", "--reconcile-unrealized-casts", "--reconcile-ptr-casts",
                                "--reconcile-llvmptr-casts", "--cse", "--canonicalize", "-o", dst_path])
-=======
-        dump_ir_if_needed([src_path])
-        triton_shared_opt_path = get_triton_shared_opt_path()
-        subprocess.check_call(
-            [
-                triton_shared_opt_path,
-                src_path,
-                "--triton-to-linalg-experimental",
-                "--mlir-print-debuginfo",
-                "-o",
-                dst_path,
-            ]
-        )
->>>>>>> CHANGE (5ce79c env format)
         return Path(dst_path).read_text()
 
 
