@@ -12,34 +12,12 @@ import subprocess
 import functools
 import platform
 from pathlib import Path
-
-def _get_triton_shared_opt_path() -> str:
-    path = os.getenv("TRITON_SHARED_OPT_PATH", "")
-    if path == "":
-        raise Exception("TRITON_SHARED_OPT_PATH is not set.")
-    return path
-
-
-def _get_spine_mlir_opt_path() -> str:
-    path = os.getenv("SPINE_MLIR_OPT_PATH", "")
-    if path == "":
-        print("SPINE_MLIR_OPT_PATH is not set.")
-    return path
-
-
-def _get_llvm_bin_path(bin_name: str) -> str:
-    path = os.getenv("LLVM_BINARY_DIR", "")
-    if path == "":
-        raise Exception("LLVM_BINARY_DIR is not set.")
-    return os.path.join(path, bin_name)
-
-
-def _dump_ir_if_needed(files):
-    path = os.getenv("TRITON_SHARED_DUMP_PATH", "")
-    if not path:
-        return
-    for f in files:
-        shutil.copy(f, os.path.join(path, os.path.basename(f)))
+from . import (
+    get_triton_shared_opt_path,
+    dump_ir_if_needed,
+    get_llvm_bin_path,
+    get_spine_mlir_opt_path,
+)
 
 
 def _ttir_to_ttsharedir(mod):
@@ -49,6 +27,7 @@ def _ttir_to_ttsharedir(mod):
         src_path = os.path.join(tmpdir, "tt.mlir")
         dst_path = os.path.join(tmpdir, "ttshared.mlir")
         Path(src_path).write_text(ttir_code)
+<<<<<<< HEAD   (2c5a12 support for batch_norm)
         _dump_ir_if_needed([src_path])
         triton_shared_opt_path = _get_triton_shared_opt_path()
         # subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-linalg-experimental", "--mlir-print-debuginfo", "-o", dst_path])
@@ -56,6 +35,20 @@ def _ttir_to_ttsharedir(mod):
                                "--triton-arith-to-linalg", "--structured-to-memref", "--unstructured-to-memref", "--triton-ptr-to-memref",
                                "--triton-to-ptr", "--add-target-description", "--reconcile-unrealized-casts", "--reconcile-ptr-casts",
                                "--reconcile-llvmptr-casts", "--cse", "--canonicalize", "-o", dst_path])
+=======
+        dump_ir_if_needed([src_path])
+        triton_shared_opt_path = get_triton_shared_opt_path()
+        subprocess.check_call(
+            [
+                triton_shared_opt_path,
+                src_path,
+                "--triton-to-linalg-experimental",
+                "--mlir-print-debuginfo",
+                "-o",
+                dst_path,
+            ]
+        )
+>>>>>>> CHANGE (5ce79c env format)
         return Path(dst_path).read_text()
 
 
@@ -70,50 +63,55 @@ def _ttsharedir_to_llir(ttsharedir: str):
         llmlir_path = os.path.join(tmpdir, "ll.mlir")
         llir_path = os.path.join(tmpdir, "ll.ir")
         Path(ttshared_path).write_text(ttsharedir)
-        mlir_opt_path = _get_llvm_bin_path("mlir-opt")
+        mlir_opt_path = get_llvm_bin_path("mlir-opt")
         # TritonShared-MLIR to LLVM-MLIR
-        subprocess.check_call([mlir_opt_path, ttshared_path,
-            "--convert-linalg-to-affine-loops",
-            # Note: eliminate-empty-tensors fails when there are multiple func.return ops
-            # in a single kernel which are the results of early returns.
-            # See python/examples/test_early_return.py for examples.
-            # We disable this pass for now since performance on CPU isn't the main
-            # focus at the moment.
-            # "--eliminate-empty-tensors",
-            "--empty-tensor-to-alloc-tensor",
-            "--one-shot-bufferize=allow-return-allocs-from-loops=true",
-            "--lower-affine",
-            "--convert-linalg-to-loops",
-            "--expand-strided-metadata",
-            "--convert-scf-to-cf",
-            "--convert-arith-to-llvm",
-            "--convert-math-to-llvm",
-            "--convert-complex-to-llvm",
-            "--convert-vector-to-llvm",
-            "--convert-index-to-llvm",
-            "--memref-expand",
-            "--finalize-memref-to-llvm",
-            "--convert-func-to-llvm",
-            "--convert-cf-to-llvm",
-            # Lowering memrefs creates more affine.apply ops.
-            # Lowering these affine ops again creates further arith ops,
-            # so we have to run these two passes again here.
-            "--lower-affine",
-            "--convert-arith-to-llvm",
-            # Remove all unrealized casts created
-            "--reconcile-unrealized-casts",
-            "--mlir-print-debuginfo",
-            "-o",
-            llmlir_path])
+        subprocess.check_call(
+            [
+                mlir_opt_path,
+                ttshared_path,
+                "--convert-linalg-to-affine-loops",
+                # Note: eliminate-empty-tensors fails when there are multiple func.return ops
+                # in a single kernel which are the results of early returns.
+                # See python/examples/test_early_return.py for examples.
+                # We disable this pass for now since performance on CPU isn't the main
+                # focus at the moment.
+                # "--eliminate-empty-tensors",
+                "--empty-tensor-to-alloc-tensor",
+                "--one-shot-bufferize=allow-return-allocs-from-loops=true",
+                "--lower-affine",
+                "--convert-linalg-to-loops",
+                "--expand-strided-metadata",
+                "--convert-scf-to-cf",
+                "--convert-arith-to-llvm",
+                "--convert-math-to-llvm",
+                "--convert-complex-to-llvm",
+                "--convert-vector-to-llvm",
+                "--convert-index-to-llvm",
+                "--memref-expand",
+                "--finalize-memref-to-llvm",
+                "--convert-func-to-llvm",
+                "--convert-cf-to-llvm",
+                # Lowering memrefs creates more affine.apply ops.
+                # Lowering these affine ops again creates further arith ops,
+                # so we have to run these two passes again here.
+                "--lower-affine",
+                "--convert-arith-to-llvm",
+                # Remove all unrealized casts created
+                "--reconcile-unrealized-casts",
+                "--mlir-print-debuginfo",
+                "-o",
+                llmlir_path,
+            ]
+        )
 
         # LLVM-MLIR to LLVM-IR
-        mlir_translate_path = _get_llvm_bin_path("mlir-translate")
-        subprocess.check_call([mlir_translate_path, llmlir_path,
-            "--mlir-to-llvmir",
-            "-o",
-            llir_path])
-        _dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
+        mlir_translate_path = get_llvm_bin_path("mlir-translate")
+        subprocess.check_call(
+            [mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path]
+        )
+        dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
         return Path(llir_path).read_text()
+
 
 def _spine_mlir_ttsharedir_to_llir(ttsharedir: str):
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -121,20 +119,24 @@ def _spine_mlir_ttsharedir_to_llir(ttsharedir: str):
         llmlir_path = os.path.join(tmpdir, "ll.mlir")
         llir_path = os.path.join(tmpdir, "ll.ir")
         Path(ttshared_path).write_text(ttsharedir)
-        spine_mlir_path = _get_spine_mlir_opt_path()
+        spine_mlir_path = get_spine_mlir_opt_path()
         # TritonShared-MLIR to LLVM-MLIR
-        subprocess.check_call([spine_mlir_path, ttshared_path,
-            "--spine-triton-pipeline",
-            "-o",
-            llmlir_path])
+        subprocess.check_call(
+            [
+                spine_mlir_path,
+                ttshared_path,
+                "--spine-triton-pipeline",
+                "-o",
+                llmlir_path,
+            ]
+        )
 
         # LLVM-MLIR to LLVM-IR
-        mlir_translate_path = _get_llvm_bin_path("mlir-translate")
-        subprocess.check_call([mlir_translate_path, llmlir_path,
-            "--mlir-to-llvmir",
-            "-o",
-            llir_path])
-        _dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
+        mlir_translate_path = get_llvm_bin_path("mlir-translate")
+        subprocess.check_call(
+            [mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path]
+        )
+        dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
         return Path(llir_path).read_text()
 
 
@@ -153,19 +155,19 @@ def _llir_to_bin(llir: str, metadata):
         src_path = os.path.join(tmpdir, "kernel.ll")
         dst_path = os.path.join(tmpdir, "kernel.o")
         Path(src_path).write_text(llir)
-        llc_path = _get_llvm_bin_path("llc")
-        llc_flags = []
+        llc_path = get_llvm_bin_path("llc")
+        llc_flags = ["-O3", "--float-abi=hard", "--relocation-model=pic"]
         if cpu_arch == "riscv64":
             llc_flags.extend(
                 [
-                 "--march=riscv64",
-                 "--float-abi=hard",
-                 "--mattr=64bit,a,b,c,d,f,i,m,v,zfh,zicbop,zicbom,zicboz",
-                 "--relocation-model=pic"
+                    "--march=riscv64",
+                    "--mattr=64bit,a,b,c,d,f,i,m,v,zfh,zicbop,zicbom,zicboz",
                 ]
             )
 
-        subprocess.check_call([llc_path, src_path, *llc_flags, "-filetype=obj", "-o", dst_path])
+        subprocess.check_call(
+            [llc_path, src_path, *llc_flags, "-filetype=obj", "-o", dst_path]
+        )
         return Path(dst_path).read_bytes()
 
 
@@ -185,30 +187,32 @@ class CPUOptions:
     # Target specific backends can eanble it with supported types.
     supported_fp8_dtypes: Tuple[str] = ()
     allow_fp8e4nv: bool = False
-    allowed_dot_input_precisions: Tuple[str] = ("ieee", )
+    allowed_dot_input_precisions: Tuple[str] = ("ieee",)
     sanitize_overflow: bool = True
 
     def __post_init__(self):
         pass
 
     def hash(self):
-        key = '_'.join([f'{name}-{val}' for name, val in self.__dict__.items()])
+        key = "_".join([f"{name}-{val}" for name, val in self.__dict__.items()])
         return hashlib.md5(key.encode("utf-8")).hexdigest()
 
 
 class CPUBackend(BaseBackend):
-    binary_ext = 'obj'
+    binary_ext = "obj"
 
     @staticmethod
     def supports_target(target: GPUTarget):
-        return target.backend == 'cpu'
+        return target.backend == "cpu"
 
     def __init__(self, target: GPUTarget) -> None:
         super().__init__(target)
 
     def parse_options(self, opts) -> Any:
-        args = {'arch': self.target.arch}
-        args.update({k: opts[k] for k in CPUOptions.__dataclass_fields__.keys() if k in opts})
+        args = {"arch": self.target.arch}
+        args.update(
+            {k: opts[k] for k in CPUOptions.__dataclass_fields__.keys() if k in opts}
+        )
         return CPUOptions(**args)
 
     def get_codegen_implementation(self, options):
@@ -226,7 +230,7 @@ class CPUBackend(BaseBackend):
             metadata.cluster_dims[0],
             metadata.cluster_dims[1],
             metadata.cluster_dims[2],
-            metadata.name
+            metadata.name,
         )
 
     # Our compilation pipeline isn't in python like nvidia or amd, no need to load
@@ -252,17 +256,22 @@ class CPUBackend(BaseBackend):
 
     def add_stages(self, stages, options):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
-        stages["ttsharedir"] = lambda src, metadata: _optimize_ttsharedir(_ttir_to_ttsharedir(src))
+        stages["ttsharedir"] = lambda src, metadata: _optimize_ttsharedir(
+            _ttir_to_ttsharedir(src)
+        )
 
-        spine_mlir_path = _get_spine_mlir_opt_path()
+        spine_mlir_path = get_spine_mlir_opt_path()
 
         if os.path.isfile(spine_mlir_path):
-            stages["llir"] = lambda src, metadata: _optimize_llir(_spine_mlir_ttsharedir_to_llir(src))
+            stages["llir"] = lambda src, metadata: _optimize_llir(
+                _spine_mlir_ttsharedir_to_llir(src)
+            )
         else:
-            stages["llir"] = lambda src, metadata: _optimize_llir(_ttsharedir_to_llir(src))
+            stages["llir"] = lambda src, metadata: _optimize_llir(
+                _ttsharedir_to_llir(src)
+            )
 
         stages["obj"] = lambda src, metadata: _llir_to_bin(src, metadata)
-
 
     @functools.lru_cache()
     def hash(self):
@@ -272,14 +281,10 @@ class CPUBackend(BaseBackend):
     def get_module_map(self) -> Dict[str, ModuleType]:
         return {}
 
+
 def get_cache_sizes():
 
-    unit_map = {
-        'k': 1024,
-        'm': 1024**2,
-        'g': 1024**3,
-        '' : 1
-    }
+    unit_map = {"k": 1024, "m": 1024**2, "g": 1024**3, "": 1}
 
     cache_cmd = {
         "L1": "lscpu | grep -E 'L1d|Cache|一级数据' | grep -v 'combined' | awk '{print $3, $4, $5, $6}'",
@@ -290,21 +295,22 @@ def get_cache_sizes():
     results = []
     for cache_level in ["L1", "L2", "L3"]:  # Enforce order
         try:
-            output = subprocess.check_output(cache_cmd[cache_level], shell=True).decode()
+            output = subprocess.check_output(
+                cache_cmd[cache_level], shell=True
+            ).decode()
         except Exception as e:
             print(f"Command execution failed: {e}")
             results.append(0)
             continue
 
-        match = re.search(r'(\d+)\s*([KMG]?i?B)\s*\((\d+)\s*instances\)', output)
+        match = re.search(r"(\d+)\s*([KMG]?i?B)\s*\((\d+)\s*instances\)", output)
         if not match:
             results.append(0)
             continue
 
         total_size, unit, instances = match.groups()
-        unit = unit.lower().rstrip('ib')
+        unit = unit.lower().rstrip("ib")
         bytes_per_instance = (int(total_size) * unit_map[unit]) // int(instances)
         results.append(bytes_per_instance)
-
 
     return results  # Format: [L1_size, L2_size, L3_size] in bytes

@@ -1,8 +1,6 @@
 import hashlib
 import tempfile
 import sysconfig
-
-from ctypes import CDLL, RTLD_GLOBAL
 import site
 import os, subprocess, tempfile, platform
 import importlib.util
@@ -15,25 +13,7 @@ import triton._C
 from triton.runtime.cache import get_cache_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
-
-def _get_spine_mlir_opt_path() -> str:
-    path = os.getenv("SPINE_MLIR_OPT_PATH", "")
-    if path == "":
-        print("SPINE_MLIR_OPT_PATH is not set.")
-    return path
-
-def _get_spine_mlir_cc_debug() -> bool:
-    debug_or_not = int(os.getenv("SPINE_MLIR_DEBUG_MODE", "0"))
-    return debug_or_not == 1
-
-try:
-    spine_mlir_opt_path = _get_spine_mlir_opt_path()
-    if os.path.isfile(spine_mlir_opt_path):
-      spine_mlir_lib_dir = os.path.join(os.path.dirname(os.path.dirname(spine_mlir_opt_path)), "lib")
-      libspeirruntime_path = os.path.join(spine_mlir_lib_dir, "libSpeIRRuntimeLibs.so")
-      libspeirruntime = CDLL(libspeirruntime_path, mode=RTLD_GLOBAL)
-except Exception as e:
-    raise ImportError("can not find libspeirruntime. {}".format(e))
+from . import get_spine_mlir_cc_debug
 
 # -------------------- Launcher ----------------------------
 def _ty_to_cpp(ty):
@@ -332,7 +312,7 @@ def compile_module(launcher_src, kernel_placeholder_name):
           filename = f"{name}.so"
         cache_path = cache.get_file(filename)
 
-        spine_opt_debug = _get_spine_mlir_cc_debug()
+        spine_opt_debug = get_spine_mlir_cc_debug()
 
         if cache_path is None:
           with tempfile.TemporaryDirectory() as tmpdir:
