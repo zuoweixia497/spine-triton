@@ -2156,24 +2156,6 @@ public:
 
         auto resultType = op.getResult().getType();
 
-        if (auto elementType = cast<FloatType>(resultType)) {
-             SmallVector<Value> tensorInputs;
-            for (auto input : inputs) {
-                auto tensorType = RankedTensorType::get({}, input.getType());
-                tensorInputs.push_back(rewriter.create<tensor::FromElementsOp>(
-                    loc, tensorType, ValueRange{input}));
-            }
-
-            auto resultTensorType = RankedTensorType::get({}, elementType);
-            auto init = rewriter.create<tensor::EmptyOp>(loc, resultTensorType.getShape(), elementType);
-
-            auto resultTensor = createFunc(rewriter, loc, tensorInputs, ValueRange{init})->getResult(0);
-
-            auto scalar = rewriter.create<tensor::ExtractOp>(loc, resultTensor, ValueRange{});
-            rewriter.replaceOp(op, scalar);
-            return success();
-        }
-
         if (auto dstType = cast<RankedTensorType>(resultType)) {
             auto init = rewriter.create<tensor::EmptyOp>(
                 loc, dstType.getShape(), dstType.getElementType()
