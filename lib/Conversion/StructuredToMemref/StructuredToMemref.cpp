@@ -508,21 +508,11 @@ private:
         resultType = getResultMemrefType(
           op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
           ShapedType::kDynamic);
-      }else if(mixSizes.size() == 2){
+      }else{
         resultType = getResultMemrefType(
           op, ShapedType::kDynamic,
           SmallVector<int64_t>(resultShape.size(), ShapedType::kDynamic),
-          SmallVector<int64_t>{ShapedType::kDynamic,ShapedType::kDynamic});
-      }else if(mixSizes.size() == 3){
-        resultType = getResultMemrefType(
-          op, ShapedType::kDynamic,
-          SmallVector<int64_t>(resultShape.size(), ShapedType::kDynamic),
-          SmallVector<int64_t>{ShapedType::kDynamic,ShapedType::kDynamic,ShapedType::kDynamic});
-      }else if(mixSizes.size() == 4){
-        resultType = getResultMemrefType(
-          op, ShapedType::kDynamic,
-          SmallVector<int64_t>(resultShape.size(), ShapedType::kDynamic),
-          SmallVector<int64_t>{ShapedType::kDynamic,ShapedType::kDynamic,ShapedType::kDynamic,ShapedType::kDynamic});
+          SmallVector<int64_t>(mixSizes.size(),ShapedType::kDynamic));
       }
       castOp = rewriter.create<memref::ReinterpretCastOp>(
           op.getLoc(), resultType, adaptor.getBase(), targetOffset,
