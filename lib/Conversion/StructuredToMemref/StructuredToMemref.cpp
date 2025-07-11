@@ -513,6 +513,16 @@ private:
           op, ShapedType::kDynamic,
           SmallVector<int64_t>(resultShape.size(), ShapedType::kDynamic),
           SmallVector<int64_t>{ShapedType::kDynamic,ShapedType::kDynamic});
+      }else if(mixSizes.size() == 3){
+        resultType = getResultMemrefType(
+          op, ShapedType::kDynamic,
+          SmallVector<int64_t>(resultShape.size(), ShapedType::kDynamic),
+          SmallVector<int64_t>{ShapedType::kDynamic,ShapedType::kDynamic,ShapedType::kDynamic});
+      }else if(mixSizes.size() == 4){
+        resultType = getResultMemrefType(
+          op, ShapedType::kDynamic,
+          SmallVector<int64_t>(resultShape.size(), ShapedType::kDynamic),
+          SmallVector<int64_t>{ShapedType::kDynamic,ShapedType::kDynamic,ShapedType::kDynamic,ShapedType::kDynamic});
       }
       castOp = rewriter.create<memref::ReinterpretCastOp>(
           op.getLoc(), resultType, adaptor.getBase(), targetOffset,
