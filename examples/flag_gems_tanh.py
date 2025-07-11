@@ -7,9 +7,13 @@ from triton.backends.triton_shared.driver import CPUDriver
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
+def generate_grid(start, end, step):
+    num_points = int((end - start) / step) + 1
+    grid = torch.linspace(start, end, num_points, dtype=torch.float32, device=flag_gems.device, requires_grad=False)
+    return grid
+
 if __name__ == "__main__":
-    M, K = 256, 512
-    inp = torch.randn([M, K], dtype=torch.float32, device=flag_gems.device, requires_grad=False)
+    inp = generate_grid(-10, 10, 0.0001)
     with flag_gems.use_gems():
         with torch.no_grad():
             C = torch.tanh(inp)
