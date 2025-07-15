@@ -13,7 +13,7 @@ def generate_grid(start, end, step):
     return grid
 
 if __name__ == "__main__":
-    inp = generate_grid(-2, 20, 0.0001)
+    inp = generate_grid(-20, 20, 0.0001)
     for approximate in ("none", "tanh"):
         with flag_gems.use_gems():
             with torch.no_grad():
