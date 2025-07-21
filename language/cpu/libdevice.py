@@ -259,8 +259,8 @@ def finitef(arg0, _builder=None):
 def isinf(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {
-            (core.dtype("fp32"), ): ("linalg.isinf", core.dtype("int32")),
-            (core.dtype("fp64"), ): ("linalg.isinf", core.dtype("int32")),
+            (core.dtype("fp32"), ): ("math.isinf", core.dtype("int32")),
+            (core.dtype("fp64"), ): ("math.isinf", core.dtype("int32")),
         }, is_pure=True, _builder=_builder).to(core.int1, _builder=_builder)
 
 @core.extern
@@ -269,8 +269,8 @@ def isnan(arg0, _builder=None):
         "", "", [
             arg0,
         ], {
-            (core.dtype("fp32"), ): ("linalg.isnan", core.dtype("int32")),
-            (core.dtype("fp64"), ): ("linalg.isnan", core.dtype("int32")),
+            (core.dtype("fp32"), ): ("math.isnan", core.dtype("int32")),
+            (core.dtype("fp64"), ): ("math.isnan", core.dtype("int32")),
         }, is_pure=True, _builder=_builder).to(core.int1, _builder=_builder)
 
 @core.extern
