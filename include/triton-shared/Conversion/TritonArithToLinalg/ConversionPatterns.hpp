@@ -35,6 +35,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "TypeConverter.hpp"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 
 #include <numeric>
 #include <optional>
@@ -156,6 +157,104 @@ static std::optional<unsigned> getBitWidth(Type a) {
     return a.getIntOrFloatBitWidth();
 
   return std::nullopt;
+}
+
+static bool createReassociationMaps(
+    OpBuilder &builder, llvm::ArrayRef<int64_t> expandedShape,
+    llvm::ArrayRef<int64_t> collapsedShape,
+    llvm::SmallVector<ReassociationExprs, 4> &reassociationMap) {
+  if (collapsedShape.empty()) {
+    reassociationMap = {};
+    return true;
+  }
+
+  // As tensor.expand_shape/tensor.collapse_shape expected rank
+  // expansion/reduction.
+  if (expandedShape.size() == collapsedShape.size())
+    return false;
+  if (ShapedType::isDynamicShape(expandedShape) ||
+      ShapedType::isDynamicShape(collapsedShape))
+    return false;
+
+  reassociationMap.resize(collapsedShape.size());
+  unsigned currExpandDim = 0, currCollapseDim = 0;
+  while (currExpandDim < expandedShape.size() &&
+         currCollapseDim < collapsedShape.size()) {
+    int64_t dstSize = collapsedShape[currCollapseDim];
+    int64_t srcSize = expandedShape[currExpandDim];
+    while (srcSize < dstSize && currExpandDim < expandedShape.size()) {
+      reassociationMap[currCollapseDim].push_back(
+          builder.getAffineDimExpr(currExpandDim++));
+      srcSize *= expandedShape[currExpandDim];
+    }
+    if (srcSize == dstSize) {
+      reassociationMap[currCollapseDim].push_back(
+          builder.getAffineDimExpr(currExpandDim++));
+      // If the next dim in collapsedShape is not 1, treat subsequent dims in
+      // expandedShape which are 1 to be collapsed.
+      if (currCollapseDim == collapsedShape.size() - 1 ||
+          collapsedShape[currCollapseDim + 1] != 1) {
+        while (currExpandDim < expandedShape.size() &&
+               expandedShape[currExpandDim] == 1) {
+          reassociationMap[currCollapseDim].push_back(
+              builder.getAffineDimExpr(currExpandDim++));
+        }
+      }
+    }
+    // If the reassociationMap for the currCollapseDim is empty, clear all
+    // mappings and return false.
+    if (reassociationMap[currCollapseDim].empty()) {
+      reassociationMap.clear();
+      return false;
+    }
+    currCollapseDim++;
+  }
+  // If both iterators didn't reach the end, we have leftover dimentions which
+  // implies that we have a mismatch in shape.
+  return currExpandDim == expandedShape.size() &&
+         currCollapseDim == collapsedShape.size();
+}
+
+static Value sliceFirst(ConversionPatternRewriter &rewriter, Location loc,
+                        Value input, int64_t dim, bool reverse = false) {
+  ShapedType inputType = cast<ShapedType>(input.getType());
+  auto sizes =
+      llvm::to_vector(llvm::map_range(inputType.getShape(), [&](int64_t t) {
+        return OpFoldResult(rewriter.getI64IntegerAttr(t));
+      }));
+  int64_t rank = inputType.getRank();
+  // Retrieve slice offsets of input.
+  SmallVector<OpFoldResult> offsets(rank, rewriter.getIndexAttr(0));
+  if (reverse)
+    offsets[dim] = rewriter.getIndexAttr(inputType.getDimSize(dim) - 1);
+  // Retrieve slice sizes of input.
+  sizes[dim] = rewriter.getIndexAttr(1);
+  // Retrieve slice strides of input.
+  SmallVector<OpFoldResult> strides(rank, rewriter.getIndexAttr(1));
+  // Create the slice of input.
+  return rewriter.create<tensor::ExtractSliceOp>(loc, input, offsets, sizes,
+                                                 strides);
+}
+
+static Value sliceRemaining(ConversionPatternRewriter &rewriter, Location loc,
+                            Value input, int64_t dim, bool reverse = false) {
+  ShapedType inputType = cast<ShapedType>(input.getType());
+  auto sizes =
+      llvm::to_vector(llvm::map_range(inputType.getShape(), [&](int64_t t) {
+        return OpFoldResult(rewriter.getI64IntegerAttr(t));
+      }));
+  int64_t rank = inputType.getRank();
+  // Retrieve slice sizes of input.
+  sizes[dim] = rewriter.getIndexAttr(inputType.getDimSize(dim) - 1);
+  // Retrieve slice offsets of input.
+  SmallVector<OpFoldResult> offsets(rank, rewriter.getIndexAttr(0));
+  if (!reverse)
+    offsets[dim] = rewriter.getIndexAttr(1);
+  // Retrieve slice strides of input.
+  SmallVector<OpFoldResult> strides(rank, rewriter.getIndexAttr(1));
+  // Create the slice of input.
+  return rewriter.create<tensor::ExtractSliceOp>(loc, input, offsets, sizes,
+                                                 strides);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1198,7 +1297,8 @@ private:
   bool isReductionOpSupported(Operation *redOp) const {
     return isa<arith::AddFOp, arith::AddIOp, arith::MaximumFOp,
                arith::MaxNumFOp, arith::MinimumFOp, arith::MinNumFOp,
-               arith::MinSIOp, arith::MinUIOp, arith::MaxSIOp, arith::MaxUIOp>(
+               arith::MinSIOp, arith::MinUIOp, arith::MaxSIOp, arith::MaxUIOp,
+               arith::OrIOp, arith::AndIOp, arith::MulFOp>(
         redOp);
   }
 
@@ -1211,6 +1311,9 @@ private:
         llvm::TypeSwitch<Operation *, TypedAttr>(redOp)
             .Case([&](arith::AddFOp) {
               return rewriter.getFloatAttr(constantType, 0.f);
+            })
+            .Case([&](arith::MulFOp) {
+              return rewriter.getFloatAttr(constantType, 1.f);
             })
             .Case([&](arith::AddIOp) {
               return rewriter.getIntegerAttr(constantType, 0);
@@ -1237,6 +1340,12 @@ private:
             })
             .Case([&](arith::MaxUIOp) {
               return rewriter.getIntegerAttr(constantType, 0);
+            })
+            .Case([&](arith::OrIOp) {
+              return rewriter.getIntegerAttr(constantType, 0);
+            })
+            .Case([&](arith::AndIOp) {
+              return rewriter.getIntegerAttr(constantType, 1);
             })
             .Default([](Operation *op) {
               op->dump();
@@ -1267,9 +1376,17 @@ private:
           }
           return b.create<arith::AddFOp>(loc, lhs, rhs);
         })
+        .Case([&](arith::MulFOp) {
+          if (convertLhsToF32Precision) {
+            lhs = b.create<arith::ExtFOp>(loc, Float32Type::get(b.getContext()),
+                                          lhs);
+          }
+          return b.create<arith::MulFOp>(loc, lhs, rhs);
+        })
         .Case<arith::AddIOp, arith::MaximumFOp, arith::MaxNumFOp,
               arith::MinimumFOp, arith::MinNumFOp, arith::MinSIOp,
-              arith::MinUIOp, arith::MaxSIOp, arith::MaxUIOp>([&](auto redOp) {
+              arith::MinUIOp, arith::MaxSIOp, arith::MaxUIOp,
+              arith::OrIOp, arith::AndIOp>([&](auto redOp) {
           return b.create<decltype(redOp)>(loc, lhs, rhs);
         })
         .Default([](Operation *op) {
@@ -1714,6 +1831,141 @@ struct ArgMinConverter : public ArgMinMaxBaseConverter<ArgMinConverter> {
   ArgMinConverter(MLIRContext *context) : ArgMinMaxBaseConverter(context) {}
 };
 
+struct normalReduceConverter : public OpConversionPattern<triton::ReduceOp> {
+  using OpConversionPattern<triton::ReduceOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(triton::ReduceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+
+    // Derive types. `tt.reduce` treats reducing a 1-D tensor with a special
+    // case that returns a scalar, but we treat it as a 0-D tensor in these
+    // types.
+    auto convertedInputTensorTypes =
+        llvm::map_range(adaptor.getOperands().getTypes(),
+                        [](Type t) { return cast<TensorType>(t); });
+    assert(llvm::all_equal(llvm::map_range(
+        convertedInputTensorTypes, [](TensorType t) { return t.getShape(); })));
+    static_cast<void>(convertedInputTensorTypes);
+
+    auto originalResultTensorTypes =
+        llvm::map_range(op.getResultTypes(), [](Type t) -> TensorType {
+          if (auto tensorType = dyn_cast<TensorType>(t))
+            return tensorType;
+          return RankedTensorType::get({}, t);
+        });
+    assert(llvm::all_equal(llvm::map_range(
+        originalResultTensorTypes, [](TensorType t) { return t.getShape(); })));
+    ArrayRef<int64_t> resultShape =
+        (*originalResultTensorTypes.begin()).getShape();
+    auto convertedResultTensorTypes =
+        llvm::map_range(originalResultTensorTypes, [&](TensorType t) {
+          return RankedTensorType::get(resultShape, t.getElementType());
+        });
+
+    llvm::SmallVector<Value> initVals;
+    llvm::SmallVector<Value> inputVals;
+    // To lowering to linalg.reduce, we use the first slice of the reduction
+    // axis of input operands as the init value of init operands. And then,
+    // reduce the remaining elements of input operands.
+    // We assume that the number of input operands is same as init operands and
+    // corresponds one to one.
+    // TODO: This restriction will need to be relaxed in the future.
+    assert(adaptor.getOperands().size() == op.getNumResults() &&
+           "tt.reduce requires the same input number and init number");
+    for (auto [inputVal, initTy] :
+         llvm::zip(adaptor.getOperands(), convertedResultTensorTypes)) {
+      ShapedType inputTy = cast<ShapedType>(inputVal.getType());
+      ArrayRef<int64_t> inputShape = inputTy.getShape();
+
+      // If the size of reduce axis is 1, we will replace init operands by input
+      // operands, so we should resize the input operands' shape by init
+      // operands.
+      if (inputShape[op.getAxis()] <= 1) {
+        assert(inputVals.empty() &&
+               "tt.reduce requires the same shape of all input operands");
+        SmallVector<ReassociationExprs, 4> reassociationMap;
+        [[maybe_unused]] bool res = createReassociationMaps(
+            rewriter, inputShape, initTy.getShape(), reassociationMap);
+        assert(res && "attempting to collapse into an incompatible shape");
+        auto collapse = rewriter.create<tensor::CollapseShapeOp>(
+            loc, inputVal, reassociationMap);
+        initVals.push_back(collapse);
+        continue;
+      }
+
+      // 1. Slice the first elements of input operands, and use them as init
+      //    operands' init value.
+      {
+        Value slice = sliceFirst(rewriter, loc, inputVal, op.getAxis());
+        auto sliceShape = cast<ShapedType>(slice.getType()).getShape();
+
+        // Resize slice value's shape by init operand.
+        SmallVector<ReassociationExprs, 4> reassociationMap;
+        [[maybe_unused]] bool res = createReassociationMaps(
+            rewriter, sliceShape, initTy.getShape(), reassociationMap);
+        assert(res && "attempting to collapse into an incompatible shape");
+        auto collapse = rewriter.create<tensor::CollapseShapeOp>(
+            loc, slice, reassociationMap);
+        initVals.push_back(collapse);
+      }
+
+      // 2. Slice the remaining elements of input operands, reduce them and
+      //    init value.
+      {
+        Value slice = sliceRemaining(rewriter, loc, inputVal, op.getAxis());
+        inputVals.push_back(slice);
+      }
+    }
+
+    // If the results are scalar, we need to extract the scalar from the
+    // 0-ranked result tensor.
+    auto getFinalResults = [&](ValueRange results) -> SmallVector<Value> {
+      if (!resultShape.empty())
+        return results;
+      SmallVector<Value> extractResults;
+      for (auto [tensor, type] :
+           llvm::zip(results, convertedResultTensorTypes)) {
+        Value scalar = rewriter.create<tensor::ExtractOp>(
+            loc, type.getElementType(), tensor, /*indices=*/ValueRange{});
+        extractResults.push_back(scalar);
+      }
+      return extractResults;
+    };
+
+    // If the the size of reduce axis is 1, we just replace the init operands by
+    // input operands.
+    if (inputVals.empty()) {
+      rewriter.replaceOp(op, getFinalResults(initVals));
+      return success();
+    }
+
+    // Create a linalg.reduce on the same input and move the combine region
+    // there. (ReduceReturnOpConversion will take care of the terminator.)
+    auto reduceOp = rewriter.create<linalg::ReduceOp>(
+        loc, /*resultTypes=*/SmallVector<Type>(convertedResultTensorTypes),
+        /*inputs=*/inputVals, /*inits=*/initVals,
+        /*dimensions=*/ArrayRef<int64_t>{op.getAxis()});
+    rewriter.inlineRegionBefore(op.getCombineOp(), reduceOp.getCombiner(),
+                                reduceOp.getCombiner().end());
+
+    rewriter.replaceOp(op, getFinalResults(reduceOp.getResults()));
+    return success();
+  }
+};
+
+struct TritonReduceReturnPattern
+    : public OpConversionPattern<triton::ReduceReturnOp> {
+  using OpConversionPattern<triton::ReduceReturnOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::ReduceReturnOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<linalg::YieldOp>(op, adaptor.getOperands());
+    return success();
+  }
+};
+
 // get_program_id and get_num_programs:
 // When launching triton kernels, we pass 6 additional arguments to indicate
 // num_programs and program_id. Amongst those six, we have 3 arguments
@@ -2112,81 +2364,216 @@ public:
     using OpConversionPattern<triton::ExternElementwiseOp>::OpConversionPattern;
 
     ConvertExternElementwise(MLIRContext *context) : OpConversionPattern(context) {
-        // Initialize opMap with operation symbols, required operand counts and creation functions
-        opMap = {
-            // unary operations (1 input)
-            {"linalg.exp", {1, createOpFunc<linalg::ExpOp>()}},
-            {"linalg.log", {1, createOpFunc<linalg::LogOp>()}},
-            {"linalg.abs", {1, createOpFunc<linalg::AbsOp>()}},
-            {"linalg.ceil", {1, createOpFunc<linalg::CeilOp>()}},
-            {"linalg.floor", {1, createOpFunc<linalg::FloorOp>()}},
-            {"linalg.round", {1, createOpFunc<linalg::RoundOp>()}},
-            {"linalg.rsqrt", {1, createOpFunc<linalg::RsqrtOp>()}},
-            {"linalg.sqrt", {1, createOpFunc<linalg::SqrtOp>()}},
-            {"linalg.tanh", {1, createOpFunc<linalg::TanhOp>()}},
-            {"linalg.erf", {1, createOpFunc<linalg::ErfOp>()}},
-            // binary operations (2 inputs)
-            {"linalg.powf", {2, createOpFunc<linalg::PowFOp>()}},
-        };
+        opMap.insert({"linalg.exp",   {1, createLinalgOpFunc<linalg::ExpOp>(),   createMathUnaryOpFunc<math::ExpOp>()}});
+        opMap.insert({"linalg.log",   {1, createLinalgOpFunc<linalg::LogOp>(),   createMathUnaryOpFunc<math::LogOp>()}});
+        opMap.insert({"linalg.abs",   {1, createLinalgOpFunc<linalg::AbsOp>(),   createMathUnaryOpFunc<math::AbsFOp>()}});
+        opMap.insert({"linalg.ceil",  {1, createLinalgOpFunc<linalg::CeilOp>(),  createMathUnaryOpFunc<math::CeilOp>()}});
+        opMap.insert({"linalg.floor", {1, createLinalgOpFunc<linalg::FloorOp>(), createMathUnaryOpFunc<math::FloorOp>()}});
+        opMap.insert({"linalg.round", {1, createLinalgOpFunc<linalg::RoundOp>(), createMathUnaryOpFunc<math::RoundOp>()}});
+        opMap.insert({"linalg.rsqrt", {1, createLinalgOpFunc<linalg::RsqrtOp>(), createMathUnaryOpFunc<math::RsqrtOp>()}});
+        opMap.insert({"linalg.sqrt",  {1, createLinalgOpFunc<linalg::SqrtOp>(),  createMathUnaryOpFunc<math::SqrtOp>()}});
+        opMap.insert({"linalg.tanh",  {1, createLinalgOpFunc<linalg::TanhOp>(),  createMathUnaryOpFunc<math::TanhOp>()}});
+        opMap.insert({"linalg.erf",   {1, createLinalgOpFunc<linalg::ErfOp>(),   createMathUnaryOpFunc<math::ErfOp>()}});
+        opMap.insert({"linalg.powf",  {2, createLinalgOpFunc<linalg::PowFOp>(),  createMathBinaryOpFunc<math::PowFOp>()}});
     }
 
     LogicalResult matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto srcs = op.getSrcs(); // Get all input operands
+        auto inputs = op.getSrcs();
 
-        // Look up operation information
-        auto sysmbol = op.getSymbol().str();
-        auto it = opMap.find(sysmbol);
+        auto symbol = op.getSymbol().str();
+        auto it = opMap.find(symbol);
         if (it == opMap.end()) {
             return failure();
         }
 
-        // Extract required operand count and creation function
         int requiredOperands = it->second.numOperands;
-        auto createFunc = it->second.createFunc;
+        auto createLinalgFunc = it->second.createLinalgFunc;
+        auto createMathFunc = it->second.createMathFunc;
 
-        // Verify input operand sufficiency
-        if (srcs.size() < requiredOperands) {
+        if (inputs.size() < requiredOperands) {
             return failure();
         }
 
-        // Extract required input operands
-        ValueRange inputs = srcs.take_front(requiredOperands);
-
+        ValueRange opInputs = inputs.take_front(requiredOperands);
         auto resultType = op.getResult().getType();
 
-        if (auto dstType = cast<RankedTensorType>(resultType)) {
+        if (auto tensorType = dyn_cast<RankedTensorType>(resultType)) {
+            auto elementType = tensorType.getElementType();
+            if (!isa<FloatType>(elementType)) {
+                return failure();
+            }
+
             auto init = rewriter.create<tensor::EmptyOp>(
-                loc, dstType.getShape(), dstType.getElementType()
+                loc, tensorType.getShape(), elementType
             );
 
-            auto result = createFunc(rewriter, loc, inputs, ValueRange{init});
+            Value output = init.getResult();
+            ValueRange outputs = ValueRange{output};
 
-            rewriter.replaceOp(op, result->getResult(0));
+            Operation* resultOp = createLinalgFunc(rewriter, loc, opInputs, outputs);
+            if (!resultOp || resultOp->getNumResults() == 0) {
+                return failure();
+            }
+
+            rewriter.replaceOp(op, resultOp->getResult(0));
             return success();
         }
+        else if (isa<FloatType>(resultType)) {
+            Operation* resultOp = createMathFunc(rewriter, loc, opInputs);
+            if (!resultOp || resultOp->getNumResults() == 0) {
+                return failure();
+            }
+
+            rewriter.replaceOp(op, resultOp->getResult(0));
+            return success();
+        }
+
         return failure();
     }
 
 private:
-    // Operation information structure containing required operand count and creation function
-    using CreateOpFunc = std::function<mlir::Operation*(mlir::ConversionPatternRewriter&, mlir::Location, ValueRange, ValueRange)>;
+    using CreateLinalgOpFunc = std::function<Operation*(ConversionPatternRewriter&, Location, ValueRange, ValueRange)>;
+    using CreateMathOpFunc = std::function<Operation*(ConversionPatternRewriter&, Location, ValueRange)>;
+
     struct OpInfo {
         int numOperands;
-        CreateOpFunc createFunc;
+        CreateLinalgOpFunc createLinalgFunc;
+        CreateMathOpFunc createMathFunc;
     };
 
-    template<typename OpType>
-    static CreateOpFunc createOpFunc() {
-        return [](mlir::ConversionPatternRewriter &rewriter, mlir::Location loc, ValueRange a, ValueRange b) {
-            return rewriter.create<OpType>(loc, a, b);
+    template <typename OpType>
+    static CreateLinalgOpFunc createLinalgOpFunc() {
+        return [](ConversionPatternRewriter &rewriter, Location loc,
+                 ValueRange inputs, ValueRange outputs) -> Operation* {
+            return rewriter.create<OpType>(loc, inputs, outputs);
+        };
+    }
+
+    template <typename OpType>
+    static CreateMathOpFunc createMathUnaryOpFunc() {
+        return [](ConversionPatternRewriter &rewriter, Location loc,
+                 ValueRange inputs) -> Operation* {
+            if (inputs.size() != 1) {
+                return nullptr;
+            }
+
+            Type resultType = inputs[0].getType();
+            auto fastmath = arith::FastMathFlags::none;
+
+            OperationState state(loc, OpType::getOperationName());
+            OpType::build(rewriter, state, resultType, inputs[0], fastmath);
+            return rewriter.create(state);
+        };
+    }
+
+    template <typename OpType>
+    static CreateMathOpFunc createMathBinaryOpFunc() {
+        return [](ConversionPatternRewriter &rewriter, Location loc,
+                 ValueRange inputs) -> Operation* {
+            if (inputs.size() != 2) {
+                return nullptr;
+            }
+
+            Type resultType = inputs[0].getType();
+            auto fastmath = arith::FastMathFlags::none;
+
+            OperationState state(loc, OpType::getOperationName());
+            OpType::build(rewriter, state, resultType, inputs[0], inputs[1], fastmath);
+            return rewriter.create(state);
         };
     }
 
     std::unordered_map<std::string, OpInfo> opMap;
 };
 
+
+class ConvertExternIsNaNOrInf : public OpConversionPattern<triton::ExternElementwiseOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      triton::ExternElementwiseOp op, OpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+
+    StringRef symbol = op.getSymbol();
+    bool isIsNaN = (symbol == "math.isnan");
+    bool isIsInf = (symbol == "math.isinf");
+
+    if (!isIsNaN && !isIsInf) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << "unsupported extern operation: " << symbol;
+      });
+    }
+
+    Location loc = op.getLoc();
+    Value input = adaptor.getOperands().front();
+
+    auto inputType = dyn_cast<RankedTensorType>(input.getType());
+    if (!inputType) {
+      return rewriter.notifyMatchFailure(op, "input is not a ranked tensor type");
+    }
+
+    auto outputType = cast<RankedTensorType>(op.getType());
+    auto floatType = dyn_cast<FloatType>(inputType.getElementType());
+    if (!floatType) {
+      return rewriter.notifyMatchFailure(op, "element type is not float");
+    }
+    auto outputElemType = outputType.getElementType();
+
+    Value outputTensor = rewriter.create<tensor::EmptyOp>(
+        loc, outputType.getShape(), outputElemType);
+
+    AffineMap identityMap = AffineMap::getMultiDimIdentityMap(
+        inputType.getRank(), rewriter.getContext());
+    SmallVector<AffineMap> indexingMaps = {
+        identityMap,
+        identityMap
+    };
+
+    SmallVector<utils::IteratorType> iteratorTypes(
+        inputType.getRank(), utils::IteratorType::parallel);
+
+    OperationState state(loc, linalg::GenericOp::getOperationName());
+
+    linalg::GenericOp::build(
+        rewriter,
+        state,
+        /*resultTensorTypes=*/TypeRange{outputType},
+        /*inputs=*/ValueRange{input},
+        /*outputs=*/ValueRange{outputTensor},
+        /*indexingMaps=*/indexingMaps,
+        /*iteratorTypes=*/iteratorTypes,
+        /*doc=*/StringRef(),
+        /*libraryCall=*/StringRef(),
+        [&](OpBuilder &b, Location loc, ValueRange args) {
+          Value inputVal = args[0];
+          Value specialOp;
+
+          if (isIsNaN) {
+            specialOp = b.create<math::IsNaNOp>(loc, inputVal);
+          } else { // isIsInf
+            specialOp = b.create<math::IsInfOp>(loc, inputVal);
+          }
+
+          Value outputVal;
+          if (outputElemType.isInteger(1)) {
+            outputVal = specialOp;
+          } else {
+            outputVal = b.create<arith::ExtUIOp>(loc, outputElemType, specialOp);
+          }
+
+          b.create<linalg::YieldOp>(loc, outputVal);
+        }
+    );
+
+    auto genericOp = cast<linalg::GenericOp>(rewriter.create(state));
+
+    rewriter.replaceOp(op, genericOp.getResult(0));
+    return success();
+  }
+};
 
 struct ConvertExternGeluNone : public OpRewritePattern<triton::ExternElementwiseOp> {
   using OpRewritePattern<triton::ExternElementwiseOp>::OpRewritePattern;

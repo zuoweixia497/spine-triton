@@ -68,7 +68,6 @@ void mlir::triton::populateTritonArithToLinalgConversionPatterns(
   patterns.add<TransposeConverter>(patterns.getContext());
   patterns.add<MakeRangeConverter>(patterns.getContext());
   patterns.add<ExpandDimsConverter>(patterns.getContext());
-  patterns.add<BitcastConverter>(patterns.getContext());
   patterns.add<CallConverter>(patterns.getContext());
   patterns.add<MulHiUIOpConverter>(patterns.getContext());
   patterns.add<PreciseSqrtConverter>(patterns.getContext());
@@ -84,6 +83,7 @@ void mlir::triton::populateTritonArithToLinalgConversionPatterns(
   patterns.add<CumSumConverter>(patterns.getContext());
   patterns.add<ReshapeConverter>(patterns.getContext());
   patterns.add<ConvertExternElementwise>(patterns.getContext());
+  patterns.add<ConvertExternIsNaNOrInf>(patterns.getContext());
 
   populateExternElementwiseOpToMLIROps(patterns);
 
@@ -107,4 +107,9 @@ void mlir::triton::populateTritonArithToLinalgConversionPatterns(
   // Note: the ordering here matters!
   // These patterns are added last to they will be tried last.
   linalg::populateElementwiseToLinalgConversionPatterns(patterns);
+}
+
+void mlir::triton::normalReduceConversionPatterns(RewritePatternSet &patterns) {
+  patterns.add<normalReduceConverter>(patterns.getContext());
+  patterns.add<TritonReduceReturnPattern>(patterns.getContext());
 }

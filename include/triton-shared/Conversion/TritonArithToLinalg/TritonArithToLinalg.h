@@ -25,6 +25,8 @@ void populateTritonArithToLinalgConversionPatterns(bool pidsToFuncArgs,
 // Expand the triton pointer ops operating on pointers to linalg
 void populateTritonTensorPtrConversionPatterns(RewritePatternSet &patterns);
 
+void normalReduceConversionPatterns(RewritePatternSet &patterns);
+
 std::unique_ptr<OperationPass<ModuleOp>>
 createTritonArithToLinalgPass(bool tensorPtrToLinalg = false);
 

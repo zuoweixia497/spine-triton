@@ -24,6 +24,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Support/LLVM.h"
 #include "triton-shared/Conversion/TritonArithToLinalg/TypeConverter.hpp"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 
 #define DEBUG_TYPE "triton-arith-to-linalg"
 
@@ -203,6 +204,13 @@ public:
     }
 
     if (failed(applyTensorConcatDecomposition())) {
+      signalPassFailure();
+    }
+
+    RewritePatternSet patterns1(&getContext());
+    // ConversionTarget target1(getContext());
+    triton::normalReduceConversionPatterns(patterns1);
+    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns1)))) {
       signalPassFailure();
     }
 
