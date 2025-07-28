@@ -12,6 +12,7 @@
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToPtr.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcileLlvmPtrCasts.h"
+#include "triton-shared/Conversion/TritonToLinalgExperimental/ScfbufferStandardized.h"
 
 namespace mlir {
 namespace triton {
