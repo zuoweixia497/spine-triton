@@ -251,7 +251,7 @@ def rint(arg0, _builder=None):
 @core.extern
 def finitef(arg0, _builder=None):
     return core.extern_elementwise("", "", [arg0], {
-        (core.dtype("fp32"), ): ("linalg.finitef", core.dtype("int32")),
+        (core.dtype("fp32"), ): ("math.isfinite", core.dtype("int32")),
     }, is_pure=True, _builder=_builder).to(core.int1, _builder=_builder)
 
 

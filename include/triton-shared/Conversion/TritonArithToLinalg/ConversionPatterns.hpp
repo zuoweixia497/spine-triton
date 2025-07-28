@@ -2500,8 +2500,9 @@ public:
     StringRef symbol = op.getSymbol();
     bool isIsNaN = (symbol == "math.isnan");
     bool isIsInf = (symbol == "math.isinf");
+    bool isFinite = (symbol == "math.isfinite");
 
-    if (!isIsNaN && !isIsInf) {
+    if (!isIsNaN && !isIsInf && !isFinite) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "unsupported extern operation: " << symbol;
       });
@@ -2553,8 +2554,10 @@ public:
 
           if (isIsNaN) {
             specialOp = b.create<math::IsNaNOp>(loc, inputVal);
-          } else { // isIsInf
+          } else if(isIsInf) { // isIsInf
             specialOp = b.create<math::IsInfOp>(loc, inputVal);
+          } else if(isFinite) {
+            specialOp = b.create<math::IsFiniteOp>(loc, inputVal);
           }
 
           Value outputVal;
@@ -2979,6 +2982,32 @@ public:
 
 #undef POPULATE_UNARY_OP
     return failure();
+  }
+};
+
+
+struct BitcastEliminationPattern : public OpConversionPattern<triton::BitcastOp> {
+  BitcastEliminationPattern(MLIRContext *context)
+      : OpConversionPattern<triton::BitcastOp>(context, /*benefit=*/1) {}
+
+  LogicalResult matchAndRewrite(
+      triton::BitcastOp op,
+      OpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter
+  ) const override {
+    Type inputType = adaptor.getSrc().getType();
+    Type outputType = op.getResult().getType();
+
+    if (!isa<TensorType>(inputType) || !isa<TensorType>(outputType)) {
+      return rewriter.notifyMatchFailure(op, "Operands must be tensor types");
+    }
+
+    if (inputType != outputType) {
+      return rewriter.notifyMatchFailure(op, "Input/output types differ");
+    }
+
+    rewriter.replaceOp(op, adaptor.getSrc());
+    return success();
   }
 };
 

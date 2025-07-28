@@ -163,17 +163,17 @@ public:
       });
     }
 
-    target.addDynamicallyLegalOp<triton::BitcastOp>(
-        [this](triton::BitcastOp op) {
-          if (!tensorPtrToLinalg) {
-            return triton::isPtrTypeLike(op.getType());
-          } else {
-            if (triton::isPtrTypeLike(op.getType())) {
-              return !isa<ShapedType>(op.getType());
-            }
-            return false;
-          }
-        });
+    // target.addDynamicallyLegalOp<triton::BitcastOp>(
+    //     [this](triton::BitcastOp op) {
+    //       if (!tensorPtrToLinalg) {
+    //         return triton::isPtrTypeLike(op.getType());
+    //       } else {
+    //         if (triton::isPtrTypeLike(op.getType())) {
+    //           return !isa<ShapedType>(op.getType());
+    //         }
+    //         return false;
+    //       }
+    //     });
 
     // TODO: Might want to consolidate this flag with addptrToLinalg later.
     if (tensorPtrToLinalg) {
