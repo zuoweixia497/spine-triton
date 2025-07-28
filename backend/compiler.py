@@ -31,9 +31,9 @@ def _ttir_to_ttsharedir(mod):
         triton_shared_opt_path = get_triton_shared_opt_path()
         # subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-linalg-experimental", "--mlir-print-debuginfo", "-o", dst_path])
         subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-structured", "--cse", "--canonicalize", "--triton-to-unstructured",
-                               "--triton-arith-to-linalg", "--structured-to-memref", "--unstructured-to-memref", "--triton-ptr-to-memref",
-                               "--triton-to-ptr", "--add-target-description", "--reconcile-unrealized-casts", "--reconcile-ptr-casts",
-                               "--reconcile-llvmptr-casts", "--cse", "--canonicalize", "-o", dst_path])
+                               "--triton-arith-to-linalg", "--scf-buffer-standardized", "--structured-to-memref", "--unstructured-to-memref",
+                               "--triton-ptr-to-memref", "--triton-to-ptr", "--add-target-description", "--reconcile-unrealized-casts",
+                               "--reconcile-ptr-casts", "--reconcile-llvmptr-casts", "--cse", "--canonicalize", "-o", dst_path])
         return Path(dst_path).read_text()
 
 
@@ -290,11 +290,16 @@ def get_cache_sizes():
             continue
 
         match = re.search(r"(\d+)\s*([KMG]?i?B)\s*\((\d+)\s*instances\)", output)
-        if not match:
+        matchNoinstances = re.search(r"(\d+)\s*([KMG]?i?B)", output)
+        if matchNoinstances:
+            total_size, unit = matchNoinstances.groups()
+            instances = 1
+        elif match:
+            total_size, unit, instances = match.groups()
+        else:
             results.append(0)
             continue
 
-        total_size, unit, instances = match.groups()
         unit = unit.lower().rstrip("ib")
         bytes_per_instance = (int(total_size) * unit_map[unit]) // int(instances)
         results.append(bytes_per_instance)
