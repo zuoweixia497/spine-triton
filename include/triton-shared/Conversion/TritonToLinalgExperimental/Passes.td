@@ -34,4 +34,12 @@ def ReconcileLlvmPtrCasts : Pass<"reconcile-llvmptr-casts", "mlir::ModuleOp"> {
   let constructor = "triton::createReconcileLlvmPtrCastsPass()";
 }
 
+def ScfbufferStandardized : Pass<"scf-buffer-standardized", "mlir::ModuleOp"> {
+  let summary = "To standardized the scf buffer";
+  let description = [{
+    Preprocess `scf.for` loops to support loops where a yielded tensor is not equivalent to the respective iter_arg.
+  }];
+  let constructor = "triton::createScfbufferStandardizedPass()";
+}
+
 #endif

@@ -11,6 +11,7 @@
 #include "triton-shared/Conversion/TritonPtrToMemref/TritonPtrToMemref.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcileLlvmPtrCasts.h"
+#include "triton-shared/Conversion/TritonToLinalgExperimental/ScfbufferStandardized.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToLinalgExperimental.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToPtr.h"
 #include "triton-shared/Conversion/TritonToStructured/TritonToStructured.h"
@@ -65,6 +66,7 @@ public:
 
     pm.addPass(createTritonToUnstructuredPass());
     pm.addPass(createTritonArithToLinalgPass(/*tensorPtrToLinalg=*/true));
+    pm.addPass(createScfbufferStandardizedPass());
 
     // TODO: structured-to-memref converts the loop iter-args to memref, while
     // triton-to-ptr converts the loop iter-args to ptr. These two passes might

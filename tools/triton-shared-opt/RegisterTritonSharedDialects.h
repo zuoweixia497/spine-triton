@@ -46,6 +46,7 @@ inline void registerTritonSharedDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerTritonArithToLinalgPasses();
   mlir::triton::registerStructuredToMemrefPasses();
   mlir::triton::registerAddTargetDescriptionPasses();
+  mlir::triton::registerScfbufferStandardized();
 
   // TODO: register Triton & TritonGPU passes
   registry.insert<
