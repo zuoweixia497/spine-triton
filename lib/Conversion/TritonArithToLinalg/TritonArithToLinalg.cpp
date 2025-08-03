@@ -103,7 +103,7 @@ void mlir::triton::populateTritonArithToLinalgConversionPatterns(
   patterns.add<ConvertExternGeluTanh>(patterns.getContext());
   patterns.add<ConvertExternGeluNone>(patterns.getContext());
   patterns.add<ConvertExternSilu>(patterns.getContext());
-  patterns.add<BitcastEliminationPattern>(patterns.getContext());
+  patterns.add<BitcastConverter>(patterns.getContext());
 
   // Note: the ordering here matters!
   // These patterns are added last to they will be tried last.

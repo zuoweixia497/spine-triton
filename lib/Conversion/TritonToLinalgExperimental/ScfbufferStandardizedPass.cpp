@@ -9,6 +9,8 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ScfbufferStandardized.h"
 
 using namespace mlir;
@@ -19,6 +21,67 @@ using namespace triton;
 
 namespace {
 
+struct ConvertFillI1ToI8 : public OpRewritePattern<linalg::FillOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(linalg::FillOp fillOp,
+                                PatternRewriter &rewriter) const override {
+    Location loc = fillOp.getLoc();
+    Value input = fillOp.getInputs()[0];
+    Value output = fillOp.getOutputs()[0];
+    ShapedType outputType = cast<ShapedType>(output.getType());
+
+    if (!input.getType().isInteger(1) ||
+        !outputType.getElementType().isInteger(1)) {
+      return failure();
+    }
+
+    SmallVector<Value> dynSizes;
+    for (int64_t i = 0; i < outputType.getRank(); ++i) {
+      if (outputType.isDynamicDim(i)) {
+        dynSizes.push_back(rewriter.create<tensor::DimOp>(loc, output, i));
+      }
+    }
+
+    Type i8Type = rewriter.getI8Type();
+    auto tensorI8Type = RankedTensorType::get(outputType.getShape(), i8Type);
+    Value emptyI8 = rewriter.create<tensor::EmptyOp>(
+        loc, tensorI8Type, dynSizes);
+
+    Value extendedInput = rewriter.create<arith::ExtUIOp>(loc, i8Type, input);
+
+    auto newFillOp = rewriter.create<linalg::FillOp>(
+        loc, ValueRange{extendedInput}, ValueRange{emptyI8});
+    Value filledTensor = newFillOp.getResult(0);
+
+    Value emptyI1 = rewriter.create<tensor::EmptyOp>(
+        loc, outputType, dynSizes);
+
+    Value zeroI8 = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getIntegerAttr(i8Type, 0));
+
+    AffineMap identityMap = AffineMap::getMultiDimIdentityMap(
+        outputType.getRank(), rewriter.getContext());
+
+    auto genericOp = rewriter.create<linalg::GenericOp>(
+        loc,
+        /*resultTensorTypes=*/TypeRange{outputType},
+        /*inputs=*/ValueRange{filledTensor},
+        /*outputs=*/ValueRange{emptyI1},
+        /*indexingMaps=*/ArrayRef<AffineMap>{identityMap, identityMap},
+        /*iteratorTypes=*/SmallVector<utils::IteratorType>(
+            outputType.getRank(), utils::IteratorType::parallel),
+        [&](OpBuilder &b, Location loc, ValueRange args) {
+          Value cmp = b.create<arith::CmpIOp>(
+              loc, arith::CmpIPredicate::ne, args[0], zeroI8);
+          b.create<linalg::YieldOp>(loc, cmp);
+        });
+
+    rewriter.replaceOp(fillOp, genericOp.getResult(0));
+    return success();
+  }
+};
+
 struct ScfbufferStandardizedPass : public ScfbufferStandardizedBase<ScfbufferStandardizedPass> {
 public:
   void runOnOperation() override {
@@ -26,6 +89,13 @@ public:
     module->walk([&](scf::ForOp forOp) {
       processForOp(forOp);
     });
+
+    RewritePatternSet patterns(&getContext());
+    patterns.add<ConvertFillI1ToI8>(&getContext());
+    if (failed(applyPatternsGreedily(module, std::move(patterns)))) {
+      signalPassFailure();
+    }
+
   }
 private:
   void processForOp(scf::ForOp forOp) {
@@ -43,6 +113,7 @@ private:
 
     SmallVector<linalg::GenericOp> genericOps;
     SmallVector<int> resultIndices;
+    SmallVector<int> argIndices;
 
     for (auto [idx, yieldVal] : llvm::enumerate(yieldValues)) {
       Operation *defOp = yieldVal.getDefiningOp();
@@ -54,50 +125,43 @@ private:
           if (results[resIdx] == yieldVal) {
             genericOps.push_back(genericOp);
             resultIndices.push_back(resIdx);
+            argIndices.push_back(idx);
             break;
           }
         }
       }
     }
 
-    for (auto [genericOp, resIdx] : llvm::zip(genericOps, resultIndices)) {
-      auto yieldVal = genericOp.getResult(resIdx);
-      int argIdx = -1;
-      for (auto [i, val] : llvm::enumerate(yieldValues)) {
-        if (val == yieldVal) {
-          argIdx = i;
-          break;
-        }
-      }
-      if (argIdx == -1) continue;
-
+    for (auto [genericOp, resIdx, argIdx] :
+         llvm::zip(genericOps, resultIndices, argIndices)) {
       Value iterArg = iterArgs[argIdx];
-      auto outputs = genericOp.getOutputs();
-
-      if (outputs.size() > resIdx && outputs[resIdx] != iterArg) {
-        SmallVector<Value> newOutputs = outputs;
+      SmallVector<Value> newOutputs = genericOp.getOutputs();
+      if (resIdx < newOutputs.size()) {
         newOutputs[resIdx] = iterArg;
         OpBuilder builder(genericOp);
         genericOp.getOutputsMutable().assign(newOutputs);
       }
     }
 
-    for (auto [genericOp, resIdx] : llvm::zip(genericOps, resultIndices)) {
-      auto result = genericOp.getResult(resIdx);
+    DenseMap<Value, Value> replacementMap;
 
-      int argIdx = -1;
-      for (auto [i, val] : llvm::enumerate(yieldValues)) {
-        if (val == result) {
-          argIdx = i;
-          break;
-        }
-      }
-      if (argIdx == -1) continue;
+    for (Operation &op : body->getOperations()) {
+      auto genericOp = dyn_cast<linalg::GenericOp>(&op);
+      if (!genericOp) continue;
+
+      auto it = llvm::find(genericOps, genericOp);
+      if (it == genericOps.end()) continue;
+
+      int pos = std::distance(genericOps.begin(), it);
+      int resIdx = resultIndices[pos];
+      int argIdx = argIndices[pos];
 
       Value iterArg = iterArgs[argIdx];
       Value newResult = genericOp.getResult(resIdx);
 
-      SmallVector<OpOperand *> usesToReplace;
+      replacementMap[iterArg] = newResult;
+
+      SmallVector<OpOperand*> usesToReplace;
       for (OpOperand &use : iterArg.getUses()) {
         Operation *user = use.getOwner();
         if (user != genericOp && user->getBlock() == body &&
@@ -106,13 +170,43 @@ private:
         }
       }
 
-      for (OpOperand *use : usesToReplace) {
+      for (OpOperand* use : usesToReplace) {
         if (auto userGeneric = dyn_cast<linalg::GenericOp>(use->getOwner())) {
-          if (use->getOperandNumber() >= userGeneric.getInputs().size())
-            continue;
+          auto operandNum = use->getOperandNumber();
+
+          if (operandNum < userGeneric.getInputs().size()) {
+            use->set(newResult);
+          }
+          else if (operandNum >= userGeneric.getInputs().size() &&
+                   operandNum < userGeneric.getInputs().size() + userGeneric.getOutputs().size()) {
+            int outputIdx = operandNum - userGeneric.getInputs().size();
+            SmallVector<Value> newOutputs = userGeneric.getOutputs();
+            newOutputs[outputIdx] = newResult;
+            OpBuilder builder(userGeneric);
+            userGeneric.getOutputsMutable().assign(newOutputs);
+          }
         }
-        use->set(newResult);
+        else {
+          use->set(newResult);
+        }
       }
+    }
+
+    SmallVector<Value> newYieldValues;
+    bool changed = false;
+    for (auto value : yieldOp.getOperands()) {
+      if (replacementMap.count(value)) {
+        newYieldValues.push_back(replacementMap[value]);
+        changed = true;
+      } else {
+        newYieldValues.push_back(value);
+      }
+    }
+
+    if (changed) {
+      OpBuilder builder(yieldOp);
+      builder.create<scf::YieldOp>(yieldOp.getLoc(), newYieldValues);
+      yieldOp.erase();
     }
   }
 
@@ -123,4 +217,3 @@ private:
 std::unique_ptr<OperationPass<ModuleOp>> triton::createScfbufferStandardizedPass() {
   return std::make_unique<ScfbufferStandardizedPass>();
 }
-

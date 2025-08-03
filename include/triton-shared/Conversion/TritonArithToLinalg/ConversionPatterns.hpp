@@ -958,6 +958,14 @@ struct BitcastConverter : public OpConversionPattern<triton::BitcastOp> {
   LogicalResult
   matchAndRewrite(triton::BitcastOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+                    
+    Type inputType = adaptor.getSrc().getType();
+    Type outputType = op.getResult().getType();
+    if (inputType == outputType) {
+      rewriter.replaceOp(op, adaptor.getSrc());
+      return success();
+    }
+
     // arith::bitcast does not support casting pointers
     if (triton::isPtrTypeLike(op.getType())) {
       return failure();
@@ -2985,31 +2993,6 @@ public:
   }
 };
 
-
-struct BitcastEliminationPattern : public OpConversionPattern<triton::BitcastOp> {
-  BitcastEliminationPattern(MLIRContext *context)
-      : OpConversionPattern<triton::BitcastOp>(context, /*benefit=*/1) {}
-
-  LogicalResult matchAndRewrite(
-      triton::BitcastOp op,
-      OpAdaptor adaptor,
-      ConversionPatternRewriter &rewriter
-  ) const override {
-    Type inputType = adaptor.getSrc().getType();
-    Type outputType = op.getResult().getType();
-
-    if (!isa<TensorType>(inputType) || !isa<TensorType>(outputType)) {
-      return rewriter.notifyMatchFailure(op, "Operands must be tensor types");
-    }
-
-    if (inputType != outputType) {
-      return rewriter.notifyMatchFailure(op, "Input/output types differ");
-    }
-
-    rewriter.replaceOp(op, adaptor.getSrc());
-    return success();
-  }
-};
 
 static void populateExternElementwiseOpToMLIROps(RewritePatternSet &patterns) {
   patterns.add<ExternElementwiseBinaryOpConverter,
