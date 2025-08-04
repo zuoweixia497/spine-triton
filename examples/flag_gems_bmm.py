@@ -19,3 +19,4 @@ if __name__ == "__main__":
     C_ref = torch.bmm(A, B)
 
     torch.testing.assert_close(C, C_ref, atol=1e-2, rtol=0)
+    print("PASS")

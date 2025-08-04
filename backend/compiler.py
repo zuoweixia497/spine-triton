@@ -49,6 +49,7 @@ def _ttsharedir_to_llir(ttsharedir: str):
         llir_path = os.path.join(tmpdir, "ll.ir")
         Path(ttshared_path).write_text(ttsharedir)
         mlir_opt_path = get_llvm_bin_path("mlir-opt")
+        dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
         # TritonShared-MLIR to LLVM-MLIR
         subprocess.check_call(
             [
@@ -94,7 +95,7 @@ def _ttsharedir_to_llir(ttsharedir: str):
         subprocess.check_call(
             [mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path]
         )
-        dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
+        # dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
         return Path(llir_path).read_text()
 
 
@@ -105,6 +106,7 @@ def _spine_mlir_ttsharedir_to_llir(ttsharedir: str):
         llir_path = os.path.join(tmpdir, "ll.ir")
         Path(ttshared_path).write_text(ttsharedir)
         spine_mlir_path = get_spine_mlir_opt_path()
+        dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
         # TritonShared-MLIR to LLVM-MLIR
         subprocess.check_call(
             [
@@ -121,7 +123,7 @@ def _spine_mlir_ttsharedir_to_llir(ttsharedir: str):
         subprocess.check_call(
             [mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path]
         )
-        dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
+        # dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
         return Path(llir_path).read_text()
 
 
