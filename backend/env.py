@@ -3,6 +3,7 @@ import tempfile
 import sysconfig
 import os
 import shutil
+import re
 from ctypes import CDLL, RTLD_GLOBAL
 
 
@@ -32,12 +33,21 @@ def get_triton_shared_opt_path() -> str:
     return path
 
 
-def dump_ir_if_needed(files):
+def dump_ir_if_needed(files, kernel_name=None):
     path = os.getenv("TRITON_SHARED_DUMP_PATH", "")
     if not path:
         return
     for f in files:
-        shutil.copy(f, os.path.join(path, os.path.basename(f)))
+        if kernel_name!=None:
+            shutil.copy(f, os.path.join(path, kernel_name+"_"+os.path.basename(f)))
+        else:
+            shutil.copy(f, os.path.join(path)+os.path.basename(f))
+
+def extract_kernel_name(pattern, ir):
+    matches = re.findall(pattern, ir)
+    assert len(matches) == 1
+    kernel_name = matches[0]
+    return kernel_name
 
 
 try:

@@ -17,24 +17,29 @@ from . import (
     dump_ir_if_needed,
     get_llvm_bin_path,
     get_spine_mlir_opt_path,
+    extract_kernel_name,
 )
-
 
 def _ttir_to_ttsharedir(mod):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
+    tt_pattern = r"tt\.func\s+public\s+@(\w+)\s*\("
+    tt_kernel_name = extract_kernel_name(tt_pattern, ttir_code)
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, "tt.mlir")
         dst_path = os.path.join(tmpdir, "ttshared.mlir")
         Path(src_path).write_text(ttir_code)
-        dump_ir_if_needed([src_path])
+        dump_ir_if_needed([src_path], tt_kernel_name)
         triton_shared_opt_path = get_triton_shared_opt_path()
         # subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-linalg-experimental", "--mlir-print-debuginfo", "-o", dst_path])
         subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-structured", "--cse", "--canonicalize", "--triton-to-unstructured",
                                "--triton-arith-to-linalg", "--scf-buffer-standardized", "--structured-to-memref", "--unstructured-to-memref",
                                "--triton-ptr-to-memref", "--triton-to-ptr", "--add-target-description", "--reconcile-unrealized-casts",
                                "--reconcile-ptr-casts", "--reconcile-llvmptr-casts", "--cse", "--canonicalize", "-o", dst_path])
-        dump_ir_if_needed([dst_path])
+        ttsir_code = str(Path(dst_path).read_text())
+        tts_pattern = r"func\.func\s+@(\w+)\s*\("
+        tts_kernel_name = extract_kernel_name(tts_pattern, ttsir_code)
+        dump_ir_if_needed([dst_path], tts_kernel_name)
         return Path(dst_path).read_text()
 
 
@@ -122,7 +127,10 @@ def _spine_mlir_ttsharedir_to_llir(ttsharedir: str):
         subprocess.check_call(
             [mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path]
         )
-        dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
+        llir = str(Path(llir_path).read_text())
+        pattern = r"define void @(\w+)\(.+"
+        kernel_name = extract_kernel_name(pattern, llir)
+        dump_ir_if_needed([ttshared_path, llmlir_path, llir_path], kernel_name)
         return Path(llir_path).read_text()
 
 
@@ -134,9 +142,7 @@ def _optimize_llir(llir: str):
 def _llir_to_bin(llir: str, metadata):
     cpu_arch = platform.machine()
     pattern = r"define void @(\w+)\(.+"
-    matches = re.findall(pattern, llir)
-    assert len(matches) == 1
-    metadata["name"] = matches[0]
+    metadata["name"] = extract_kernel_name(pattern, llir)
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, "kernel.ll")
         dst_path = os.path.join(tmpdir, "kernel.o")
@@ -154,7 +160,7 @@ def _llir_to_bin(llir: str, metadata):
         subprocess.check_call(
             [llc_path, src_path, *llc_flags, "-filetype=obj", "-o", dst_path]
         )
-        dump_ir_if_needed([dst_path])
+        dump_ir_if_needed([dst_path], metadata["name"])
         return Path(dst_path).read_bytes()
 
 
