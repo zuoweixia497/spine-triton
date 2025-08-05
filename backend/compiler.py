@@ -31,11 +31,7 @@ def _ttir_to_ttsharedir(mod):
         Path(src_path).write_text(ttir_code)
         dump_ir_if_needed([src_path], tt_kernel_name)
         triton_shared_opt_path = get_triton_shared_opt_path()
-        # subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-linalg-experimental", "--mlir-print-debuginfo", "-o", dst_path])
-        subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-structured", "--cse", "--canonicalize", "--triton-to-unstructured",
-                               "--triton-arith-to-linalg", "--scf-buffer-standardized", "--structured-to-memref", "--unstructured-to-memref",
-                               "--triton-ptr-to-memref", "--triton-to-ptr", "--add-target-description", "--reconcile-unrealized-casts",
-                               "--reconcile-ptr-casts", "--reconcile-llvmptr-casts", "--cse", "--canonicalize", "-o", dst_path])
+        subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-linalg-experimental", "--mlir-print-debuginfo", "-o", dst_path])
         ttsir_code = str(Path(dst_path).read_text())
         tts_pattern = r"func\.func\s+@(\w+)\s*\("
         tts_kernel_name = extract_kernel_name(tts_pattern, ttsir_code)

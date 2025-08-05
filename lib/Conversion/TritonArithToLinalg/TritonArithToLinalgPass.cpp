@@ -178,7 +178,7 @@ public:
     // TODO: Might want to consolidate this flag with addptrToLinalg later.
     if (tensorPtrToLinalg) {
       target.addDynamicallyLegalOp<triton::LoadOp, triton::StoreOp,
-                                   triton::IntToPtrOp, triton::PtrToIntOp>(
+                                   triton::IntToPtrOp>(
           [](auto op) {
             return !isa<ShapedType>(op->getOperands()[0].getType());
           });

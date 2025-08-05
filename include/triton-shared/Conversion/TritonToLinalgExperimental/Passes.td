@@ -42,4 +42,12 @@ def ScfbufferStandardized : Pass<"scf-buffer-standardized", "mlir::ModuleOp"> {
   let constructor = "triton::createScfbufferStandardizedPass()";
 }
 
+def ConvertScanOp : Pass<"convert-triton-scan", "mlir::ModuleOp"> {
+    let summary = "Convert Triton ScanOp.";
+    let description = [{
+
+    }];
+    let constructor = "triton::createConvertScanOpPass()";
+}
+
 #endif

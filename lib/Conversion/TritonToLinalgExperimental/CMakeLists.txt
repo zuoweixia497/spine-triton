@@ -10,6 +10,7 @@ add_triton_library(TritonToLinalgExperimental
   ReconcileLlvmPtrCastsPass.cpp
   TritonToPtrPass.cpp
   ScfbufferStandardizedPass.cpp
+  ConvertScanOpPass.cpp
 
   DEPENDS
   TritonToLinalgExperimentalConversionPassIncGen

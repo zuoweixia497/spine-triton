@@ -80,7 +80,7 @@ void mlir::triton::populateTritonArithToLinalgConversionPatterns(
   patterns.add<MatmulConverter>(patterns.getContext());
   patterns.add<SplatConverter>(patterns.getContext());
   patterns.add<DenseConstantConverter>(patterns.getContext());
-  patterns.add<CumSumConverter>(patterns.getContext());
+  // patterns.add<CumSumConverter>(patterns.getContext());
   patterns.add<ReshapeConverter>(patterns.getContext());
   patterns.add<ConvertExternElementwise>(patterns.getContext());
   patterns.add<ConvertExternIsNaNOrInf>(patterns.getContext());

@@ -38,8 +38,6 @@
 
 #include "triton/Dialect/Triton/IR/Types.h"
 
-#include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcileLlvmPtrCasts.h"
-
 using namespace mlir;
 
 #define GEN_PASS_CLASSES

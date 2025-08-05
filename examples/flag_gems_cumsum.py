@@ -9,7 +9,7 @@ if __name__ == "__main__":
     shape = (2, 32)
     dim = 1
     dtype = torch.float32
-    INT_DTYPES = [torch.int16, torch.int32]
+    INT_DTYPES = [torch.int16, torch.int32, torch.int64]
     if dtype in INT_DTYPES:
         inp = torch.randint(-3, 3, shape, device=flag_gems.device).to(dtype)
     else:

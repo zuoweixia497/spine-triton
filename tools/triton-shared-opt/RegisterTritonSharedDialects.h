@@ -47,6 +47,7 @@ inline void registerTritonSharedDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerStructuredToMemrefPasses();
   mlir::triton::registerAddTargetDescriptionPasses();
   mlir::triton::registerScfbufferStandardized();
+  mlir::triton::registerConvertScanOp();
 
   // TODO: register Triton & TritonGPU passes
   registry.insert<
@@ -57,5 +58,5 @@ inline void registerTritonSharedDialects(mlir::DialectRegistry &registry) {
       mlir::gpu::GPUDialect, mlir::linalg::LinalgDialect,
       mlir::func::FuncDialect, mlir::tensor::TensorDialect,
       mlir::memref::MemRefDialect, mlir::bufferization::BufferizationDialect,
-      mlir::DLTIDialect>();
+      mlir::DLTIDialect, mlir::vector::VectorDialect>();
 }
