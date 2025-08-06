@@ -20,22 +20,17 @@ from . import (
     extract_kernel_name,
 )
 
-def _ttir_to_ttsharedir(mod):
+def _ttir_to_ttsharedir(mod, metadata):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
-    tt_pattern = r"tt\.func\s+public\s+@(\w+)\s*\("
-    tt_kernel_name = extract_kernel_name(tt_pattern, ttir_code)
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, "tt.mlir")
         dst_path = os.path.join(tmpdir, "ttshared.mlir")
         Path(src_path).write_text(ttir_code)
-        dump_ir_if_needed([src_path], tt_kernel_name)
+        dump_ir_if_needed([src_path], metadata['name'])
         triton_shared_opt_path = get_triton_shared_opt_path()
         subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-linalg-experimental", "--mlir-print-debuginfo", "-o", dst_path])
-        ttsir_code = str(Path(dst_path).read_text())
-        tts_pattern = r"func\.func\s+@(\w+)\s*\("
-        tts_kernel_name = extract_kernel_name(tts_pattern, ttsir_code)
-        dump_ir_if_needed([dst_path], tts_kernel_name)
+        dump_ir_if_needed([dst_path], metadata['name'])
         return Path(dst_path).read_text()
 
 
@@ -44,7 +39,7 @@ def _optimize_ttsharedir(ttsharedir: str):
     return ttsharedir
 
 
-def _ttsharedir_to_llir(ttsharedir: str):
+def _ttsharedir_to_llir(ttsharedir: str, metadata):
     with tempfile.TemporaryDirectory() as tmpdir:
         ttshared_path = os.path.join(tmpdir, "ttshared.mlir")
         llmlir_path = os.path.join(tmpdir, "ll.mlir")
@@ -96,11 +91,11 @@ def _ttsharedir_to_llir(ttsharedir: str):
         subprocess.check_call(
             [mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path]
         )
-        dump_ir_if_needed([ttshared_path, llmlir_path, llir_path])
+        dump_ir_if_needed([llmlir_path, llir_path], metadata['name'])
         return Path(llir_path).read_text()
 
 
-def _spine_mlir_ttsharedir_to_llir(ttsharedir: str):
+def _spine_mlir_ttsharedir_to_llir(ttsharedir: str, metadata):
     with tempfile.TemporaryDirectory() as tmpdir:
         ttshared_path = os.path.join(tmpdir, "ttshared.mlir")
         llmlir_path = os.path.join(tmpdir, "ll.mlir")
@@ -117,16 +112,35 @@ def _spine_mlir_ttsharedir_to_llir(ttsharedir: str):
                 llmlir_path,
             ]
         )
+        dump_ir_if_needed([llmlir_path], metadata['name'])
+
+        llmlir_new_path = llmlir_path
+        base_path = os.getenv("TRITON_SHARED_DUMP_PATH", "")
+        if base_path:
+            llmlir_new_path = os.path.join(tmpdir, "ll_with_debuginfo.mlir")
+            subprocess.check_call(
+                [
+                    spine_mlir_path,
+                    os.path.join(base_path, metadata['name'] + "_" + os.path.basename(llmlir_path)),
+                    "--ensure-debug-info-scope-on-llvm-func",
+                    "-mlir-print-debuginfo",
+                    "-o",
+                    llmlir_new_path,
+                ]
+            )
 
         # LLVM-MLIR to LLVM-IR
         mlir_translate_path = get_llvm_bin_path("mlir-translate")
         subprocess.check_call(
-            [mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path]
+            [
+                mlir_translate_path,
+                llmlir_new_path,
+                "--mlir-to-llvmir",
+                "-o",
+                llir_path
+            ]
         )
-        llir = str(Path(llir_path).read_text())
-        pattern = r"define void @(\w+)\(.+"
-        kernel_name = extract_kernel_name(pattern, llir)
-        dump_ir_if_needed([ttshared_path, llmlir_path, llir_path], kernel_name)
+        dump_ir_if_needed([llir_path], metadata['name'])
         return Path(llir_path).read_text()
 
 
@@ -137,8 +151,6 @@ def _optimize_llir(llir: str):
 
 def _llir_to_bin(llir: str, metadata):
     cpu_arch = platform.machine()
-    pattern = r"define void @(\w+)\(.+"
-    metadata["name"] = extract_kernel_name(pattern, llir)
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, "kernel.ll")
         dst_path = os.path.join(tmpdir, "kernel.o")
@@ -156,7 +168,7 @@ def _llir_to_bin(llir: str, metadata):
         subprocess.check_call(
             [llc_path, src_path, *llc_flags, "-filetype=obj", "-o", dst_path]
         )
-        dump_ir_if_needed([dst_path], metadata["name"])
+        dump_ir_if_needed([dst_path], metadata['name'])
         return Path(dst_path).read_bytes()
 
 
@@ -241,23 +253,26 @@ class CPUBackend(BaseBackend):
         pm.run(mod)
         cache_sizes = get_cache_sizes()
         mod.set_attr("tt.cache_sizes", ir.make_attr(cache_sizes, mod.context))
+        tt_pattern = r"tt\.func\s+public\s+@(\w+)\s*\("
+        kernel_name = extract_kernel_name(tt_pattern, str(mod))
+        metadata['name'] = kernel_name
         return mod
 
     def add_stages(self, stages, options):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
         stages["ttsharedir"] = lambda src, metadata: _optimize_ttsharedir(
-            _ttir_to_ttsharedir(src)
+            _ttir_to_ttsharedir(src, metadata)
         )
 
         spine_mlir_path = get_spine_mlir_opt_path()
 
         if os.path.isfile(spine_mlir_path):
             stages["llir"] = lambda src, metadata: _optimize_llir(
-                _spine_mlir_ttsharedir_to_llir(src)
+                _spine_mlir_ttsharedir_to_llir(src, metadata)
             )
         else:
             stages["llir"] = lambda src, metadata: _optimize_llir(
-                _ttsharedir_to_llir(src)
+                _ttsharedir_to_llir(src, metadata)
             )
 
         stages["obj"] = lambda src, metadata: _llir_to_bin(src, metadata)
