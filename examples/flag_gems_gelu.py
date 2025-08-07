@@ -21,8 +21,6 @@ if __name__ == "__main__":
 
         C_ref = torch.nn.functional.gelu(inp, approximate=approximate)
 
-        print(C)
-        print(C_ref)
         torch.testing.assert_close(C, C_ref, atol=1e-2, rtol=1e-2)
 
         print("PASS")

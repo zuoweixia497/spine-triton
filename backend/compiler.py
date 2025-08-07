@@ -29,7 +29,14 @@ def _ttir_to_ttsharedir(mod, metadata):
         Path(src_path).write_text(ttir_code)
         dump_ir_if_needed([src_path], metadata['name'])
         triton_shared_opt_path = get_triton_shared_opt_path()
-        subprocess.check_call([triton_shared_opt_path, src_path, "--triton-to-linalg-experimental", "--mlir-print-debuginfo", "-o", dst_path])
+        subprocess.check_call(
+            [
+                triton_shared_opt_path,
+                src_path,
+                "--triton-to-linalg-experimental",
+                "-o",
+                dst_path
+            ])
         dump_ir_if_needed([dst_path], metadata['name'])
         return Path(dst_path).read_text()
 
@@ -60,6 +67,7 @@ def _ttsharedir_to_llir(ttsharedir: str, metadata):
                 # "--eliminate-empty-tensors",
                 "--empty-tensor-to-alloc-tensor",
                 "--one-shot-bufferize=allow-return-allocs-from-loops=true",
+                "--buffer-deallocation-pipeline",
                 "--lower-affine",
                 "--convert-linalg-to-loops",
                 "--expand-strided-metadata",
@@ -166,7 +174,14 @@ def _llir_to_bin(llir: str, metadata):
             )
 
         subprocess.check_call(
-            [llc_path, src_path, *llc_flags, "-filetype=obj", "-o", dst_path]
+            [
+                llc_path,
+                src_path,
+                *llc_flags,
+                "-filetype=obj",
+                "-o",
+                dst_path
+            ]
         )
         dump_ir_if_needed([dst_path], metadata['name'])
         return Path(dst_path).read_bytes()
