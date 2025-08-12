@@ -10,12 +10,26 @@ triton.runtime.driver.set_active(CPUDriver())
 def empty_decorator(func):
     return func
 
+
 pytest.mark.interpreter = empty_decorator
 
 
 @pytest.fixture
 def device(request):
     return "cpu"
+
+# this fixture is used for test_trans_4d && test_trans_reshape
+@pytest.fixture
+def with_allocator():
+    import triton
+    from triton.runtime._allocation import NullAllocator
+    from triton._internal_testing import default_alloc_fn
+
+    triton.set_allocator(default_alloc_fn)
+    try:
+        yield
+    finally:
+        triton.set_allocator(NullAllocator())
 
 
 tests_supported = {
@@ -37,7 +51,9 @@ tests_supported = {
     "test_empty_kernel",
     "test_if_return",
     "test_value_specialization",
+    "test_propagate_nan",
     "test_clamp",
+    "test_clamp_symmetric",
     "test_store_cache_modifier",
     "test_permute",
     "test_broadcast",
@@ -54,8 +70,13 @@ tests_supported = {
     "test_load_cache_modifier",
     "test_dot_without_load",
     "test_cat",
-    "test_addptr"
+    "test_addptr",
+    "test_transpose",
+    "test_trans_4d",
+    "test_unsplat",
+    "test_arange",
 }
+
 
 def pytest_collection_modifyitems(config, items):
     skip_marker = pytest.mark.skip(reason="CPU backend does not support it yet")

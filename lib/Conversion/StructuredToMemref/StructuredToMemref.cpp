@@ -32,6 +32,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
 #include <cassert>
@@ -136,6 +137,27 @@ static OpFoldResult accumulateTargetOffset(Location loc,
   return targetOffset;
 }
 
+static OpFoldResult accumulateTargetOffset(Location loc,
+                                           ArrayRef<OpFoldResult> offsets,
+                                           ArrayRef<OpFoldResult> strides,
+                                           int gatherDim,
+                                           OpBuilder &b) {
+  OpFoldResult targetOffset = b.getIndexAttr(0);
+  for (int i=0;i<offsets.size();i++) {
+
+    OpFoldResult offset = offsets[i];
+    // If this is the gather dimension, multiply the offset by the stride.
+    // Non-gather dimensions are already multiplied by the stride
+    // in the offsets in PtrAnalysis.
+    if (i == gatherDim) {
+      OpFoldResult stride = strides[i];
+      offset = mulOFRs(offset, stride, loc, b);
+    }
+    targetOffset = addOFRs(targetOffset, offset, loc, b);
+  }
+  return targetOffset;
+}
+
 static Value rewriteGatherScatterPtrElement(
     ArrayRef<int64_t> resultShape, tts::MakeGatherScatterTensorPtrOp op,
     Value basePtr, Value gatherOffsetElt, int gatherDim,
@@ -148,7 +170,8 @@ static Value rewriteGatherScatterPtrElement(
 
   auto offsets = op.getMixedOffsets();
   offsets[gatherDim] = gatherOffsetElt;
-  auto targetOffset = accumulateTargetOffset(op.getLoc(), offsets, rewriter);
+  auto targetOffset =
+      accumulateTargetOffset(op.getLoc(), offsets, mixedStrides, gatherDim, rewriter);
 
   auto staticTargetOffset = getIntAttr(targetOffset);
   auto resultType =
@@ -412,7 +435,7 @@ private:
     Value strideRow = ofrToIndexValue(op.getMixedStrides()[0], loc, rewriter);
     Value strideCol = ofrToIndexValue(op.getMixedStrides()[1], loc, rewriter);
 
-    Value modRow = op.getShape()[0];
+    Value modRow = ofrToIndexValue(op.getMixedShape()[0], loc, rewriter);
 
     // First chunk
     Value wrappedAroundOff =
@@ -441,23 +464,31 @@ private:
 
   LogicalResult rewriteSplitPtr(tts::MakeTensorPtrOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const {
-
     auto parentShape = op.getStaticShape();
-
+    assert(parentShape.size() == 2 &&
+           "Only support split pointer for 2D tensors only");
     SmallVector<Value> casts;
     StringRef wrapType;
 
-    if (parentShape[0] == ShapedType::kDynamic) {
+    // For split pointers, a split dimension is either a dynamic or a non-zero
+    // value. The other dimension must be zero.
+    auto isSplitDimension = [](int64_t dim) {
+      return dim == ShapedType::kDynamic || dim != 0;
+    };
+
+    if (isSplitDimension(parentShape[0])) {
       // Stacked case
       assert(parentShape[1] == 0);
       auto [cast1, cast2] = createStackedCastOps(op, adaptor, rewriter);
       casts = {cast1.getResult(), cast2.getResult()};
       wrapType = WRAP_STACKED;
-    } else {
+    } else if (isSplitDimension(parentShape[1])) {
       assert(parentShape[0] == 0);
       auto [cast1, cast2] = createSideBySideCastOps(op, adaptor, rewriter);
       casts = {cast1.getResult(), cast2.getResult()};
       wrapType = WRAP_SIDE_BY_SIDE;
+    } else {
+      llvm_unreachable("Unexpected split pointer shape");
     }
 
     auto combinedCast = rewriter.create<UnrealizedConversionCastOp>(
@@ -894,7 +925,29 @@ private:
 
     // Create loop to iterate every offset in gatherOffset.
     auto lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    auto upperBound = rewriter.create<arith::ConstantIndexOp>(loc, offsetSize);
+    Value upperBound = rewriter.create<arith::ConstantIndexOp>(loc, offsetSize).getResult();
+    if (op.hasMask()) {
+      SmallVector<OpFoldResult> mixedDims = op.getMixedMaskDims();
+      OpFoldResult gatherMaskDim = mixedDims[gatherDim];
+      // If gatherMaskDim is a immediate, we can just update the offsetSize
+      // to the value of gatherMaskDim.
+      // Otherwise, we will need to compare the induction variable with
+      // gatherMaskDim to guard the load.
+      if (auto gatherMaskDimIndex = getIntAttr(gatherMaskDim)) {
+        // If the gather mask dimension is a constant, we can use it directly.
+        unsigned gatherMaskDimValue = gatherMaskDimIndex.value();
+        offsetSize = std::min(offsetSize, gatherMaskDimValue);
+        upperBound = rewriter.create<arith::ConstantIndexOp>(loc, offsetSize).getResult();
+      } else {
+        // Use arith::MinSIOp to get the minimum value of gatherMaskDim
+        // and offsetSize.
+        auto gatherMaskDimVal = cast<Value>(gatherMaskDim);
+        auto offsetSizeVal =
+            rewriter.create<arith::ConstantIndexOp>(loc, offsetSize);
+        upperBound = rewriter.create<arith::MinSIOp>(loc, gatherMaskDimVal,
+                                                     offsetSizeVal).getResult();
+      }
+    }
     auto step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     auto loop = rewriter.create<scf::ForOp>(loc, lowerBound, upperBound, step);
 
@@ -1019,7 +1072,29 @@ private:
 
     // Create loop to iterate every offset in gatherOffset.
     auto lowerBound = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    auto upperBound = rewriter.create<arith::ConstantIndexOp>(loc, offsetSize);
+    Value upperBound = rewriter.create<arith::ConstantIndexOp>(loc, offsetSize).getResult();
+    if (op.hasMask()) {
+      SmallVector<OpFoldResult> mixedDims = op.getMixedMaskDims();
+      OpFoldResult gatherMaskDim = mixedDims[gatherDim];
+      // If gatherMaskDim is a immediate, we can just update the offsetSize
+      // to the value of gatherMaskDim.
+      // Otherwise, we will need to compare the induction variable with
+      // gatherMaskDim to guard the load.
+      if (auto gatherMaskDimIndex = getIntAttr(gatherMaskDim)) {
+        // If the gather mask dimension is a constant, we can use it directly.
+        unsigned gatherMaskDimValue = gatherMaskDimIndex.value();
+        offsetSize = std::min(offsetSize, gatherMaskDimValue);
+        upperBound = rewriter.create<arith::ConstantIndexOp>(loc, offsetSize).getResult();
+      } else {
+        // Use arith::MinSIOp to get the minimum value of gatherMaskDim
+        // and offsetSize.
+        auto gatherMaskDimVal = cast<Value>(gatherMaskDim);
+        auto offsetSizeVal =
+            rewriter.create<arith::ConstantIndexOp>(loc, offsetSize);
+        upperBound = rewriter.create<arith::MinSIOp>(loc, gatherMaskDimVal,
+                                                     offsetSizeVal).getResult();
+      }
+    }
     auto step = rewriter.create<arith::ConstantIndexOp>(loc, 1);
     auto loop = rewriter.create<scf::ForOp>(loc, lowerBound, upperBound, step);
 
@@ -1028,6 +1103,7 @@ private:
 
     // Load the offsetElt first.
     Value inductionVar = loop.getInductionVar();
+
     auto gatherOffsetElt = rewriter.create<tensor::ExtractOp>(
         loc, gatherOffset, ValueRange{inductionVar});
 
