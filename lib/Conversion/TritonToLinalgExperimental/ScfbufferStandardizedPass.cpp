@@ -173,11 +173,7 @@ private:
       for (OpOperand* use : usesToReplace) {
         if (auto userGeneric = dyn_cast<linalg::GenericOp>(use->getOwner())) {
           auto operandNum = use->getOperandNumber();
-
-          if (operandNum < userGeneric.getInputs().size()) {
-            use->set(newResult);
-          }
-          else if (operandNum >= userGeneric.getInputs().size() &&
+         if (operandNum >= userGeneric.getInputs().size() &&
                    operandNum < userGeneric.getInputs().size() + userGeneric.getOutputs().size()) {
             int outputIdx = operandNum - userGeneric.getInputs().size();
             SmallVector<Value> newOutputs = userGeneric.getOutputs();
@@ -185,9 +181,6 @@ private:
             OpBuilder builder(userGeneric);
             userGeneric.getOutputsMutable().assign(newOutputs);
           }
-        }
-        else {
-          use->set(newResult);
         }
       }
     }
