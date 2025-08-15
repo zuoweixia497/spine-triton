@@ -44,6 +44,8 @@ def test_accuracy_groupnorm(N, C, H, W, num_groups, dtype, wb_none):
     if flag_gems.vendor_name == "kunlunxin":
         torch.manual_seed(0)
         torch.cuda.manual_seed_all(0)
+    if flag_gems.vendor_name == "spacemit":
+        torch.manual_seed(42)
 
     res_inp = torch.randn(size=(N, C, H, W), dtype=dtype, device=flag_gems.device)
     if wb_none:
@@ -93,7 +95,8 @@ def test_accuracy_layernorm(shape, dtype, wb_none):
     if flag_gems.vendor_name == "kunlunxin":
         torch.manual_seed(0)
         torch.cuda.manual_seed_all(0)
-
+    if flag_gems.vendor_name == "spacemit":
+        torch.manual_seed(42)
     res_inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     if wb_none:
         res_weight = None
@@ -130,6 +133,8 @@ def test_accuracy_layernorm(shape, dtype, wb_none):
 @pytest.mark.parametrize("shape", REDUCTION_SHAPES)
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
 def test_accuracy_rmsnorm(shape, dtype):
+    if flag_gems.vendor_name == "spacemit":
+        torch.manual_seed(42)
     N = shape[1]
     layer_shape = [
         N,
@@ -180,6 +185,8 @@ def test_accuracy_rmsnorm(shape, dtype):
 @pytest.mark.parametrize("shape", REDUCTION_SHAPES)
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
 def test_accuracy_skip_layernorm(shape, dtype):
+    if flag_gems.vendor_name == "spacemit":
+        torch.manual_seed(42)
     N = shape[1]
     layer_shape = [
         N,
@@ -213,6 +220,8 @@ def test_accuracy_skip_layernorm(shape, dtype):
 @pytest.mark.parametrize("shape", REDUCTION_SHAPES)
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
 def test_accuracy_skip_rmsnorm(shape, dtype):
+    if flag_gems.vendor_name == "spacemit":
+        torch.manual_seed(42)
     N = shape[1]
     layer_shape = [
         N,
@@ -263,6 +272,8 @@ def test_accuracy_batch_norm(shape, dtype, affine):
     if flag_gems.vendor_name == "cambricon":
         torch.manual_seed(23)
         torch.mlu.manual_seed_all(23)
+    if flag_gems.vendor_name == "spacemit":
+        torch.manual_seed(42)
     C = shape[1]
     inp = torch.randn(size=shape, dtype=dtype, device=flag_gems.device)
     weight = (

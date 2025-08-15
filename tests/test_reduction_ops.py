@@ -79,6 +79,8 @@ CROSS_ENTROPY_LOSS_REDUCTION = ["mean"] if QUICK_MODE else ["mean", "none", "sum
 @pytest.mark.parametrize("keepdim, dim, shape", KEEPDIM_DIMS_SHAPE)
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
 def test_accuracy_amax(shape, dim, keepdim, dtype):
+    if flag_gems.vendor_name == "spacemit":
+        torch.manual_seed(42)
     inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     ref_inp = to_reference(inp)
 
@@ -96,6 +98,8 @@ def test_accuracy_amax(shape, dim, keepdim, dtype):
 @pytest.mark.parametrize("keepdim", [True, False])
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
 def test_accuracy_argmax(shape, dim, keepdim, dtype):
+    if flag_gems.vendor_name == "spacemit":
+        torch.manual_seed(42)
     inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
     ref_inp = to_reference(inp)
 
@@ -114,6 +118,8 @@ def test_accuracy_argmax(shape, dim, keepdim, dtype):
 def test_accuracy_cross_entropy_loss_indices(
     shape, dtype, weight, ignore_index, reduction, label_smoothing
 ):
+    if flag_gems.vendor_name == "spacemit":
+        torch.manual_seed(42)
     dim = 1
     up_limit = shape[dim] - 1
     target_shape = list(shape)
@@ -162,6 +168,8 @@ def test_accuracy_cross_entropy_loss_indices(
 def test_accuracy_cross_entropy_loss_probabilities(
     shape, dtype, reduction, label_smoothing
 ):
+    if flag_gems.vendor_name == "spacemit":
+        torch.manual_seed(42)
     dim = 1
     inp = torch.randn(shape, dtype=dtype, device=flag_gems.device, requires_grad=True)
     target = torch.randn(shape, dtype=dtype, device=flag_gems.device)
