@@ -9,6 +9,7 @@
 #include "triton-shared/Conversion/StructuredToMemref/StructuredToMemref.h"
 #include "triton-shared/Conversion/TritonArithToLinalg/TritonArithToLinalg.h"
 #include "triton-shared/Conversion/TritonPtrToMemref/TritonPtrToMemref.h"
+#include "triton-shared/Conversion/TritonToLinalgExperimental/CollapseShape.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcileLlvmPtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ScfbufferStandardized.h"
@@ -61,7 +62,9 @@ public:
   void runOnOperation() override {
     auto moduleOp = getOperation();
     PassManager pm(&getContext(), moduleOp.getOperationName());
-    pm.addPass(createTritonToStructuredPass(enableMakeGatherScatterTensorPtr));
+
+    pm.addPass(createTritonToStructuredPass(
+        enableMakeGatherScatterTensorPtr));
 
     // Erase dead code and fold constants created during lowering
     pm.addPass(createCSEPass());
@@ -71,15 +74,6 @@ public:
     pm.addPass(createTritonArithToLinalgPass(/*tensorPtrToLinalg=*/true));
     pm.addPass(createScfbufferStandardizedPass());
 
-    // TODO: structured-to-memref converts the loop iter-args to memref, while
-    // triton-to-ptr converts the loop iter-args to ptr. These two passes might
-    // end up conflicting with each other in cases where we have a mixed of
-    // structured and unstructured accesses. Fortunately, the structured ops do
-    // not need to use the loop iter-args at all (see code in PtrAnalysis.cpp),
-    // so if we run remove-dead-values after structured-to-memref, the memref
-    // iter-args that are used in structured loads and stores should be removed.
-    // Running this now may be too invasive and cause many IR changes, so
-    // leave as a TODO for now.
     pm.addPass(createStructuredToMemrefPass());
     pm.addPass(createUnstructuredToMemrefPass());
     pm.addPass(createTritonPtrToMemrefPass());
@@ -90,8 +84,19 @@ public:
     pm.addPass(createReconcilePtrCastsPass());
     pm.addPass(createReconcileLlvmPtrCastsPass());
 
+    // Now that remove-dead-values fully works with linalg ops, clean up the IR
+    // again, particularly unused loop iter-args that were created
+    // during triton-to-structured.
+    pm.addPass(createRemoveDeadValuesPass());
     pm.addPass(createCSEPass());
     pm.addPass(createCanonicalizerPass());
+    if (enableCollapseShape) {
+      // TODO Enable this
+      // Canonicalizer pass will rewrite tensor.expand_shape(linalg.fill) to
+      // linalg.fill(tensor.expand_shape) so we need to run it before
+      // collapseShape pass
+      // pm.addPass(createCollapseShapePass());
+    }
 
     if (failed(runPipeline(pm, getOperation()))) {
       signalPassFailure();

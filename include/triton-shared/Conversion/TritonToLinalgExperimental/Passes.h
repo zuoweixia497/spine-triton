@@ -14,6 +14,7 @@
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcileLlvmPtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ScfbufferStandardized.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ConvertScanOp.h"
+#include "triton-shared/Conversion/TritonToLinalgExperimental/CollapseShape.h"
 
 namespace mlir {
 namespace triton {

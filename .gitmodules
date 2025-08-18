@@ -1,4 +1,0 @@
-[submodule "triton"]
-	path = triton
-	url = "http://gerrit.dc.com:8080/DSA/spine-triton-src"
-	branch = jdsk-dev-main

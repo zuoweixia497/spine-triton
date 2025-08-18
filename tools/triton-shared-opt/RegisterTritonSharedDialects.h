@@ -27,6 +27,7 @@
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Conversion/AddTargetDescription/Passes.h"
+#include "triton-shared/Transform/AddLLVMDebugInfo/Passes.h"
 
 #include "mlir/InitAllPasses.h"
 
@@ -35,7 +36,7 @@ inline void registerTritonSharedDialects(mlir::DialectRegistry &registry) {
   mlir::registerLinalgPasses();
   mlir::triton::registerTritonPasses();
   mlir::triton::registerTritonToLinalgPass();
-  mlir::triton::registerTritonToLinalgExperimentalPass();
+  mlir::triton::registerTritonToLinalgExperimentalPasses();
   mlir::triton::registerTritonToStructuredPass();
   mlir::triton::registerTritonPtrToMemref();
   mlir::triton::registerReconcilePtrCasts();
@@ -48,6 +49,7 @@ inline void registerTritonSharedDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerAddTargetDescriptionPasses();
   mlir::triton::registerScfbufferStandardized();
   mlir::triton::registerConvertScanOp();
+  mlir::triton::registerAddLLVMDebugInfoPass();
 
   // TODO: register Triton & TritonGPU passes
   registry.insert<
