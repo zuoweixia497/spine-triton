@@ -1,7 +1,5 @@
 import hashlib
 import tempfile
-import sysconfig
-import site
 import os, subprocess, tempfile, platform
 import importlib.util
 import sys
@@ -9,7 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 import time
 import triton
-import triton._C
 from triton.runtime.cache import get_cache_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
@@ -92,75 +89,24 @@ extern "C" {{
                        int, int, int, int, int, int);
 }}
 
-static std::unique_ptr<uint32_t[][3]> get_all_grids(uint32_t gridX, uint32_t gridY, uint32_t gridZ) {{
-  std::unique_ptr<uint32_t[][3]> grids(new uint32_t[gridX * gridY * gridZ][3]);
-  for (uint32_t z = 0; z < gridZ; ++z) {{
-    for (uint32_t y = 0; y < gridY; ++y) {{
-      for (uint32_t x = 0; x < gridX; ++x) {{
-        grids[z * gridY * gridX + y * gridX + x][0] = x;
-        grids[z * gridY * gridX + y * gridX + x][1] = y;
-        grids[z * gridY * gridX + y * gridX + x][2] = z;
-      }}
-    }}
-  }}
-  return grids;
-}}
-
-inline bool getBoolEnv(const std::string &env) {{
-  const char *s = std::getenv(env.c_str());
-  std::string str(s ? s : "");
-  std::transform(str.begin(), str.end(), str.begin(),
-                 [](unsigned char c) {{ return std::tolower(c); }});
-  return str == "on" || str == "true" || str == "1";
-}}
-
-inline std::optional<int64_t> getIntEnv(const std::string &env) {{
-  const char *cstr = std::getenv(env.c_str());
-  if (!cstr)
-    return std::nullopt;
-  char *endptr;
-  long int result = std::strtol(cstr, &endptr, 10);
-  if (endptr == cstr)
-    assert(false && "invalid integer");
-  return result;
-}}
-
 
 static void _launch(int gridX, int gridY, int gridZ, {arg_decls}) {{
   if (gridX*gridY*gridZ <= 0) return;
-
-  auto all_grids = get_all_grids(gridX, gridY, gridZ);
-  size_t N = gridX * gridY * gridZ;
-
-  // single thread for debug
-  if (getBoolEnv("TRITON_SHARED_SINGLE_CORE")) {{
-    for (size_t i = 0; i < N; ++i) {{
-      auto x = all_grids[i][0];
-      auto y = all_grids[i][1];
-      auto z = all_grids[i][2];
-      {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
-                for i, ty in signature.items() if i not in constants and ty[0] == "*")}
-      {kernel_name}({kernel_parameters}
-                    gridX, gridY, gridZ, x, y, z);
-    }}
-    return;
-  }}
-
-  std::optional<int> max_threads = getIntEnv("TRITON_SHARED_MAX_THREADS");
-  int thread_num = max_threads.value_or(omp_get_max_threads());
-  thread_num = std::max(1, std::min(thread_num, omp_get_max_threads()));
+  int thread_num = omp_get_max_threads();
 
   #pragma omp parallel for schedule(static) num_threads(thread_num)
-  for (size_t i = 0; i < N; ++i) {{
-    auto x = all_grids[i][0];
-    auto y = all_grids[i][1];
-    auto z = all_grids[i][2];
+    for(int x = 0; x < gridX; x++) {{
+      for(int y = 0; y < gridY; y++) {{
+        for(int z = 0; z < gridZ; z++) {{
     {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
-              for i, ty in signature.items() if i not in constants and ty[0] == "*")}
+          for i, ty in signature.items() if i not in constants and ty[0] == "*")}
     {kernel_name}({kernel_parameters}
-                  gridX, gridY, gridZ, x, y, z);
+                 gridX, gridY, gridZ, x, y, z);
+        }}
+      }}
     }}
   }}
+
 
 typedef struct _DevicePtrInfo {{
   void *dev_ptr;
@@ -235,7 +181,6 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   // raise exception asap
   {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
   _launch(gridX, gridY, gridZ, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
-
   if (PyErr_Occurred()) {{
     return NULL;
   }}
@@ -289,31 +234,26 @@ def compile_module(launcher_src, kernel_placeholder_name):
         py_lib = '{name}{major}.{minor}'.format(name="python", major=py_version.major, minor=py_version.minor)
     cpu_backend_path = Path(__file__).resolve().parent
     include_dir = os.path.join(cpu_backend_path, "include")
-
+    cache_dict = {}
+    spine_opt_debug = get_spine_mlir_cc_debug()
     def launch(
         gridX, gridY, gridZ, stream, cu_function,
         kernel_metadata, launch_metadata,
         launch_enter_hook, launch_exit_hook, *args):
-        # Unlike CUDA/HIP, we cannot easily pass function pointer across different pybind libraries.
-        # Let's compile one kernel every time.
-        # The cu_function parameter actually contains our kernel obj.
-        # See CPUUtils.load_binary method.
         kernel_obj = cu_function
         kernel_name = kernel_metadata[6] # see pack_metadata in compiler.py
         src = launcher_src.replace(kernel_placeholder_name, kernel_name)
-
         key = hashlib.md5(src.encode("utf-8") + kernel_obj).hexdigest()
+        if key in cache_dict:
+            mod_launch, _ = cache_dict[key]
+            return mod_launch
         cache = get_cache_manager(key)
         name = "__triton_shared_ref_cpu_kernel_launcher"
-
         if platform.system() == "Windows":
           filename = f"{name}.pyd"
         else:
           filename = f"{name}.so"
         cache_path = cache.get_file(filename)
-
-        spine_opt_debug = get_spine_mlir_cc_debug()
-
         if cache_path is None:
           with tempfile.TemporaryDirectory() as tmpdir:
               if platform.system() == "Windows":
@@ -343,7 +283,8 @@ def compile_module(launcher_src, kernel_placeholder_name):
                     gcc_flags.extend(
                       [
                         "-march=rv64gcv_zfh_zba_zicbop",
-                        "-mabi=lp64d"
+                        "-mabi=lp64d",
+                        "-O3"
                       ]
                     )
                   if spine_opt_debug:
@@ -361,17 +302,19 @@ def compile_module(launcher_src, kernel_placeholder_name):
               with open(so_path, "rb") as f:
                 cache_path = cache.put(f.read(), filename, binary=True)
 
-        # Load and launch the compiled kernel.
         spec = importlib.util.spec_from_file_location(name, cache_path)
         if spec is None:
             raise RuntimeError(f"Cannot find {name} module in {cache_path}")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return mod.launch(gridX, gridY, gridZ,
-                          kernel_metadata, launch_metadata,
-                          launch_enter_hook, launch_exit_hook,
-                          *args)
+        mod_launch = mod.launch(gridX, gridY, gridZ,
+                               kernel_metadata, launch_metadata,
+                               launch_enter_hook, launch_exit_hook,
+                               *args)
 
+        cache_dict[key] = (mod_launch, cache_path)
+
+        return mod_launch
     return launch
 
 
@@ -387,7 +330,6 @@ class CPULauncher(object):
 
     def __init__(self, src, metadata):
         kernel_placeholder_name = "KERNEL_NAME_PLACEHOLDER"
-
         constants = src.constants if hasattr(src, "constants") else dict()
         cst_key = lambda i: src.fn.arg_names.index(i) if isinstance(i, str) else i
         constants = {cst_key(key): value for key, value in constants.items()}
@@ -434,7 +376,7 @@ class CPUUtils(object):
     @staticmethod
     def load_binary(name, kernel_obj, shared, device):
         return (
-          None,       # module
+          kernel_obj,       # module
           kernel_obj, # function
           None,       # n_regs
           None,        # n_spills
