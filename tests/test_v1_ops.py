@@ -194,6 +194,7 @@ def test_accuracy_dropout(shape, p, dtype):
             abs(num_equal - exp_equal) / exp_equal <= 0.05
         ), f"num_equal: {num_equal}, exp_equal: {exp_equal}, num_total: {res_inp.numel()}"
 
+@pytest.mark.skipif(flag_gems.vendor_name == "spacemit", reason="need spine-mlir")
 @pytest.mark.gelu
 @pytest.mark.parametrize("shape", POINTWISE_SHAPES)
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
