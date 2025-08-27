@@ -60,10 +60,10 @@ def _format_of(ty):
       "uint64_t": "K",
     }[ty]
 
-def _generate_launcher(constants, signature, kernel_name):
+def _generate_launcher(constants, signature):
     arg_decls = ', '.join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
     args_format = ''.join([_format_of(_extracted_type(ty)) for ty in signature.values()])
-    format = "iiiOOOO" + args_format
+    format = "iiiKKOOOO" + args_format
     args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
 
     kernel_arg_decls = ', '.join(_ty_to_cpp(ty) if ty[0] != "*" else f"int64_t, void*" for i, ty in signature.items() if ty != "constexpr")
@@ -82,30 +82,7 @@ def _generate_launcher(constants, signature, kernel_name):
 #include "ExecutionEngine/CRunnerUtils.h"
 #include "ExecutionEngine/CRunnerUtils.cpp"
 
-extern "C" {{
-  // Pointer type (=Memref) becomes int64_t + MemRef struct
-  // FIXME: understand what this int64_t is used for.
-  void {kernel_name}({kernel_arg_decls}
-                       int, int, int, int, int, int);
-}}
-
-
-static void _launch(int gridX, int gridY, int gridZ, {arg_decls}) {{
-  if (gridX*gridY*gridZ <= 0) return;
-  int thread_num = omp_get_max_threads();
-
-  #pragma omp parallel for schedule(static) num_threads(thread_num)
-    for(int x = 0; x < gridX; x++) {{
-      for(int y = 0; y < gridY; y++) {{
-        for(int z = 0; z < gridZ; z++) {{
-    {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
-          for i, ty in signature.items() if i not in constants and ty[0] == "*")}
-    {kernel_name}({kernel_parameters}
-                 gridX, gridY, gridZ, x, y, z);
-        }}
-      }}
-    }}
-  }}
+using kernel_ptr_t = void(*)({kernel_arg_decls} int, int, int, int, int, int);
 
 
 typedef struct _DevicePtrInfo {{
@@ -118,7 +95,7 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
   ptr_info.dev_ptr = 0;
   ptr_info.valid = true;
   if (PyLong_Check(obj)) {{
-    ptr_info.dev_ptr = reinterpret_cast<void *>(PyLong_AsUnsignedLongLong(obj));
+    ptr_info.dev_ptr = (void*) PyLong_AsLongLong(obj);
     return ptr_info;
   }}
   if (obj == Py_None) {{
@@ -136,15 +113,34 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
       ptr_info.valid = false;
       return ptr_info;
     }}
-    ptr_info.dev_ptr = reinterpret_cast<void *>(PyLong_AsUnsignedLongLong(ret));
-    if(!ptr_info.dev_ptr)
+    ptr_info.dev_ptr = (void*) PyLong_AsLongLong(ret);
+    if(!ptr_info.dev_ptr) {{
       return ptr_info;
+    }}
     Py_DECREF(ret);  // Thanks ChatGPT!
     return ptr_info;
   }}
   PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr method");
+  ptr_info.valid = false;
   return ptr_info;
 }}
+
+static void _launch(int gridX, int gridY, int gridZ, int num_threads, kernel_ptr_t kernel_ptr, {arg_decls}) {{
+  if (gridX*gridY*gridZ <= 0) return;
+  int thread_num = omp_get_max_threads();
+
+  #pragma omp parallel for schedule(static) num_threads(thread_num)
+    for(int x = 0; x < gridX; x++) {{
+      for(int y = 0; y < gridY; y++) {{
+        for(int z = 0; z < gridZ; z++) {{
+    {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
+          for i, ty in signature.items() if i not in constants and ty[0] == "*")}
+    (*kernel_ptr)({kernel_parameters}
+                 gridX, gridY, gridZ, x, y, z);
+        }}
+      }}
+    }}
+  }}
 
 static PyObject* launch(PyObject* self, PyObject* args) {{
   int gridX, gridY, gridZ;
@@ -152,12 +148,17 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   PyObject *launch_exit_hook = NULL;
   PyObject *kernel_metadata = NULL;
   PyObject *launch_metadata = NULL;
+  uint64_t _stream;
+  uint64_t _function;
   {' '.join([f"{_extracted_type(ty)} _arg{i}; " for i, ty in signature.items()])}
-  if(!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ,
+  if(!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &_stream, &_function,
                                            &kernel_metadata, &launch_metadata,
                                            &launch_enter_hook, &launch_exit_hook {args_list})) {{
     return NULL;
   }}
+
+  kernel_ptr_t kernel_ptr = reinterpret_cast<kernel_ptr_t>(_function);
+  int num_threads = 0;
 
   // [CPULauncher-specific]: We don't need the metadata below but just put them
   // here anyway to be consistent with others.
@@ -180,7 +181,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
   // raise exception asap
   {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
-  _launch(gridX, gridY, gridZ, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
+  _launch(gridX, gridY, gridZ, num_threads, kernel_ptr, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
   if (PyErr_Occurred()) {{
     return NULL;
   }}
@@ -220,8 +221,7 @@ PyMODINIT_FUNC PyInit___triton_shared_ref_cpu_kernel_launcher(void) {{
 }}
 """
 
-
-def compile_module(launcher_src, kernel_placeholder_name):
+def compile_module(src, name):
     py_version = sys.version_info
     cpu_arch = platform.machine()
     if platform.system() == "Windows":
@@ -235,81 +235,64 @@ def compile_module(launcher_src, kernel_placeholder_name):
     cpu_backend_path = Path(__file__).resolve().parent
     include_dir = os.path.join(cpu_backend_path, "include")
     spine_opt_debug = get_spine_mlir_cc_debug()
-    def launch(
-        gridX, gridY, gridZ, stream, cu_function,
-        kernel_metadata, launch_metadata,
-        launch_enter_hook, launch_exit_hook, *args):
-        kernel_obj = cu_function
-        kernel_name = kernel_metadata[6] # see pack_metadata in compiler.py
-        src = launcher_src.replace(kernel_placeholder_name, kernel_name)
-        key = hashlib.md5(src.encode("utf-8") + kernel_obj).hexdigest()
-        cache = get_cache_manager(key)
-        name = "__triton_shared_ref_cpu_kernel_launcher"
-        if platform.system() == "Windows":
-          filename = f"{name}.pyd"
-        else:
-          filename = f"{name}.so"
-        cache_path = cache.get_file(filename)
-        if cache_path is None:
-          with tempfile.TemporaryDirectory() as tmpdir:
-              if platform.system() == "Windows":
-                  obj_path = os.path.join(tmpdir, "kernel.obj")
-                  launcher_src_path = os.path.join(tmpdir, "main.cxx")
-                  so_path = os.path.join(tmpdir, "kernel.pyd")
-                  Path(obj_path).write_bytes(kernel_obj)
-                  Path(launcher_src_path).write_text(src)
-                  # Compile it together.
-                  subprocess.check_call([
-                    "cl", "/LD", "/std:c++17", launcher_src_path, obj_path,
-                    f"-I{py_include_dir}", f"-I{include_dir}", "/link", f"/LIBPATH:{py_lib_dir}",
-                    "/link", f"{py_lib}", f"/OUT:{so_path}"
-                  ])
-              else:
-                  obj_path = os.path.join(tmpdir, "kernel.o")
-                  launcher_src_path = os.path.join(tmpdir, "main.cxx")
-                  so_path = os.path.join(tmpdir, "kernel.so")
-                  Path(obj_path).write_bytes(kernel_obj)
+    key = hashlib.md5(src.encode("utf-8")).hexdigest()
+    cache = get_cache_manager(key)
+    if platform.system() == "Windows":
+      filename = f"{name}.pyd"
+    else:
+      filename = f"{name}.so"
+    cache_path = cache.get_file(filename)
+    if cache_path is None:
+      with tempfile.TemporaryDirectory() as tmpdir:
+          if platform.system() == "Windows":
+              launcher_src_path = os.path.join(tmpdir, "main.cxx")
+              so_path = os.path.join(tmpdir, "kernel.pyd")
+              Path(launcher_src_path).write_text(src)
+              # Compile it together.
+              subprocess.check_call([
+                "cl", "/LD", "/std:c++17", launcher_src_path,
+                f"-I{py_include_dir}", f"-I{include_dir}", "/link", f"/LIBPATH:{py_lib_dir}",
+                "/link", f"{py_lib}", f"/OUT:{so_path}"
+              ])
+          else:
+              launcher_src_path = os.path.join(tmpdir, "main.cxx")
+              so_path = os.path.join(tmpdir, "kernel.so")
 
-                  Path(launcher_src_path).write_text(src)
-                  with open(launcher_src_path, "rb") as f:
-                    launcher_src_path = cache.put(f.read(), os.path.basename(launcher_src_path), binary=False)
+              Path(launcher_src_path).write_text(src)
 
-                  gcc_flags = []
-                  if cpu_arch == "riscv64":
-                    gcc_flags.extend(
-                      [
-                        "-march=rv64gcv_zfh_zba_zicbop",
-                        "-mabi=lp64d",
-                        "-O3"
-                      ]
-                    )
-                  if spine_opt_debug:
-                    gcc_flags.append("-g")
+              with open(launcher_src_path, "rb") as f:
+                launcher_src_path = cache.put(f.read(), os.path.basename(launcher_src_path), binary=False)
 
-                  gcc_flags.append("-fopenmp")
-                  # Compile it together.
-                  subprocess.check_call([
-                    "g++", "-std=c++17", *gcc_flags,
-                    launcher_src_path, obj_path,
-                    f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
-                    "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
-                  ])
+              gcc_flags = []
+              if cpu_arch == "riscv64":
+                gcc_flags.extend(
+                  [
+                    "-march=rv64gcv_zfh_zba_zicbop",
+                    "-mabi=lp64d",
+                    "-O3"
+                  ]
+                )
+              if spine_opt_debug:
+                gcc_flags.append("-g")
 
-              with open(so_path, "rb") as f:
-                cache_path = cache.put(f.read(), filename, binary=True)
+              gcc_flags.append("-fopenmp")
+              # Compile it together.
+              subprocess.check_call([
+                "g++", "-std=c++17", *gcc_flags,
+                launcher_src_path,
+                f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
+                "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
+              ])
 
-        spec = importlib.util.spec_from_file_location(name, cache_path)
-        if spec is None:
-            raise RuntimeError(f"Cannot find {name} module in {cache_path}")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        mod_launch = mod.launch(gridX, gridY, gridZ,
-                               kernel_metadata, launch_metadata,
-                               launch_enter_hook, launch_exit_hook,
-                               *args)
+          with open(so_path, "rb") as f:
+            cache_path = cache.put(f.read(), filename, binary=True)
 
-        return mod_launch
-    return launch
+    spec = importlib.util.spec_from_file_location(name, cache_path)
+    if spec is None:
+        raise RuntimeError(f"Cannot find {name} module in {cache_path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 @dataclass(frozen=True)
@@ -323,18 +306,17 @@ class AICPUTarget(GPUTarget):
 class CPULauncher(object):
 
     def __init__(self, src, metadata):
-        kernel_placeholder_name = "KERNEL_NAME_PLACEHOLDER"
         constants = src.constants if hasattr(src, "constants") else dict()
         cst_key = lambda i: src.fn.arg_names.index(i) if isinstance(i, str) else i
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
-        launcher_src = _generate_launcher(constants, signature, kernel_placeholder_name)
+        launcher_src = _generate_launcher(constants, signature)
         # Later KERNEL_NAME_PLACEHOLDER will be used to assign the kernel name
         # in the following launch function.
-        self.launch = compile_module(launcher_src, kernel_placeholder_name)
+        self.mod = compile_module(launcher_src, "__triton_shared_ref_cpu_kernel_launcher")
 
     def __call__(self, *args, **kwargs):
-        self.launch(*args, **kwargs)
+        self.mod.launch(*args, **kwargs)
 
 
 
@@ -368,14 +350,15 @@ class CPUUtils(object):
     # obj of the kernel so that compile_module above can recompile the
     # module every time.
     @staticmethod
-    def load_binary(name, kernel_obj, shared, device):
-        return (
-          None,       # module
-          kernel_obj, # function
-          None,       # n_regs
-          None,        # n_spills
-          sys.maxsize, # n_max_threads
-        )
+    def load_binary(name, kernel, shared, device):
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".so") as f:
+            f.write(kernel)
+            f.flush()
+            import ctypes
+            lib = ctypes.cdll.LoadLibrary(f.name)
+            fn_ptr = getattr(lib, name)
+            fn_ptr_as_void_p = ctypes.cast(fn_ptr, ctypes.c_void_p).value
+            return (lib, fn_ptr_as_void_p, 0, 0, 0)
 
 class CPUDeviceInterface:
 
@@ -437,7 +420,7 @@ class CPUDriver(DriverBase):
         super().__init__()
         self.utils = CPUUtils()
         self.launcher_cls = CPULauncher
-        self.binary_ext = "obj"
+        self.binary_ext = "so"
 
     # CPU driver won't be automatically chosen unless explicitly set through
     # triton.runtime.driver.set_active(CPUDriver())
@@ -453,7 +436,7 @@ class CPUDriver(DriverBase):
         return ("cpu", 0)
 
     def get_current_stream(self, device):
-        return None
+        return 0
 
     def get_current_device(self):
         # CPU doesn't have a device to return. Return something.
