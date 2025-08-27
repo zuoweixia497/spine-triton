@@ -234,7 +234,6 @@ def compile_module(launcher_src, kernel_placeholder_name):
         py_lib = '{name}{major}.{minor}'.format(name="python", major=py_version.major, minor=py_version.minor)
     cpu_backend_path = Path(__file__).resolve().parent
     include_dir = os.path.join(cpu_backend_path, "include")
-    cache_dict = {}
     spine_opt_debug = get_spine_mlir_cc_debug()
     def launch(
         gridX, gridY, gridZ, stream, cu_function,
@@ -244,9 +243,6 @@ def compile_module(launcher_src, kernel_placeholder_name):
         kernel_name = kernel_metadata[6] # see pack_metadata in compiler.py
         src = launcher_src.replace(kernel_placeholder_name, kernel_name)
         key = hashlib.md5(src.encode("utf-8") + kernel_obj).hexdigest()
-        if key in cache_dict:
-            mod_launch, _ = cache_dict[key]
-            return mod_launch
         cache = get_cache_manager(key)
         name = "__triton_shared_ref_cpu_kernel_launcher"
         if platform.system() == "Windows":
@@ -312,8 +308,6 @@ def compile_module(launcher_src, kernel_placeholder_name):
                                launch_enter_hook, launch_exit_hook,
                                *args)
 
-        cache_dict[key] = (mod_launch, cache_path)
-
         return mod_launch
     return launch
 
@@ -376,7 +370,7 @@ class CPUUtils(object):
     @staticmethod
     def load_binary(name, kernel_obj, shared, device):
         return (
-          kernel_obj,       # module
+          None,       # module
           kernel_obj, # function
           None,       # n_regs
           None,        # n_spills
