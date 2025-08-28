@@ -10,6 +10,7 @@ include_directories(${pybind11_INCLUDE_DIR})
 
 add_subdirectory(include)
 add_subdirectory(lib)
+add_subdirectory(backend)
 add_subdirectory(test)
 add_subdirectory(tools/triton-shared-opt)
 

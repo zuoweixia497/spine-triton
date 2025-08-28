@@ -62,3 +62,17 @@ try:
         libspeirruntime = CDLL(libspeirruntime_path, mode=RTLD_GLOBAL)
 except Exception as e:
     raise ImportError("can not find libspeirruntime. {}".format(e))
+
+
+try:
+    spine_triton_opt_path = get_triton_shared_opt_path()
+    if os.path.isfile(spine_triton_opt_path):
+        spine_triton_lib_dir = os.path.join(
+            os.path.dirname(spine_triton_opt_path), "triton/_C"
+        )
+        libtritonruntime_path = os.path.join(
+            spine_triton_lib_dir, "libSpineTritonRuntime.so"
+        )
+        libtritonruntime = CDLL(libtritonruntime_path, mode=RTLD_GLOBAL)
+except Exception as e:
+    raise ImportError("can not find libtritonruntime. {}".format(e))
