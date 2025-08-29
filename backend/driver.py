@@ -313,10 +313,11 @@ class CPULauncher(object):
         launcher_src = _generate_launcher(constants, signature)
         # Later KERNEL_NAME_PLACEHOLDER will be used to assign the kernel name
         # in the following launch function.
-        self.mod = compile_module(launcher_src, "__triton_shared_ref_cpu_kernel_launcher")
+        mod = compile_module(launcher_src, "__triton_shared_ref_cpu_kernel_launcher")
+        self.launch = mod.launch
 
     def __call__(self, *args, **kwargs):
-        self.mod.launch(*args, **kwargs)
+        self.launch(*args, **kwargs)
 
 
 
