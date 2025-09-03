@@ -303,7 +303,7 @@ class CPUBackend(BaseBackend):
         metadata['name'] = kernel_name
         return mod
 
-    def add_stages(self, stages, options):
+    def add_stages(self, stages, options, language):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
         stages["ttsharedir"] = lambda src, metadata: _optimize_ttsharedir(
             _ttir_to_ttsharedir(src, metadata)
