@@ -67,7 +67,6 @@ def _ttsharedir_to_llir(ttsharedir: str, metadata):
                 # "--eliminate-empty-tensors",
                 "--empty-tensor-to-alloc-tensor",
                 "--one-shot-bufferize=allow-return-allocs-from-loops=true",
-                "--buffer-deallocation-pipeline",
                 "--lower-affine",
                 "--convert-linalg-to-loops",
                 "--expand-strided-metadata",
@@ -184,7 +183,6 @@ def _llir_to_so(llir: str, metadata):
             ]
         )
         dump_ir_if_needed([dst_path], metadata['name'])
-        kernel_obj = Path(dst_path).read_bytes()
         import sys
         py_version = sys.version_info
         cpu_arch = platform.machine()
@@ -198,29 +196,25 @@ def _llir_to_so(llir: str, metadata):
             py_lib = '{name}{major}.{minor}'.format(name="python", major=py_version.major, minor=py_version.minor)
         cpu_backend_path = Path(__file__).resolve().parent
         include_dir = os.path.join(cpu_backend_path, "include")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            obj_path = os.path.join(tmpdir, "kernel.ll")
-            so_path = os.path.join(tmpdir, "kernel.so")
-            Path(obj_path).write_bytes(kernel_obj)
-            gcc_flags = []
-            if cpu_arch == "riscv64":
-                gcc_flags.extend(
-                    [
-                    "-march=rv64gcv_zfh_zba_zicbop",
-                    "-mabi=lp64d",
-                    "-O3"
-                    ]
-                )
-            gcc_flags.append("-fopenmp")
-            subprocess.check_call([
-            "g++", "-std=c++17", *gcc_flags, obj_path,
-            f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
-            "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
-            ])
-            dump_ir_if_needed([so_path], metadata['name'])
-            # return Path(so_path).read_bytes()
-            with open(so_path, "rb") as f:
-                return f.read()
+        so_path = os.path.join(tmpdir, "kernel.so")
+        gcc_flags = []
+        if cpu_arch == "riscv64":
+            gcc_flags.extend(
+                [
+                "-march=rv64gcv_zfh_zba_zicbop",
+                "-mabi=lp64d",
+                "-O3"
+                ]
+            )
+        gcc_flags.append("-fopenmp")
+        subprocess.check_call([
+        "g++", "-std=c++17", *gcc_flags, dst_path,
+        f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
+        "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
+        ])
+        dump_ir_if_needed([so_path], metadata['name'])
+        with open(so_path, "rb") as f:
+            return f.read()
 
 
 @dataclass(frozen=True)
