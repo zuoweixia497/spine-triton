@@ -205,13 +205,13 @@ static PyMethodDef ModuleMethods[] = {{
 
 static struct PyModuleDef ModuleDef = {{
   PyModuleDef_HEAD_INIT,
-  \"__triton_shared_ref_cpu_kernel_launcher\",
+  \"__spine_triton_kernel_launcher\",
   NULL, //documentation
   -1, //size
   ModuleMethods
 }};
 
-PyMODINIT_FUNC PyInit___triton_shared_ref_cpu_kernel_launcher(void) {{
+PyMODINIT_FUNC PyInit___spine_triton_kernel_launcher(void) {{
   PyObject *m = PyModule_Create(&ModuleDef);
   if(m == NULL) {{
     return NULL;
@@ -267,13 +267,15 @@ def compile_module(src, name):
               if cpu_arch == "riscv64":
                 gcc_flags.extend(
                   [
-                    "-march=rv64gcv_zfh_zba_zicbop",
-                    "-mabi=lp64d",
-                    "-O3"
+                    "-march=rv64gcv_zfh_zba_zicbop_zihintpause",
+                    "-mabi=lp64d"
                   ]
                 )
               if spine_opt_debug:
                 gcc_flags.append("-g")
+                gcc_flags.append("-O0")
+              else:
+                gcc_flags.append("-O3")
 
               gcc_flags.append("-fopenmp")
               # Compile it together.
@@ -313,7 +315,7 @@ class CPULauncher(object):
         launcher_src = _generate_launcher(constants, signature)
         # Later KERNEL_NAME_PLACEHOLDER will be used to assign the kernel name
         # in the following launch function.
-        mod = compile_module(launcher_src, "__triton_shared_ref_cpu_kernel_launcher")
+        mod = compile_module(launcher_src, "__spine_triton_kernel_launcher")
         self.launch = mod.launch
 
     def __call__(self, *args, **kwargs):

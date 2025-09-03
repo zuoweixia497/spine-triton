@@ -38,10 +38,11 @@ def dump_ir_if_needed(files, kernel_name=None):
     if not path:
         return
     for f in files:
-        if kernel_name!=None:
-            shutil.copy(f, os.path.join(path, kernel_name+"_"+os.path.basename(f)))
+        if kernel_name != None:
+            shutil.copy(f, os.path.join(path, kernel_name + "_" + os.path.basename(f)))
         else:
-            shutil.copy(f, os.path.join(path)+os.path.basename(f))
+            shutil.copy(f, os.path.join(path) + os.path.basename(f))
+
 
 def extract_kernel_name(pattern, ir):
     matches = re.findall(pattern, ir)
