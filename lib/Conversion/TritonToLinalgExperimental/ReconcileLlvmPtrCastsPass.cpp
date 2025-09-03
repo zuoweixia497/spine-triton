@@ -15,26 +15,25 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Func/Transforms/FuncConversions.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Ptr/IR/PtrTypes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Pass/PassManager.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Func/Transforms/FuncConversions.h"
-#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Support/LLVM.h"
-#include "mlir/Transforms/Passes.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/Passes.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcileLlvmPtrCasts.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/IR/IRMapping.h"
 
 #include "triton/Dialect/Triton/IR/Types.h"
 
@@ -44,7 +43,6 @@ using namespace mlir;
 #include "triton-shared/Conversion/TritonToLinalgExperimental/Passes.h.inc"
 
 namespace {
-
 
 struct PromoteMemrefToPtrArg : public OpRewritePattern<func::FuncOp> {
   PromoteMemrefToPtrArg(MLIRContext *context)
@@ -58,9 +56,10 @@ struct PromoteMemrefToPtrArg : public OpRewritePattern<func::FuncOp> {
 
     for (BlockArgument arg : entryBlock.getArguments()) {
       for (OpOperand &use : arg.getUses()) {
-        if (auto castOp = dyn_cast<UnrealizedConversionCastOp>(use.getOwner())) {
+        if (auto castOp =
+                dyn_cast<UnrealizedConversionCastOp>(use.getOwner())) {
           if (castOp.getNumResults() == 1 &&
-            isLLVMPtrType(castOp.getResult(0).getType())) {
+              isLLVMPtrType(castOp.getResult(0).getType())) {
             castOps.push_back(castOp);
           }
         }
@@ -77,11 +76,12 @@ struct PromoteMemrefToPtrArg : public OpRewritePattern<func::FuncOp> {
       newArgTypes.push_back(castOp.getResult(0).getType());
     }
 
-    auto newFuncType = FunctionType::get(ctx, newArgTypes, oldType.getResults());
+    auto newFuncType =
+        FunctionType::get(ctx, newArgTypes, oldType.getResults());
 
     Location loc = funcOp.getLoc();
-    func::FuncOp newFunc = rewriter.create<func::FuncOp>(
-        loc, funcOp.getName(), newFuncType);
+    func::FuncOp newFunc =
+        rewriter.create<func::FuncOp>(loc, funcOp.getName(), newFuncType);
 
     newFunc->setAttrs(funcOp->getAttrs());
 
@@ -105,7 +105,8 @@ struct PromoteMemrefToPtrArg : public OpRewritePattern<func::FuncOp> {
     }
 
     for (unsigned i = 0; i < castOps.size(); i++) {
-      mapper.map(castOps[i].getResult(0), newEntryBlock->getArgument(numOrigArgs + i));
+      mapper.map(castOps[i].getResult(0),
+                 newEntryBlock->getArgument(numOrigArgs + i));
     }
 
     for (Operation &op : entryBlock.getOperations()) {
@@ -119,6 +120,7 @@ struct PromoteMemrefToPtrArg : public OpRewritePattern<func::FuncOp> {
 
     return success();
   }
+
 private:
   bool isLLVMPtrType(Type type) const {
     if (auto ptrType = dyn_cast<LLVM::LLVMPointerType>(type)) {
@@ -127,7 +129,6 @@ private:
     return false;
   }
 };
-
 
 class ReconcileLlvmPtrCastsPass
     : public ReconcileLlvmPtrCastsBase<ReconcileLlvmPtrCastsPass> {
@@ -140,9 +141,7 @@ public:
   void runOnOperation() override {
     auto moduleOp = getOperation();
     RewritePatternSet patterns(&getContext());
-    patterns
-        .add<PromoteMemrefToPtrArg>(
-            &getContext());
+    patterns.add<PromoteMemrefToPtrArg>(&getContext());
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
       signalPassFailure();
     }
@@ -150,6 +149,7 @@ public:
 };
 } // namespace
 
-std::unique_ptr<OperationPass<ModuleOp>> triton::createReconcileLlvmPtrCastsPass() {
+std::unique_ptr<OperationPass<ModuleOp>>
+triton::createReconcileLlvmPtrCastsPass() {
   return std::make_unique<ReconcileLlvmPtrCastsPass>();
 }

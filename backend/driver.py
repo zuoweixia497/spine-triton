@@ -12,9 +12,10 @@ from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
 from . import get_spine_mlir_cc_debug
 
+
 # -------------------- Launcher ----------------------------
 def _ty_to_cpp(ty):
-    if ty[0] == '*':
+    if ty[0] == "*":
         return "void*"
     if ty == "constexpr":
         return "PyObject*"
@@ -36,41 +37,58 @@ def _ty_to_cpp(ty):
         "fp64": "double",
     }[ty]
 
+
 def _extracted_type(ty):
-    if ty[0] == '*':
+    if ty[0] == "*":
         return "PyObject*"
     if ty == "constexpr":
         return "PyObject*"
     return _ty_to_cpp(ty)
 
+
 def _format_of(ty):
     return {
-      "PyObject*": "O",
-      "constexpr": "O",
-      "float": "f",
-      "double": "d",
-      "long": "l",
-      "int8_t": "b",
-      "int16_t": "h",
-      "int32_t": "i",
-      "int64_t": "l",
-      "uint8_t": "B",
-      "uint16_t": "H",
-      "uint32_t": "I",
-      "uint64_t": "K",
+        "PyObject*": "O",
+        "constexpr": "O",
+        "float": "f",
+        "double": "d",
+        "long": "l",
+        "int8_t": "b",
+        "int16_t": "h",
+        "int32_t": "i",
+        "int64_t": "l",
+        "uint8_t": "B",
+        "uint16_t": "H",
+        "uint32_t": "I",
+        "uint64_t": "K",
     }[ty]
 
+
 def _generate_launcher(constants, signature):
-    arg_decls = ', '.join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
-    args_format = ''.join([_format_of(_extracted_type(ty)) for ty in signature.values()])
+    arg_decls = ", ".join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
+    args_format = "".join(
+        [_format_of(_extracted_type(ty)) for ty in signature.values()]
+    )
     format = "iiiKKOOOO" + args_format
-    args_list = ', ' + ', '.join(f"&_arg{i}" for i, ty in signature.items()) if len(signature) > 0 else ''
+    args_list = (
+        ", " + ", ".join(f"&_arg{i}" for i, ty in signature.items())
+        if len(signature) > 0
+        else ""
+    )
 
-    kernel_arg_decls = ', '.join(_ty_to_cpp(ty) if ty[0] != "*" else f"int64_t, void*" for i, ty in signature.items() if ty != "constexpr")
-    kernel_arg_decls += ', ' if kernel_arg_decls else ''
+    kernel_arg_decls = ", ".join(
+        _ty_to_cpp(ty) if ty[0] != "*" else f"int64_t, void*"
+        for i, ty in signature.items()
+        if ty != "constexpr"
+    )
+    kernel_arg_decls += ", " if kernel_arg_decls else ""
 
-    kernel_parameters = ', '.join(f"static_cast<{_ty_to_cpp(ty)}>(arg{i})" if ty[0] != "*" else f"0, &ptr_arg{i}" for i, ty in signature.items() if ty != "constexpr")
-    kernel_parameters += ', ' if kernel_parameters else ''
+    kernel_parameters = ", ".join(
+        f"static_cast<{_ty_to_cpp(ty)}>(arg{i})" if ty[0] != "*" else f"0, &ptr_arg{i}"
+        for i, ty in signature.items()
+        if ty != "constexpr"
+    )
+    kernel_parameters += ", " if kernel_parameters else ""
 
     return f"""
 #include <assert.h>
@@ -221,73 +239,101 @@ PyMODINIT_FUNC PyInit___spine_triton_kernel_launcher(void) {{
 }}
 """
 
+
 def compile_module(src, name):
     py_version = sys.version_info
     cpu_arch = platform.machine()
     if platform.system() == "Windows":
-        py_include_dir = os.path.join(sys.base_prefix, 'include')
-        py_lib_dir = os.path.join(sys.base_prefix, 'libs')
-        py_lib = '{name}{major}{minor}.lib'.format(name="python", major=py_version.major, minor=py_version.minor)
+        py_include_dir = os.path.join(sys.base_prefix, "include")
+        py_lib_dir = os.path.join(sys.base_prefix, "libs")
+        py_lib = "{name}{major}{minor}.lib".format(
+            name="python", major=py_version.major, minor=py_version.minor
+        )
     else:
-        py_include_dir = os.path.join(sys.base_prefix, 'include', f'python{sys.version_info.major}.{sys.version_info.minor}')
-        py_lib_dir = os.path.join(sys.base_prefix, 'lib')
-        py_lib = '{name}{major}.{minor}'.format(name="python", major=py_version.major, minor=py_version.minor)
+        py_include_dir = os.path.join(
+            sys.base_prefix,
+            "include",
+            f"python{sys.version_info.major}.{sys.version_info.minor}",
+        )
+        py_lib_dir = os.path.join(sys.base_prefix, "lib")
+        py_lib = "{name}{major}.{minor}".format(
+            name="python", major=py_version.major, minor=py_version.minor
+        )
     cpu_backend_path = Path(__file__).resolve().parent
     include_dir = os.path.join(cpu_backend_path, "include")
     spine_opt_debug = get_spine_mlir_cc_debug()
     key = hashlib.md5(src.encode("utf-8")).hexdigest()
     cache = get_cache_manager(key)
     if platform.system() == "Windows":
-      filename = f"{name}.pyd"
+        filename = f"{name}.pyd"
     else:
-      filename = f"{name}.so"
+        filename = f"{name}.so"
     cache_path = cache.get_file(filename)
     if cache_path is None:
-      with tempfile.TemporaryDirectory() as tmpdir:
-          if platform.system() == "Windows":
-              launcher_src_path = os.path.join(tmpdir, "main.cxx")
-              so_path = os.path.join(tmpdir, "kernel.pyd")
-              Path(launcher_src_path).write_text(src)
-              # Compile it together.
-              subprocess.check_call([
-                "cl", "/LD", "/std:c++17", launcher_src_path,
-                f"-I{py_include_dir}", f"-I{include_dir}", "/link", f"/LIBPATH:{py_lib_dir}",
-                "/link", f"{py_lib}", f"/OUT:{so_path}"
-              ])
-          else:
-              launcher_src_path = os.path.join(tmpdir, "main.cxx")
-              so_path = os.path.join(tmpdir, "kernel.so")
-
-              Path(launcher_src_path).write_text(src)
-
-              with open(launcher_src_path, "rb") as f:
-                launcher_src_path = cache.put(f.read(), os.path.basename(launcher_src_path), binary=False)
-
-              gcc_flags = []
-              if cpu_arch == "riscv64":
-                gcc_flags.extend(
-                  [
-                    "-march=rv64gcv_zfh_zba_zicbop_zihintpause",
-                    "-mabi=lp64d"
-                  ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            if platform.system() == "Windows":
+                launcher_src_path = os.path.join(tmpdir, "main.cxx")
+                so_path = os.path.join(tmpdir, "kernel.pyd")
+                Path(launcher_src_path).write_text(src)
+                # Compile it together.
+                subprocess.check_call(
+                    [
+                        "cl",
+                        "/LD",
+                        "/std:c++17",
+                        launcher_src_path,
+                        f"-I{py_include_dir}",
+                        f"-I{include_dir}",
+                        "/link",
+                        f"/LIBPATH:{py_lib_dir}",
+                        "/link",
+                        f"{py_lib}",
+                        f"/OUT:{so_path}",
+                    ]
                 )
-              if spine_opt_debug:
-                gcc_flags.append("-g")
-                gcc_flags.append("-O0")
-              else:
-                gcc_flags.append("-O3")
+            else:
+                launcher_src_path = os.path.join(tmpdir, "main.cxx")
+                so_path = os.path.join(tmpdir, "kernel.so")
 
-              gcc_flags.append("-fopenmp")
-              # Compile it together.
-              subprocess.check_call([
-                "g++", "-std=c++17", *gcc_flags,
-                launcher_src_path,
-                f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
-                "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
-              ])
+                Path(launcher_src_path).write_text(src)
 
-          with open(so_path, "rb") as f:
-            cache_path = cache.put(f.read(), filename, binary=True)
+                with open(launcher_src_path, "rb") as f:
+                    launcher_src_path = cache.put(
+                        f.read(), os.path.basename(launcher_src_path), binary=False
+                    )
+
+                gcc_flags = []
+                if cpu_arch == "riscv64":
+                    gcc_flags.extend(
+                        ["-march=rv64gcv_zfh_zba_zicbop_zihintpause", "-mabi=lp64d"]
+                    )
+                if spine_opt_debug:
+                    gcc_flags.append("-g")
+                    gcc_flags.append("-O0")
+                else:
+                    gcc_flags.append("-O3")
+
+                gcc_flags.append("-fopenmp")
+                # Compile it together.
+                subprocess.check_call(
+                    [
+                        "g++",
+                        "-std=c++17",
+                        *gcc_flags,
+                        launcher_src_path,
+                        f"-I{py_include_dir}",
+                        f"-I{include_dir}",
+                        f"-L{py_lib_dir}",
+                        "-shared",
+                        f"-l{py_lib}",
+                        "-fPIC",
+                        "-o",
+                        so_path,
+                    ]
+                )
+
+            with open(so_path, "rb") as f:
+                cache_path = cache.put(f.read(), filename, binary=True)
 
     spec = importlib.util.spec_from_file_location(name, cache_path)
     if spec is None:
@@ -322,7 +368,6 @@ class CPULauncher(object):
         self.launch(*args, **kwargs)
 
 
-
 class CPUUtils(object):
     def __new__(cls):
         if not hasattr(cls, "instance"):
@@ -341,11 +386,11 @@ class CPUUtils(object):
     @staticmethod
     def get_device_properties(device):
         return {
-          "max_shared_mem": 2 ** 20,
-          "multiprocessor_count": None,
-          "sm_clock_rate": None,
-          "mem_clock_rate": None,
-          "mem_bus_width": None
+            "max_shared_mem": 2**20,
+            "multiprocessor_count": None,
+            "sm_clock_rate": None,
+            "mem_clock_rate": None,
+            "mem_bus_width": None,
         }
 
     # Important note:
@@ -358,10 +403,12 @@ class CPUUtils(object):
             f.write(kernel)
             f.flush()
             import ctypes
+
             lib = ctypes.cdll.LoadLibrary(f.name)
             fn_ptr = getattr(lib, name)
             fn_ptr_as_void_p = ctypes.cast(fn_ptr, ctypes.c_void_p).value
             return (lib, fn_ptr_as_void_p, 0, 0, 0)
+
 
 class CPUDeviceInterface:
 
@@ -400,7 +447,9 @@ class CPUDeviceInterface:
 
     def enable_hook_timing(self):
         self.use_hooks = True
-        triton.compiler.CompiledKernel.launch_enter_hook = lambda arg: self._enter_hook()
+        triton.compiler.CompiledKernel.launch_enter_hook = (
+            lambda arg: self._enter_hook()
+        )
         triton.compiler.CompiledKernel.launch_exit_hook = lambda arg: self._exit_hook()
 
     def synchronize(self):
@@ -416,6 +465,7 @@ class CPUDeviceInterface:
         if self.use_hooks:
             return CPUDeviceInterface.HooksTimeAccessor(self)
         return CPUDeviceInterface.TimerEvent()
+
 
 class CPUDriver(DriverBase):
 
@@ -433,6 +483,7 @@ class CPUDriver(DriverBase):
 
     def get_benchmarker(self):
         from triton.testing import do_bench
+
         return do_bench
 
     def get_device_capability(self):
@@ -456,6 +507,7 @@ class CPUDriver(DriverBase):
 
     def get_active_torch_device(self):
         import torch
+
         return torch.device("cpu")
 
     def assemble_tensormap_to_arg(self, tensormaps_info, args):
@@ -471,7 +523,7 @@ class CPUDriver(DriverBase):
         # before each kernel call to make sure that the L2 cache
         # doesn't contain any input data before the run
         cache_size = 256 * 1024 * 1024
-        return torch.empty(int(cache_size // 4), dtype=torch.int, device='cpu')
+        return torch.empty(int(cache_size // 4), dtype=torch.int, device="cpu")
 
     def clear_cache(self, cache):
         cache.zero_()

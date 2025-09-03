@@ -7,7 +7,6 @@ import hashlib
 import tempfile
 import os
 import re
-import shutil
 import subprocess
 import functools
 import platform
@@ -20,6 +19,7 @@ from . import (
     extract_kernel_name,
 )
 
+
 def _ttir_to_ttsharedir(mod, metadata):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
@@ -27,7 +27,7 @@ def _ttir_to_ttsharedir(mod, metadata):
         src_path = os.path.join(tmpdir, "tt.mlir")
         dst_path = os.path.join(tmpdir, "ttshared.mlir")
         Path(src_path).write_text(ttir_code)
-        dump_ir_if_needed([src_path], metadata['name'])
+        dump_ir_if_needed([src_path], metadata["name"])
         triton_shared_opt_path = get_triton_shared_opt_path()
         subprocess.check_call(
             [
@@ -35,9 +35,10 @@ def _ttir_to_ttsharedir(mod, metadata):
                 src_path,
                 "--triton-to-linalg-experimental",
                 "-o",
-                dst_path
-            ])
-        dump_ir_if_needed([dst_path], metadata['name'])
+                dst_path,
+            ]
+        )
+        dump_ir_if_needed([dst_path], metadata["name"])
         return Path(dst_path).read_text()
 
 
@@ -98,7 +99,7 @@ def _ttsharedir_to_llir(ttsharedir: str, metadata):
         subprocess.check_call(
             [mlir_translate_path, llmlir_path, "--mlir-to-llvmir", "-o", llir_path]
         )
-        dump_ir_if_needed([llmlir_path, llir_path], metadata['name'])
+        dump_ir_if_needed([llmlir_path, llir_path], metadata["name"])
         return Path(llir_path).read_text()
 
 
@@ -119,7 +120,7 @@ def _spine_mlir_ttsharedir_to_llir(ttsharedir: str, metadata):
                 llmlir_path,
             ]
         )
-        dump_ir_if_needed([llmlir_path], metadata['name'])
+        dump_ir_if_needed([llmlir_path], metadata["name"])
 
         llmlir_new_path = llmlir_path
         base_path = os.getenv("TRITON_SHARED_DUMP_PATH", "")
@@ -128,7 +129,10 @@ def _spine_mlir_ttsharedir_to_llir(ttsharedir: str, metadata):
             subprocess.check_call(
                 [
                     spine_mlir_path,
-                    os.path.join(base_path, metadata['name'] + "_" + os.path.basename(llmlir_path)),
+                    os.path.join(
+                        base_path,
+                        metadata["name"] + "_" + os.path.basename(llmlir_path),
+                    ),
                     "--ensure-debug-info-scope-on-llvm-func",
                     "-mlir-print-debuginfo",
                     "-o",
@@ -139,15 +143,9 @@ def _spine_mlir_ttsharedir_to_llir(ttsharedir: str, metadata):
         # LLVM-MLIR to LLVM-IR
         mlir_translate_path = get_llvm_bin_path("mlir-translate")
         subprocess.check_call(
-            [
-                mlir_translate_path,
-                llmlir_new_path,
-                "--mlir-to-llvmir",
-                "-o",
-                llir_path
-            ]
+            [mlir_translate_path, llmlir_new_path, "--mlir-to-llvmir", "-o", llir_path]
         )
-        dump_ir_if_needed([llir_path], metadata['name'])
+        dump_ir_if_needed([llir_path], metadata["name"])
         return Path(llir_path).read_text()
 
 
@@ -173,46 +171,53 @@ def _llir_to_so(llir: str, metadata):
             )
 
         subprocess.check_call(
-            [
-                llc_path,
-                src_path,
-                *llc_flags,
-                "-filetype=obj",
-                "-o",
-                dst_path
-            ]
+            [llc_path, src_path, *llc_flags, "-filetype=obj", "-o", dst_path]
         )
-        dump_ir_if_needed([dst_path], metadata['name'])
+        dump_ir_if_needed([dst_path], metadata["name"])
         import sys
+
         py_version = sys.version_info
         cpu_arch = platform.machine()
         if platform.system() == "Windows":
-            py_include_dir = os.path.join(sys.base_prefix, 'include')
-            py_lib_dir = os.path.join(sys.base_prefix, 'libs')
-            py_lib = '{name}{major}{minor}.lib'.format(name="python", major=py_version.major, minor=py_version.minor)
+            py_include_dir = os.path.join(sys.base_prefix, "include")
+            py_lib_dir = os.path.join(sys.base_prefix, "libs")
+            py_lib = "{name}{major}{minor}.lib".format(
+                name="python", major=py_version.major, minor=py_version.minor
+            )
         else:
-            py_include_dir = os.path.join(sys.base_prefix, 'include', f'python{sys.version_info.major}.{sys.version_info.minor}')
-            py_lib_dir = os.path.join(sys.base_prefix, 'lib')
-            py_lib = '{name}{major}.{minor}'.format(name="python", major=py_version.major, minor=py_version.minor)
+            py_include_dir = os.path.join(
+                sys.base_prefix,
+                "include",
+                f"python{sys.version_info.major}.{sys.version_info.minor}",
+            )
+            py_lib_dir = os.path.join(sys.base_prefix, "lib")
+            py_lib = "{name}{major}.{minor}".format(
+                name="python", major=py_version.major, minor=py_version.minor
+            )
         cpu_backend_path = Path(__file__).resolve().parent
         include_dir = os.path.join(cpu_backend_path, "include")
         so_path = os.path.join(tmpdir, "kernel.so")
         gcc_flags = []
         if cpu_arch == "riscv64":
-            gcc_flags.extend(
-                [
-                "-march=rv64gcv_zfh_zba_zicbop",
-                "-mabi=lp64d",
-                "-O3"
-                ]
-            )
+            gcc_flags.extend(["-march=rv64gcv_zfh_zba_zicbop", "-mabi=lp64d", "-O3"])
         gcc_flags.append("-fopenmp")
-        subprocess.check_call([
-        "g++", "-std=c++17", *gcc_flags, dst_path,
-        f"-I{py_include_dir}", f"-I{include_dir}", f"-L{py_lib_dir}",
-        "-shared", f"-l{py_lib}", "-fPIC", "-o", so_path
-        ])
-        dump_ir_if_needed([so_path], metadata['name'])
+        subprocess.check_call(
+            [
+                "g++",
+                "-std=c++17",
+                *gcc_flags,
+                dst_path,
+                f"-I{py_include_dir}",
+                f"-I{include_dir}",
+                f"-L{py_lib_dir}",
+                "-shared",
+                f"-l{py_lib}",
+                "-fPIC",
+                "-o",
+                so_path,
+            ]
+        )
+        dump_ir_if_needed([so_path], metadata["name"])
         with open(so_path, "rb") as f:
             return f.read()
 
@@ -300,7 +305,7 @@ class CPUBackend(BaseBackend):
         mod.set_attr("tt.cache_sizes", ir.make_attr(cache_sizes, mod.context))
         tt_pattern = r"tt\.func\s+public\s+@(\w+)\s*\("
         kernel_name = extract_kernel_name(tt_pattern, str(mod))
-        metadata['name'] = kernel_name
+        metadata["name"] = kernel_name
         return mod
 
     def add_stages(self, stages, options, language):
