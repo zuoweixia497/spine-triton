@@ -1,14 +1,23 @@
-# Contributing
+# spine-triton Contributor Guide
 
-This project welcomes contributions and suggestions. Most contributions require you to
-agree to a Contributor License Agreement (CLA) declaring that you have the right to,
-and actually do, grant us the rights to use your contribution. For details, visit
-https://cla.microsoft.com.
+Thank you for your interest in spine-triton! We use GitHub to host code, manage issues, and handle pull requests. Before contributing, please read the following guidelines.
 
-When you submit a pull request, a CLA-bot will automatically determine whether you need
-to provide a CLA and decorate the PR appropriately (e.g., label, comment). Simply follow the
-instructions provided by the bot. You will only need to do this once across all repositories using our CLA.
+## Bug Reports
 
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
-For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/)
-or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+Please use GitHub Issues to report bugs. When reporting a bug, include:
+- A concise summary
+- Steps to reproduce
+- Specific and accurate descriptions
+- Example code if possible (this is particularly helpful)
+
+## Code Contributions
+
+When submitting a pull request, contributors should describe the changes made and the rationale behind them. If possible, provide corresponding tests. Pull requests require approval from __ONE__ team member before merging and must pass all continuous integration checks.
+
+### Backend Integration
+
+Please contact the core development team for backend integration matters.
+
+## License
+
+spine-triton is licensed under the [MIT license](/LICENSE).

@@ -26,15 +26,15 @@ def get_llvm_bin_path(bin_name: str) -> str:
     return os.path.join(path, bin_name)
 
 
-def get_triton_shared_opt_path() -> str:
-    path = os.getenv("TRITON_SHARED_OPT_PATH", "")
+def get_spine_triton_opt_path() -> str:
+    path = os.getenv("SPINE_TRITON_OPT_PATH", "")
     if path == "":
-        raise Exception("TRITON_SHARED_OPT_PATH is not set.")
+        raise Exception("SPINE_TRITON_OPT_PATH is not set.")
     return path
 
 
 def dump_ir_if_needed(files, kernel_name=None):
-    path = os.getenv("TRITON_SHARED_DUMP_PATH", "")
+    path = os.getenv("SPINE_TRITON_DUMP_PATH", "")
     if not path:
         return
     for f in files:
@@ -66,7 +66,7 @@ except Exception as e:
 
 
 try:
-    spine_triton_opt_path = get_triton_shared_opt_path()
+    spine_triton_opt_path = get_spine_triton_opt_path()
     if os.path.isfile(spine_triton_opt_path):
         spine_triton_lib_dir = os.path.join(
             os.path.dirname(spine_triton_opt_path), "triton/_C"

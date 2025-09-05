@@ -1,4 +1,4 @@
-#!/bin/bash
+!/bin/bash
 
 set -e
 # python3 -m pytest tests/test_blas_ops.py --ref=cpu

@@ -3,12 +3,12 @@ import numpy as np
 from functools import wraps
 import torch
 import triton
-from triton.backends.triton_shared.driver import CPUDriver
+from triton.backends.spine_triton.driver import CPUDriver
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
 if __name__ == "__main__":
-    M, N, K = 256, 256, 512
+    M, N, K = 256, 256, 700
     A = torch.randn((M, K), dtype=torch.float32, device=flag_gems.device, requires_grad=False)
     B = torch.randn((K, N), dtype=torch.float32, device=flag_gems.device, requires_grad=False)
     #bias = torch.randn((N,), dtype=torch.float32, device=flag_gems.device, requires_grad=False)

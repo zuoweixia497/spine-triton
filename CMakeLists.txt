@@ -1,7 +1,7 @@
-option(TRITON_SHARED_BUILD_CPU_BACKEND "Build triton-shared CPU backend" ON)
+option(SPINE_TRITON_BUILD_CPU_BACKEND "Build spine-triton CPU backend" ON)
 
-set(TRITON_SHARED_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-set(TRITON_SHARED_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+set(SPINE_TRITON_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+set(SPINE_TRITON_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}")
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include) # Tablegen'd files
@@ -12,9 +12,9 @@ add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(backend)
 add_subdirectory(test)
-add_subdirectory(tools/triton-shared-opt)
+add_subdirectory(tools/spine-triton-opt)
 
-if (TRITON_SHARED_BUILD_CPU_BACKEND)
+if (SPINE_TRITON_BUILD_CPU_BACKEND)
     add_triton_plugin(TritonShared ${CMAKE_CURRENT_SOURCE_DIR}/triton_shared.cc LINK_LIBS TritonSharedAnalysis TritonToLinalg TritonTilingExtIR)
     target_link_libraries(TritonShared PRIVATE Python3::Module pybind11::headers ${Python3_LIBRARIES})
 endif()

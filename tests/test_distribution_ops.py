@@ -3,7 +3,7 @@ import pytest
 # import scipy
 import torch
 import triton
-from triton.backends.triton_shared.driver import CPUDriver
+from triton.backends.spine_triton.driver import CPUDriver
 triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 

@@ -1,5 +1,5 @@
 # build a custom llvm for sanitizers
-# this build uses the same version of LLVM that is currently supported by triton-shared
+# this build uses the same version of LLVM that is currently supported by spine-triton
 # and installs the required projects that the sanitizers need (compiler-rt, clang)
 # users need to activate venv before running this script
 
@@ -8,12 +8,12 @@ set -e
 set -x
 
 if [ "$#" -ne 2 ]; then
-  echo "Usage: $0 <desired path to LLVM installation directory> <existing path to triton shared>"
+  echo "Usage: $0 <desired path to LLVM installation directory> <existing path to spine triton>"
   exit 1
 fi
 
 LLVM_PATH="$(realpath "$1")"
-TRITON_SHARED_PATH="$(realpath "$2")"
+SPINE_TRITON_PATH="$(realpath "$2")"
 
 # check if the path exists
 if [ ! -e "$LLVM_PATH" ]; then
@@ -21,15 +21,15 @@ if [ ! -e "$LLVM_PATH" ]; then
   exit 1
 fi
 
-if [ ! -e "$TRITON_SHARED_PATH" ]; then
-  echo "Error: Path '$TRITON_SHARED_PATH' does not exist."
+if [ ! -e "$SPINE_TRITON_PATH" ]; then
+  echo "Error: Path '$SPINE_TRITON_PATH' does not exist."
   exit 1
 fi
 
 echo "Installing LLVM to path: $LLVM_PATH"
 cd $LLVM_PATH
 
-LLVM_HASH_FILE="${TRITON_SHARED_PATH}/triton/cmake/llvm-hash.txt"
+LLVM_HASH_FILE="${SPINE_TRITON_PATH}/triton/cmake/llvm-hash.txt"
 if [ ! -e "${LLVM_HASH_FILE}" ]; then
   print_error "${LLVM_HASH_FILE} does not exist"
 fi
@@ -58,8 +58,8 @@ LLVM_HASH=$(cat "${LLVM_HASH_FILE}")
 cd "${LLVM_SOURCE_DIR}"
 git checkout ${LLVM_HASH}
 
-export CXXFLAGS="-Wno-unused-command-line-argument $CXXFLAGS" 
-export CFLAGS="-Wno-unused-command-line-argument $CFLAGS" 
+export CXXFLAGS="-Wno-unused-command-line-argument $CXXFLAGS"
+export CFLAGS="-Wno-unused-command-line-argument $CFLAGS"
 
 cd "$LLVM_BUILD_DIR"
 cmake -GNinja -DCMAKE_BUILD_TYPE=Release \

@@ -10,18 +10,18 @@ configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCe_DIR}/lit.cfg.py
 )
 
-set(TRITON_SHARED_TEST_DEPENDS
-  triton-shared-opt
+set(SPINE_TRITON_TEST_DEPENDS
+  spine-triton-opt
 )
 
 set(FILECHECK_PATH "${LLVM_LIBRARY_DIR}/../bin/FileCheck")
 set(LIT_ARGS "-Dfilecheck=${FILECHECK_PATH}")
-add_lit_testsuite(check-triton-shared-lit-tests "Running the triton-shared regression tests"
+add_lit_testsuite(check-spine-triton-lit-tests "Running the spine-triton regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}
   ARGS ${LIT_ARGS}
-  DEPENDS ${TRITON_SHARED_TEST_DEPENDS}
+  DEPENDS ${SPINE_TRITON_TEST_DEPENDS}
   )
 
-set_target_properties(check-triton-shared-lit-tests PROPERTIES FOLDER "Tests")
+set_target_properties(check-spine-triton-lit-tests PROPERTIES FOLDER "Tests")
 
-add_lit_testsuites(TRITON-SHARED-LIT-TESTS ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${TRITON_SHARED_TEST_DEPENDS})
+add_lit_testsuites(SPINE-TRITON-LIT-TESTS ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${SPINE_TRITON_TEST_DEPENDS})

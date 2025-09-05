@@ -12,7 +12,7 @@ import functools
 import platform
 from pathlib import Path
 from . import (
-    get_triton_shared_opt_path,
+    get_spine_triton_opt_path,
     dump_ir_if_needed,
     get_llvm_bin_path,
     get_spine_mlir_opt_path,
@@ -20,18 +20,18 @@ from . import (
 )
 
 
-def _ttir_to_ttsharedir(mod, metadata):
+def _ttir_to_linalgdir(mod, metadata):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, "tt.mlir")
-        dst_path = os.path.join(tmpdir, "ttshared.mlir")
+        dst_path = os.path.join(tmpdir, "linalg.mlir")
         Path(src_path).write_text(ttir_code)
         dump_ir_if_needed([src_path], metadata["name"])
-        triton_shared_opt_path = get_triton_shared_opt_path()
+        spine_triton_opt_path = get_spine_triton_opt_path()
         subprocess.check_call(
             [
-                triton_shared_opt_path,
+                spine_triton_opt_path,
                 src_path,
                 "--triton-to-linalg-experimental",
                 "-o",
@@ -42,23 +42,23 @@ def _ttir_to_ttsharedir(mod, metadata):
         return Path(dst_path).read_text()
 
 
-def _optimize_ttsharedir(ttsharedir: str):
+def _optimize_linalgdir(linalgdir: str):
     # We don't apply any optimizations now, but we can add passes if needed.
-    return ttsharedir
+    return linalgdir
 
 
-def _ttsharedir_to_llir(ttsharedir: str, metadata):
+def _linalgdir_to_llir(linalgdir: str, metadata):
     with tempfile.TemporaryDirectory() as tmpdir:
-        ttshared_path = os.path.join(tmpdir, "ttshared.mlir")
+        linalg_path = os.path.join(tmpdir, "linalg.mlir")
         llmlir_path = os.path.join(tmpdir, "ll.mlir")
         llir_path = os.path.join(tmpdir, "ll.ir")
-        Path(ttshared_path).write_text(ttsharedir)
+        Path(linalg_path).write_text(linalgdir)
         mlir_opt_path = get_llvm_bin_path("mlir-opt")
-        # TritonShared-MLIR to LLVM-MLIR
+        # SpineTriton-MLIR to LLVM-MLIR
         subprocess.check_call(
             [
                 mlir_opt_path,
-                ttshared_path,
+                linalg_path,
                 "--convert-linalg-to-affine-loops",
                 # Note: eliminate-empty-tensors fails when there are multiple func.return ops
                 # in a single kernel which are the results of early returns.
@@ -103,18 +103,18 @@ def _ttsharedir_to_llir(ttsharedir: str, metadata):
         return Path(llir_path).read_text()
 
 
-def _spine_mlir_ttsharedir_to_llir(ttsharedir: str, metadata):
+def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
     with tempfile.TemporaryDirectory() as tmpdir:
-        ttshared_path = os.path.join(tmpdir, "ttshared.mlir")
+        linalg_path = os.path.join(tmpdir, "linalg.mlir")
         llmlir_path = os.path.join(tmpdir, "ll.mlir")
         llir_path = os.path.join(tmpdir, "ll.ir")
-        Path(ttshared_path).write_text(ttsharedir)
+        Path(linalg_path).write_text(linalgdir)
         spine_mlir_path = get_spine_mlir_opt_path()
-        # TritonShared-MLIR to LLVM-MLIR
+        # SpineTriton-MLIR to LLVM-MLIR
         subprocess.check_call(
             [
                 spine_mlir_path,
-                ttshared_path,
+                linalg_path,
                 "--spine-triton-pipeline",
                 "-o",
                 llmlir_path,
@@ -123,7 +123,7 @@ def _spine_mlir_ttsharedir_to_llir(ttsharedir: str, metadata):
         dump_ir_if_needed([llmlir_path], metadata["name"])
 
         llmlir_new_path = llmlir_path
-        base_path = os.getenv("TRITON_SHARED_DUMP_PATH", "")
+        base_path = os.getenv("SPINE_TRITON_DUMP_PATH", "")
         if base_path:
             llmlir_new_path = os.path.join(tmpdir, "ll_with_debuginfo.mlir")
             subprocess.check_call(
@@ -285,7 +285,7 @@ class CPUBackend(BaseBackend):
         )
 
     # Our compilation pipeline isn't in python like nvidia or amd, no need to load
-    # dialects. See `triton_shared.cc`
+    # dialects. See `spine-triton.cc`
     def load_dialects(self, ctx):
         return
 
@@ -310,19 +310,19 @@ class CPUBackend(BaseBackend):
 
     def add_stages(self, stages, options, language):
         stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
-        stages["ttsharedir"] = lambda src, metadata: _optimize_ttsharedir(
-            _ttir_to_ttsharedir(src, metadata)
+        stages["linalgdir"] = lambda src, metadata: _optimize_linalgdir(
+            _ttir_to_linalgdir(src, metadata)
         )
 
         spine_mlir_path = get_spine_mlir_opt_path()
 
         if os.path.isfile(spine_mlir_path):
             stages["llir"] = lambda src, metadata: _optimize_llir(
-                _spine_mlir_ttsharedir_to_llir(src, metadata)
+                _spine_mlir_linalgdir_to_llir(src, metadata)
             )
         else:
             stages["llir"] = lambda src, metadata: _optimize_llir(
-                _ttsharedir_to_llir(src, metadata)
+                _linalgdir_to_llir(src, metadata)
             )
 
         stages["so"] = lambda src, metadata: _llir_to_so(src, metadata)
