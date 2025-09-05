@@ -359,11 +359,11 @@ def get_cache_sizes():
 
         match = re.search(r"(\d+)\s*([KMG]?i?B)\s*\((\d+)\s*instances\)", output)
         matchNoinstances = re.search(r"(\d+)\s*([KMG]?i?B)", output)
-        if matchNoinstances:
+        if match:
+            total_size, unit, instances = match.groups()
+        elif matchNoinstances:
             total_size, unit = matchNoinstances.groups()
             instances = 1
-        elif match:
-            total_size, unit, instances = match.groups()
         else:
             results.append(0)
             continue
