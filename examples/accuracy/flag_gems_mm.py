@@ -16,7 +16,7 @@ if __name__ == "__main__":
         with torch.no_grad():
             C = torch.mm(A, B)
 
-    C_ref = torch.matmul(A, B)
+    C_ref = torch.mm(A, B)
 
     torch.testing.assert_close(C, C_ref, atol=1e-2, rtol=0)
 

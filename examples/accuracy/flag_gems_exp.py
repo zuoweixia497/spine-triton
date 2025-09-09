@@ -8,7 +8,6 @@ triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
 import torch
-import matplotlib.pyplot as plt
 
 def generate_grid(start, end, step):
     num_points = int((end - start) / step) + 1
