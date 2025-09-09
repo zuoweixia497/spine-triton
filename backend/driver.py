@@ -94,7 +94,6 @@ def _generate_launcher(constants, signature):
 #include <assert.h>
 #include <stdbool.h>
 #include <Python.h>
-#include <omp.h>
 #include <memory>
 #include <optional>
 #include "ExecutionEngine/CRunnerUtils.h"
@@ -145,9 +144,7 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
 
 static void _launch(int gridX, int gridY, int gridZ, int num_threads, kernel_ptr_t kernel_ptr, {arg_decls}) {{
   if (gridX*gridY*gridZ <= 0) return;
-  int thread_num = omp_get_max_threads();
 
-  #pragma omp parallel for schedule(static) num_threads(thread_num)
     for(int x = 0; x < gridX; x++) {{
       for(int y = 0; y < gridY; y++) {{
         for(int z = 0; z < gridZ; z++) {{
