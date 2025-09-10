@@ -200,7 +200,6 @@ def _llir_to_so(llir: str, metadata):
         gcc_flags = []
         if cpu_arch == "riscv64":
             gcc_flags.extend(["-march=rv64gcv_zfh_zba_zicbop", "-mabi=lp64d", "-O3"])
-        gcc_flags.append("-fopenmp")
         subprocess.check_call(
             [
                 "g++",
