@@ -11,6 +11,7 @@ from triton.runtime.cache import get_cache_manager
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
 from . import get_spine_mlir_cc_debug
+from .env import *
 
 
 # -------------------- Launcher ----------------------------
@@ -96,8 +97,31 @@ def _generate_launcher(constants, signature):
 #include <Python.h>
 #include <memory>
 #include <optional>
+#include <stdio.h>
+#include <stdlib.h>
+#include <cassert>
+#include <cstdint>
+#include <functional>
+#include <iostream>
+#include <stdexcept>
+#include <sys/mman.h>
+#include <unistd.h>
 #include "ExecutionEngine/CRunnerUtils.h"
 #include "ExecutionEngine/CRunnerUtils.cpp"
+
+namespace mlir {{
+namespace speir {{
+void *spineGetMultiStream(int64_t expected_multi_stream = 1);
+
+template <int64_t rank>
+void spineMultiStreamDispatch(
+    void *multi_stream,
+    const std::function<void(const std::array<int64_t, rank> &)> &fn,
+    const std::array<int64_t, rank> &block_size);
+
+}} // namespace speir
+}}// namespace mlir
+
 
 using kernel_ptr_t = void(*)({kernel_arg_decls} int, int, int, int, int, int);
 
@@ -142,19 +166,19 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
   return ptr_info;
 }}
 
-static void _launch(int gridX, int gridY, int gridZ, int num_threads, kernel_ptr_t kernel_ptr, {arg_decls}) {{
-  if (gridX*gridY*gridZ <= 0) return;
 
-    for(int x = 0; x < gridX; x++) {{
-      for(int y = 0; y < gridY; y++) {{
-        for(int z = 0; z < gridZ; z++) {{
+static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_t kernel_ptr, {arg_decls}) {{
+  if (gridX*gridY*gridZ <= 0) return;
+  mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
+    int x = block[0];
+    int y = block[1];
+    int z = block[2];
     {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
           for i, ty in signature.items() if i not in constants and ty[0] == "*")}
     (*kernel_ptr)({kernel_parameters}
                  gridX, gridY, gridZ, x, y, z);
-        }}
-      }}
-    }}
+  }},
+     {{gridX, gridY, gridZ}});
   }}
 
 static PyObject* launch(PyObject* self, PyObject* args) {{
@@ -173,7 +197,6 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   }}
 
   kernel_ptr_t kernel_ptr = reinterpret_cast<kernel_ptr_t>(_function);
-  int num_threads = 0;
 
   // [CPULauncher-specific]: We don't need the metadata below but just put them
   // here anyway to be consistent with others.
@@ -196,7 +219,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
   // raise exception asap
   {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
-  _launch(gridX, gridY, gridZ, num_threads, kernel_ptr, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
+  _launch(gridX, gridY, gridZ, _stream, kernel_ptr, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
   if (PyErr_Occurred()) {{
     return NULL;
   }}
@@ -310,7 +333,6 @@ def compile_module(src, name):
                 else:
                     gcc_flags.append("-O3")
 
-                gcc_flags.append("-fopenmp")
                 # Compile it together.
                 subprocess.check_call(
                     [
@@ -487,7 +509,11 @@ class CPUDriver(DriverBase):
         return ("cpu", 0)
 
     def get_current_stream(self, device):
-        return 0
+        import ctypes
+        libspeirruntime.spine_get_current_stream.argtypes = [ctypes.c_int64]
+        libspeirruntime.spine_get_current_stream.restype = ctypes.c_void_p
+        expected_streams = 2
+        return libspeirruntime.spine_get_current_stream(expected_streams)
 
     def get_current_device(self):
         # CPU doesn't have a device to return. Return something.
