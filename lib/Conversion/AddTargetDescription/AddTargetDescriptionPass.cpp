@@ -38,13 +38,14 @@ public:
     auto moduleOp = getOperation();
     MLIRContext *ctx = &getContext();
 
-    auto cacheSizesAttr =
-        moduleOp->getAttrOfType<mlir::DenseIntElementsAttr>("tt.cache_sizes");
-    moduleOp->removeAttr("tt.cache_sizes");
+    auto Attrs =
+        moduleOp->getAttrOfType<mlir::DenseIntElementsAttr>("tt.attrs");
+    moduleOp->removeAttr("tt.attrs");
 
-    int32_t l1 = cacheSizesAttr.getValues<int32_t>()[0];
-    int32_t l2 = cacheSizesAttr.getValues<int32_t>()[1];
-    int32_t l3 = cacheSizesAttr.getValues<int32_t>()[2];
+    int32_t l1 = Attrs.getValues<int32_t>()[0];
+    int32_t l2 = Attrs.getValues<int32_t>()[1];
+    int32_t l3 = Attrs.getValues<int32_t>()[2];
+    int32_t num_threads = Attrs.getValues<int32_t>()[3];
 
     SmallVector<mlir::DataLayoutEntryInterface> dlEntries;
 
@@ -64,7 +65,7 @@ public:
         mlir::IntegerAttr::get(u64Type, l3)));
     dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
         mlir::StringAttr::get(ctx, "num_threads"),
-        mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32), 4)));
+        mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32), num_threads)));
     dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
         mlir::StringAttr::get(ctx, "max_vector_width"),
         mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 256)));

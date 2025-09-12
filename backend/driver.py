@@ -368,6 +368,7 @@ class AICPUTarget(GPUTarget):
     arch: str
     core: int
     ai_core: int
+    num_threads: int
 
 
 class CPULauncher(object):
@@ -526,7 +527,7 @@ class CPUDriver(DriverBase):
 
     def get_current_target(self):
         # TODO For os detect
-        return AICPUTarget("cpu", "a60", 0, 8, 4)
+        return AICPUTarget("cpu", "a60", 0, 8, 4, 3)
 
     def get_active_torch_device(self):
         import torch

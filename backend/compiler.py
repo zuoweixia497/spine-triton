@@ -303,7 +303,10 @@ class CPUBackend(BaseBackend):
         passes.common.add_symbol_dce(pm)
         pm.run(mod)
         cache_sizes = get_cache_sizes()
-        mod.set_attr("tt.cache_sizes", ir.make_attr(cache_sizes, mod.context))
+        num_threads = metadata['target'].num_threads
+        attrs = list(cache_sizes)
+        attrs.append(num_threads)
+        mod.set_attr("tt.attrs", ir.make_attr(attrs, mod.context))
         tt_pattern = r"tt\.func\s+public\s+@(\w+)\s*\("
         kernel_name = extract_kernel_name(tt_pattern, str(mod))
         metadata["name"] = kernel_name
