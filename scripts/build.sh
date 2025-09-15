@@ -12,6 +12,7 @@ export TRITON_PLUGIN_DIRS=${PWD}
 mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
 
 pushd triton
+ls ../patch/*.patch | xargs -n1 git apply
 
 # git checkout ${COMMIT_ID} 可以省略
 

@@ -1253,6 +1253,19 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
     auto opb = op.getB();
     auto opc = op.getC();
 
+    llvm::SmallVector<triton::AnnotationOp> annotationOps;
+    llvm::SmallDenseMap<StringAttr, Attribute> annotations;
+    for (Operation *user : op->getUsers()) {
+      if (auto annotateOp = dyn_cast<triton::AnnotationOp>(user)) {
+        annotationOps.push_back(annotateOp);
+        for (const NamedAttribute &attr : annotateOp->getAttrs()) {
+          if (attr.getName() == "name" || attr.getName() == "loc")
+            continue;
+          annotations[attr.getName()] = attr.getValue();
+        }
+      }
+    }
+
     auto dstType = cast<RankedTensorType>(op.getType());
     auto elementType = dstType.getElementType();
     bool integers = elementType.isInteger();
@@ -1271,10 +1284,14 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
         rewriter.create<linalg::FillOp>(loc, ValueRange{zero}, ValueRange{init})
             .result();
 
-    auto res = rewriter
-                   .create<linalg::MatmulOp>(loc, ValueRange{opa, opb},
-                                             ValueRange{zeroes})
-                   .getResult(0);
+    auto matmulOp = rewriter.create<linalg::MatmulOp>(loc, ValueRange{opa, opb},
+                                                      ValueRange{zeroes});
+
+    for (auto &kv : annotations) {
+      matmulOp->setAttr(kv.getFirst(), kv.getSecond());
+    }
+
+    Value res = matmulOp.getResult(0);
 
     if (!skipC) {
       if (integers) {
@@ -1285,6 +1302,10 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
     }
 
     rewriter.replaceOp(op, res);
+    for (auto annotateOp : annotationOps) {
+      rewriter.eraseOp(annotateOp);
+    }
+
     return success();
   }
 };
