@@ -5,3 +5,4 @@ build/*
 .vscode/*
 build-*
 ir_dumps
+myenv
