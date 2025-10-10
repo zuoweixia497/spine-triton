@@ -6,3 +6,4 @@ build/*
 build-*
 ir_dumps
 myenv
+backend/bin
