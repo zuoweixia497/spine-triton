@@ -35,6 +35,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "triton-shared/Dialect/smt/IR/SMTDialect.h"
 
 using namespace mlir;
 using namespace triton;
@@ -56,7 +57,7 @@ public:
                 bufferization::BufferizationDialect, memref::MemRefDialect,
                 ttx::TritonTilingExtDialect, tts::TritonStructuredDialect,
                 tptr::TPtrDialect, ptr::PtrDialect, DLTIDialect, LLVM::LLVMDialect,
-                vector::VectorDialect>();
+                vector::VectorDialect, smt::SMTDialect>();
   }
 
   void runOnOperation() override {

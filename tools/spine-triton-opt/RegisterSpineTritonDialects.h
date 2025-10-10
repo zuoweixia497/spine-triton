@@ -28,6 +28,7 @@
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Conversion/AddTargetDescription/Passes.h"
 #include "triton-shared/Transform/AddLLVMDebugInfo/Passes.h"
+#include "triton-shared/Dialect/smt/IR/SMTDialect.h"
 
 #include "mlir/InitAllPasses.h"
 
@@ -60,5 +61,5 @@ inline void registerSpineTritonDialects(mlir::DialectRegistry &registry) {
       mlir::gpu::GPUDialect, mlir::linalg::LinalgDialect,
       mlir::func::FuncDialect, mlir::tensor::TensorDialect,
       mlir::memref::MemRefDialect, mlir::bufferization::BufferizationDialect,
-      mlir::DLTIDialect, mlir::vector::VectorDialect>();
+      mlir::DLTIDialect, mlir::vector::VectorDialect, mlir::smt::SMTDialect>();
 }
