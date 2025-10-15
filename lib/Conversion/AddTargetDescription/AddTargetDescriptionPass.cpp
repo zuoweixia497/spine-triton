@@ -27,48 +27,32 @@ class AddTargetDescriptionPass
     : public AddTargetDescriptionBase<AddTargetDescriptionPass> {
 
 public:
-  void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<arith::ArithDialect, math::MathDialect, affine::AffineDialect,
-                scf::SCFDialect, tensor::TensorDialect, triton::TritonDialect,
-                DLTIDialect>();
-  }
-
   void runOnOperation() override {
     auto moduleOp = getOperation();
     MLIRContext *ctx = &getContext();
 
-    auto Attrs =
-        moduleOp->getAttrOfType<mlir::DenseIntElementsAttr>("tt.attrs");
-    moduleOp->removeAttr("tt.attrs");
+    auto numThreadsAttr =
+        moduleOp->getAttrOfType<mlir::IntegerAttr>("tt.num_threads");
+    auto archAttr = moduleOp->getAttrOfType<mlir::StringAttr>("tt.arch_id");
 
-    int32_t l1 = Attrs.getValues<int32_t>()[0];
-    int32_t l2 = Attrs.getValues<int32_t>()[1];
-    int32_t l3 = Attrs.getValues<int32_t>()[2];
-    int32_t num_threads = Attrs.getValues<int32_t>()[3];
+    if (!numThreadsAttr || !archAttr) {
+      llvm::outs()
+          << "Error: Missing required attributes (tt.num_threads or tt.arch)\n";
+      return signalPassFailure();
+    }
+
+    int32_t num_threads = numThreadsAttr.getInt();
+    StringRef arch_id = archAttr.getValue();
+
+    moduleOp->removeAttr("tt.num_threads");
+    moduleOp->removeAttr("tt.arch_id");
 
     SmallVector<mlir::DataLayoutEntryInterface> dlEntries;
-
-    auto u64Type = mlir::IntegerType::get(ctx, 64, mlir::IntegerType::Unsigned);
-
     dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
-        mlir::StringAttr::get(ctx, "TCM_cache_size_in_bytes"),
-        mlir::IntegerAttr::get(u64Type, 131072)));
-    dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
-        mlir::StringAttr::get(ctx, "L1_cache_size_in_bytes"),
-        mlir::IntegerAttr::get(u64Type, l1)));
-    dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
-        mlir::StringAttr::get(ctx, "L2_cache_size_in_bytes"),
-        mlir::IntegerAttr::get(u64Type, l2)));
-    dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
-        mlir::StringAttr::get(ctx, "L3_cache_size_in_bytes"),
-        mlir::IntegerAttr::get(u64Type, l3)));
+        mlir::StringAttr::get(ctx, "arch_id"), mlir::StringAttr::get(ctx, arch_id)));
     dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
         mlir::StringAttr::get(ctx, "num_threads"),
         mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32), num_threads)));
-    dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
-        mlir::StringAttr::get(ctx, "max_vector_width"),
-        mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 64), 256)));
 
     auto deviceSpec = mlir::TargetDeviceSpecAttr::get(ctx, dlEntries);
 

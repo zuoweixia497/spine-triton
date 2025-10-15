@@ -368,6 +368,7 @@ class AICPUTarget(GPUTarget):
     arch: str
     core: int
     ai_core: int
+    arch_id: str
     num_threads: int
 
 
@@ -494,6 +495,7 @@ class CPUDriver(DriverBase):
         self.utils = CPUUtils()
         self.launcher_cls = CPULauncher
         self.binary_ext = "so"
+        self.current_arch_id = "0"
 
     # CPU driver won't be automatically chosen unless explicitly set through
     # triton.runtime.driver.set_active(CPUDriver())
@@ -525,9 +527,11 @@ class CPUDriver(DriverBase):
         assert device == "cpu"
         return
 
+    def set_current_arch_id(self, arch_id):
+        self.current_arch_id = arch_id
+
     def get_current_target(self):
-        # TODO For os detect
-        return AICPUTarget("cpu", "a60", 0, 8, 4, 3)
+        return AICPUTarget("cpu", "a60", 0, 8, 4, self.current_arch_id, 3)
 
     def get_active_torch_device(self):
         import torch

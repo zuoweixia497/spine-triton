@@ -22,7 +22,7 @@ python3 setup.py install --prefix=${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
 popd
 
 rm -rf ${BUILD_DIR}/triton
-cp -r ${BUILD_DIR}/local/lib/python*/dist-packages/triton* ${BUILD_DIR}/
-rm -rf ${BUILD_DIR}/local
+cp -r ${BUILD_DIR}/lib/python*/site-packages/triton* ${BUILD_DIR}/
+rm -rf ${BUILD_DIR}/lib
 
 cp triton/build/cmake.linux-${2}*/third_party/spine_triton/tools/spine-triton-opt/spine-triton-opt ${BUILD_DIR}
