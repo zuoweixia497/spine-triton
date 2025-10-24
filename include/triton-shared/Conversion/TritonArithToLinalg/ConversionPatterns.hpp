@@ -16,7 +16,7 @@
 #include "triton-shared/Utils/Utils.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton-shared/Dialect/smt/IR/SMTDialect.h"
+#include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -1254,10 +1254,10 @@ struct MatmulConverter : public OpConversionPattern<triton::DotOp> {
     auto opb = op.getB();
     auto opc = op.getC();
 
-    llvm::SmallVector<smt::AnnotationOp> annotationOps;
+    llvm::SmallVector<xsmt::AnnotationOp> annotationOps;
     llvm::SmallDenseMap<StringAttr, Attribute> annotations;
     for (Operation *user : op->getUsers()) {
-      if (auto annotateOp = dyn_cast<smt::AnnotationOp>(user)) {
+      if (auto annotateOp = dyn_cast<xsmt::AnnotationOp>(user)) {
         annotationOps.push_back(annotateOp);
         for (const NamedAttribute &attr : annotateOp->getAttrs()) {
           if (attr.getName() == "name" || attr.getName() == "loc")

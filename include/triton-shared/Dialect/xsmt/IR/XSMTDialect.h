@@ -1,0 +1,22 @@
+#ifndef TRITON_DIALECT_XSMT_IR_DIALECT_H_
+#define TRITON_DIALECT_XSMT_IR_DIALECT_H_
+
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dialect.h"
+#include "mlir/IR/PatternMatch.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
+
+
+#include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h.inc"
+
+#define GET_OP_CLASSES
+#include "triton-shared/Dialect/xsmt/IR/XSMTOps.h.inc"
+
+namespace mlir {
+namespace xsmt {
+
+} // namespace xsmt
+} // namespace mlir
+
+#endif // TRITON_DIALECT_XSMT_IR_DIALECT_H_

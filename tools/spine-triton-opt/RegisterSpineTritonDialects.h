@@ -23,12 +23,14 @@
 #include "triton-shared/Conversion/TritonToStructured/Passes.h"
 #include "triton-shared/Conversion/TritonToUnstructured/Passes.h"
 #include "triton-shared/Conversion/UnstructuredToMemref/Passes.h"
+#include "triton-shared/Conversion/XsmtToLinalg/Passes.h"
 #include "triton-shared/Dialect/TPtr/IR/TPtrDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Conversion/AddTargetDescription/Passes.h"
+#include "triton-shared/Conversion/XsmtToLinalg/Passes.h"
 #include "triton-shared/Transform/AddLLVMDebugInfo/Passes.h"
-#include "triton-shared/Dialect/smt/IR/SMTDialect.h"
+#include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
 
 #include "mlir/InitAllPasses.h"
 
@@ -50,6 +52,7 @@ inline void registerSpineTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerAddTargetDescriptionPasses();
   mlir::triton::registerScfbufferStandardized();
   mlir::triton::registerConvertScanOp();
+  mlir::triton::registerXsmtToLinalgPass();
   mlir::triton::registerAddLLVMDebugInfoPass();
 
   // TODO: register Triton & TritonGPU passes
@@ -61,5 +64,5 @@ inline void registerSpineTritonDialects(mlir::DialectRegistry &registry) {
       mlir::gpu::GPUDialect, mlir::linalg::LinalgDialect,
       mlir::func::FuncDialect, mlir::tensor::TensorDialect,
       mlir::memref::MemRefDialect, mlir::bufferization::BufferizationDialect,
-      mlir::DLTIDialect, mlir::vector::VectorDialect, mlir::smt::SMTDialect>();
+      mlir::DLTIDialect, mlir::vector::VectorDialect, mlir::xsmt::XSMTDialect>();
 }
