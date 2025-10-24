@@ -52,7 +52,54 @@ def _linalgdir_to_llir(linalgdir: str, metadata):
         linalg_path = os.path.join(tmpdir, "linalg.mlir")
         llmlir_path = os.path.join(tmpdir, "ll.mlir")
         llir_path = os.path.join(tmpdir, "ll.ir")
-        Path(linalg_path).write_text(linalgdir)
+
+        transform_code = """
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%module_op: !transform.any_op {transform.readonly}) {
+    // Lower pack operations
+    %pack = transform.structured.match ops{["linalg.pack"]} in %module_op
+      : (!transform.any_op) -> !transform.op<"linalg.pack">
+    transform.structured.lower_pack %pack : (!transform.op<"linalg.pack">)
+      -> (!transform.op<"tensor.pad">, !transform.op<"tensor.expand_shape">, !transform.op<"linalg.transpose">)
+
+    // Lower unpack operations
+    %unpack = transform.structured.match ops{["linalg.unpack"]} in %module_op
+      : (!transform.any_op) -> !transform.op<"linalg.unpack">
+    transform.structured.lower_unpack %unpack : (!transform.op<"linalg.unpack">)
+      -> (!transform.op<"tensor.empty">,
+          !transform.op<"linalg.transpose">,
+          !transform.op<"tensor.collapse_shape">,
+          !transform.op<"tensor.extract_slice">)
+
+    transform.yield
+  }
+}"""
+        combined_ir = linalgdir + transform_code
+        Path(linalg_path).write_text(combined_ir)
+
+        transform_code = """
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%module_op: !transform.any_op {transform.readonly}) {
+    // Lower pack operations
+    %pack = transform.structured.match ops{["linalg.pack"]} in %module_op
+      : (!transform.any_op) -> !transform.op<"linalg.pack">
+    transform.structured.lower_pack %pack : (!transform.op<"linalg.pack">)
+      -> (!transform.op<"tensor.pad">, !transform.op<"tensor.expand_shape">, !transform.op<"linalg.transpose">)
+
+    // Lower unpack operations
+    %unpack = transform.structured.match ops{["linalg.unpack"]} in %module_op
+      : (!transform.any_op) -> !transform.op<"linalg.unpack">
+    transform.structured.lower_unpack %unpack : (!transform.op<"linalg.unpack">)
+      -> (!transform.op<"tensor.empty">,
+          !transform.op<"linalg.transpose">,
+          !transform.op<"tensor.collapse_shape">,
+          !transform.op<"tensor.extract_slice">)
+
+    transform.yield
+  }
+}"""
+        combined_ir = linalgdir + transform_code
+        Path(linalg_path).write_text(combined_ir)
         mlir_opt_path = get_llvm_bin_path("mlir-opt")
         # SpineTriton-MLIR to LLVM-MLIR
         subprocess.check_call(
@@ -67,6 +114,10 @@ def _linalgdir_to_llir(linalgdir: str, metadata):
                 # focus at the moment.
                 # "--eliminate-empty-tensors",
                 "--empty-tensor-to-alloc-tensor",
+                "--transform-interpreter",
+                "--cse",
+                "--transform-interpreter",
+                "--cse",
                 "--one-shot-bufferize=allow-return-allocs-from-loops=true",
                 "--lower-affine",
                 "--convert-linalg-to-loops",
@@ -93,6 +144,18 @@ def _linalgdir_to_llir(linalgdir: str, metadata):
                 llmlir_path,
             ]
         )
+
+        dump_ir_if_needed([llmlir_path], metadata["name"])
+        with open(llmlir_path, 'r') as f:
+            mlir_content = f.read()
+        cleaned_mlir = remove_transform_code(mlir_content)
+        Path(llmlir_path).write_text(cleaned_mlir)
+
+        dump_ir_if_needed([llmlir_path], metadata["name"])
+        with open(llmlir_path, 'r') as f:
+            mlir_content = f.read()
+        cleaned_mlir = remove_transform_code(mlir_content)
+        Path(llmlir_path).write_text(cleaned_mlir)
 
         # LLVM-MLIR to LLVM-IR
         mlir_translate_path = get_llvm_bin_path("mlir-translate")
@@ -380,3 +443,65 @@ def get_cache_sizes():
         results.append(bytes_per_instance)
 
     return results  # Format: [L1_size, L2_size, L3_size] in bytes
+
+
+def remove_transform_code(mlir_code):
+    lines = mlir_code.split("\n")
+    result_lines = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.strip() == "module {":
+            i += 1
+            continue
+
+        if "transform.with_named_sequence" in line:
+            brace_count = 1
+            i += 1
+            while i < len(lines) and brace_count > 0:
+                current_line = lines[i]
+                brace_count += current_line.count("{")
+                brace_count -= current_line.count("}")
+                i += 1
+            continue
+
+        if line.strip() == "} loc(#loc)":
+            i += 1
+            continue
+
+        result_lines.append(line)
+        i += 1
+
+    return "\n".join(result_lines)
+
+
+def remove_transform_code(mlir_code):
+    lines = mlir_code.split("\n")
+    result_lines = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.strip() == "module {":
+            i += 1
+            continue
+
+        if "transform.with_named_sequence" in line:
+            brace_count = 1
+            i += 1
+            while i < len(lines) and brace_count > 0:
+                current_line = lines[i]
+                brace_count += current_line.count("{")
+                brace_count -= current_line.count("}")
+                i += 1
+            continue
+
+        if line.strip() == "} loc(#loc)":
+            i += 1
+            continue
+
+        result_lines.append(line)
+        i += 1
+
+    return "\n".join(result_lines)

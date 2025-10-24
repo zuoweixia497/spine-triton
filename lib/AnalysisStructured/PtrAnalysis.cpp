@@ -21,6 +21,7 @@
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
+#include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -1865,6 +1866,39 @@ LogicalResult PtrAnalysis::rewriteStoreOp(triton::StoreOp op,
   return success();
 }
 
+LogicalResult PtrAnalysis::rewriteDescriptorLoadOp(xsmt::DescriptorLoadOp op) {
+  Value ptrOperand = op->getOperand(0);
+  auto newPtr = ptrMap.lookupOrNull(ptrOperand);
+  if (!newPtr) {
+    op->emitRemark("PtrAnalysis: pointer is not replaced with tts.make_tptr so "
+                   "xsmt.descriptor_load cannot be rewritten");
+    return failure();
+  }
+
+  auto ptrType = dyn_cast<triton::PointerType>(newPtr.getType());
+  if (ptrType && !isa<ShapedType>(ptrType.getPointeeType())) {
+    op->emitRemark("PtrAnalysis: scalar pointer used in xsmt.descriptor_load "
+                   "will not be rewritten");
+    return failure();
+  }
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "Rewriting xsmt.descriptor_load with new pointer:\n";
+    newPtr.dump();
+    llvm::dbgs() << "Original operation:\n";
+    op->dump();
+  });
+
+  op->setOperand(0, newPtr);
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "Rewritten xsmt.descriptor_load:\n";
+    op->dump();
+  });
+
+  return success();
+}
+
 LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
   LLVM_DEBUG({
     llvm::dbgs() << "rewriting rootOp\n";
@@ -1933,6 +1967,12 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
             forOp->emitRemark("PtrAnalysis: Failed to rewrite ForOp");
           }
           return WalkResult::skip();
+        })
+        .Case<xsmt::DescriptorLoadOp>([&](auto descriptor_load) {
+          if (rewriteDescriptorLoadOp(descriptor_load).failed()) {
+            descriptor_load->emitRemark("PtrAnalysis: Failed to rewrite xsmt.descriptor_load");
+          }
+          return WalkResult::advance();
         })
         .Case<tts::GetStructuredStateOp>(
             [&](tts::GetStructuredStateOp getStateOp) {

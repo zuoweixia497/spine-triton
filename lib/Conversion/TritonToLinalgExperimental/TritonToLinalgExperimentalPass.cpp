@@ -23,6 +23,7 @@
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Conversion/AddTargetDescription/AddTargetDescription.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ConvertScanOp.h"
+#include "triton-shared/Conversion/XsmtToLinalg/XsmtToLinalg.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
@@ -35,7 +36,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
-#include "triton-shared/Dialect/smt/IR/SMTDialect.h"
+#include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
 
 using namespace mlir;
 using namespace triton;
@@ -57,7 +58,7 @@ public:
                 bufferization::BufferizationDialect, memref::MemRefDialect,
                 ttx::TritonTilingExtDialect, tts::TritonStructuredDialect,
                 tptr::TPtrDialect, ptr::PtrDialect, DLTIDialect, LLVM::LLVMDialect,
-                vector::VectorDialect, smt::SMTDialect>();
+                vector::VectorDialect, xsmt::XSMTDialect>();
   }
 
   void runOnOperation() override {
@@ -81,14 +82,15 @@ public:
     pm.addPass(createTritonToPtrPass());
     pm.addPass(createAddTargetDescriptionPass());
     pm.addPass(createConvertScanOpPass());
-    pm.addPass(createReconcileUnrealizedCastsPass());
-    pm.addPass(createReconcilePtrCastsPass());
-    pm.addPass(createReconcileLlvmPtrCastsPass());
-
     // Now that remove-dead-values fully works with linalg ops, clean up the IR
     // again, particularly unused loop iter-args that were created
     // during triton-to-structured.
     pm.addPass(createRemoveDeadValuesPass());
+    pm.addPass(createXsmtToLinalgPass());
+    pm.addPass(createReconcileUnrealizedCastsPass());
+    pm.addPass(createReconcilePtrCastsPass());
+    pm.addPass(createReconcileLlvmPtrCastsPass());
+
     pm.addPass(createCSEPass());
     pm.addPass(createCanonicalizerPass());
     if (enableCollapseShape) {

@@ -17,6 +17,8 @@
 #include "mlir/Support/LogicalResult.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Types.h"
+#include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
 
 #include <cstddef>
 #include <set>
@@ -370,6 +372,8 @@ public:
   LogicalResult rewriteLoadOp(triton::LoadOp op, bool useUnsafeMask = false);
 
   LogicalResult rewriteStoreOp(triton::StoreOp op, bool useUnsafeMask = false);
+
+  LogicalResult rewriteDescriptorLoadOp(xsmt::DescriptorLoadOp op);
 
   LogicalResult rewriteOp(Operation *op, bool useUnsafeMask = false);
 };
