@@ -4,13 +4,15 @@ from functools import wraps
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
-triton.runtime.driver.set_active(CPUDriver())
+driver = CPUDriver()
+driver.set_current_arch_id("0xA03C")
+triton.runtime.driver.set_active(driver)
 import flag_gems
 
 if __name__ == "__main__":
     M, N, K = 256, 256, 512
-    A = torch.randn((M, K), dtype=torch.float32, device=flag_gems.device, requires_grad=False)
-    B = torch.randn((K, N), dtype=torch.float32, device=flag_gems.device, requires_grad=False)
+    A = torch.randn((M, K), dtype=torch.float16, device=flag_gems.device, requires_grad=False)
+    B = torch.randn((K, N), dtype=torch.float16, device=flag_gems.device, requires_grad=False)
 
     with flag_gems.use_gems():
         with torch.no_grad():

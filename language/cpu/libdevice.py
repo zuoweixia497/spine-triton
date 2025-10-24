@@ -157,7 +157,7 @@ def cosh(arg0, _semantic=None):
 
 @core.extern
 def exp2(arg0, _semantic=None):
-    return core.tensor(_semantic.create_exp2(arg0.handle), arg0.type)
+    return core.tensor(_semantic.builder.create_exp2(arg0.handle), arg0.type)
 
 @core.extern
 def expm1(arg0, _semantic=None):
