@@ -77,27 +77,6 @@ module attributes {transform.with_named_sequence} {
         combined_ir = linalgdir + transform_code
         Path(linalg_path).write_text(combined_ir)
 
-        transform_code = """
-module attributes {transform.with_named_sequence} {
-  transform.named_sequence @__transform_main(%module_op: !transform.any_op {transform.readonly}) {
-    // Lower pack operations
-    %pack = transform.structured.match ops{["linalg.pack"]} in %module_op
-      : (!transform.any_op) -> !transform.op<"linalg.pack">
-    transform.structured.lower_pack %pack : (!transform.op<"linalg.pack">)
-      -> (!transform.op<"tensor.pad">, !transform.op<"tensor.expand_shape">, !transform.op<"linalg.transpose">)
-
-    // Lower unpack operations
-    %unpack = transform.structured.match ops{["linalg.unpack"]} in %module_op
-      : (!transform.any_op) -> !transform.op<"linalg.unpack">
-    transform.structured.lower_unpack %unpack : (!transform.op<"linalg.unpack">)
-      -> (!transform.op<"tensor.empty">,
-          !transform.op<"linalg.transpose">,
-          !transform.op<"tensor.collapse_shape">,
-          !transform.op<"tensor.extract_slice">)
-
-    transform.yield
-  }
-}"""
         combined_ir = linalgdir + transform_code
         Path(linalg_path).write_text(combined_ir)
         mlir_opt_path = get_llvm_bin_path("mlir-opt")
@@ -114,8 +93,6 @@ module attributes {transform.with_named_sequence} {
                 # focus at the moment.
                 # "--eliminate-empty-tensors",
                 "--empty-tensor-to-alloc-tensor",
-                "--transform-interpreter",
-                "--cse",
                 "--transform-interpreter",
                 "--cse",
                 "--one-shot-bufferize=allow-return-allocs-from-loops=true",
