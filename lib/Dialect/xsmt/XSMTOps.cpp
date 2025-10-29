@@ -1,3 +1,10 @@
+//===----------------------------------------------------------------------===//
+//
+// SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
 #include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"

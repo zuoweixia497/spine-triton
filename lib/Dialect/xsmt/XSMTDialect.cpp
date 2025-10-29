@@ -1,11 +1,15 @@
+//===----------------------------------------------------------------------===//
+//
+// SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
 #include "triton/Dialect/Triton/IR/Interfaces.h"
-
-// clang-format off
 #include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
 #include "triton-shared/Dialect/xsmt/IR/XSMTDialect.cpp.inc"
-// clang-format on
 
 using namespace mlir;
 using namespace mlir::xsmt;

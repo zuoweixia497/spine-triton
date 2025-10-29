@@ -1,3 +1,10 @@
+//===----------------------------------------------------------------------===//
+//
+// SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"

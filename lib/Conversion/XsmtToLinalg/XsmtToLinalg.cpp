@@ -1,7 +1,7 @@
 //===----------------------------------------------------------------------===//
 //
-// Copyright (c) Microsoft Corporation, Meta Platforms.
-// Licensed under the MIT license.
+// SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 

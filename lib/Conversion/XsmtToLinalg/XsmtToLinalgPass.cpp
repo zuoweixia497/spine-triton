@@ -1,9 +1,10 @@
 //===----------------------------------------------------------------------===//
 //
-// Copyright (c) Microsoft Corporation, Meta Platforms.
-// Licensed under the MIT license.
+// SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
+
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "triton-shared/Conversion/XsmtToLinalg/XsmtToLinalg.h"

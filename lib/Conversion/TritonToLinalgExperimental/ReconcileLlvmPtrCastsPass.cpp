@@ -1,17 +1,8 @@
 //===----------------------------------------------------------------------===//
 //
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT license.
+// SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. All rights reserved.
+// SPDX-License-Identifier: MIT
 //
-//===----------------------------------------------------------------------===//
-// Throughout the conversion process, we convert !tt.ptr -> {!ptr.ptr or
-// memref<*>}. This process leaves around unrealized_conversion_cast ops between
-// these types. We want to remove these unrealized casts and use the proper
-// conversion ops in the PtrDialect: to_memref or from_memref. To do this, we
-// use a pattern that simplifies the chain of conversions by removing
-// intermediate conversion cast ops. At the end, we are left with just pointer
-// to memref or vice versa. We then convert the unrealized cast to to_memref or
-// from_memref accordingly.
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"

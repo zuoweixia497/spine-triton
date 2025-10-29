@@ -1,3 +1,10 @@
+//===----------------------------------------------------------------------===//
+//
+// SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. All rights reserved.
+// SPDX-License-Identifier: MIT
+//
+//===----------------------------------------------------------------------===//
+
 #ifndef TRITON_CONVERSION_TYPE
 #define TRITON_CONVERSION_TYPE
 
