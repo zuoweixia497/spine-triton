@@ -59,6 +59,18 @@ public:
   void runOnOperation() override {
     auto moduleOp = getOperation();
 
+    bool hasXsmtUser = false;
+    moduleOp.walk([&](Operation *op) {
+      if (op->getName().getStringRef().starts_with("xsmt.")) {
+        hasXsmtUser = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (!hasXsmtUser) {
+      return;
+    }
+
     RewritePatternSet patterns1(&getContext());
     RewritePatternSet patterns2(&getContext());
     RewritePatternSet patterns3(&getContext());
