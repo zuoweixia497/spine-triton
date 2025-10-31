@@ -3,14 +3,16 @@ import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
 triton.runtime.driver.set_active(CPUDriver())
+driver = CPUDriver()
+driver.set_current_arch_id("0")
+triton.runtime.driver.set_active(driver)
 import flag_gems
 
 if __name__ == "__main__":
-    shape = (2, 19, 7)
     dtype = torch.float32
     alpha = 0.001
-    inp1 = torch.randn(shape, dtype=dtype, device=flag_gems.device)
-    inp2 = torch.randn(shape, dtype=dtype, device=flag_gems.device)
+    inp1 = torch.randn([100, 1], dtype=dtype, device=flag_gems.device)
+    inp2 = torch.randn([1, 100], dtype=dtype, device=flag_gems.device)
 
     ref_out = torch.add(inp1, inp2, alpha=alpha)
     with flag_gems.use_gems():

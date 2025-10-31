@@ -69,6 +69,11 @@ public:
       return WalkResult::advance();
     });
     if (!hasXsmtUser) {
+      RewritePatternSet patterns(&getContext());
+      triton::ForToForallConversionPatterns(patterns);
+      if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+        signalPassFailure();
+      }
       return;
     }
 

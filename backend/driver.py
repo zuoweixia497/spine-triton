@@ -528,6 +528,17 @@ class CPUDriver(DriverBase):
         return
 
     def set_current_arch_id(self, arch_id):
+        valid_arch_ids = [
+            "0",
+            "0x503C",
+            "0x5064",
+            "0x50C8",
+            "0xA03C",
+            "0xA064",
+            "0xA0C8"
+        ]
+        if arch_id not in valid_arch_ids:
+            raise ValueError(f"invalid arch_id: {arch_id}。must be one of the following values: {valid_arch_ids}")
         self.current_arch_id = arch_id
 
     def get_current_target(self):
