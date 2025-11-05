@@ -5,9 +5,6 @@ from datetime import datetime
 
 import pytest
 
-import flag_gems
-
-device = flag_gems.device
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 filename = f"test_detail_and_result_{timestamp}.json"
@@ -17,15 +14,13 @@ def pytest_addoption(parser):
     parser.addoption(
         "--ref",
         action="store",
-        default=device,
+        default="cpu",
         required=False,
-        choices=[device, "cpu"],
+        choices=["cpu"],
         help="device to run reference tests on",
     )
     parser.addoption(
-        "--mode"
-        if flag_gems.vendor_name != "kunlunxin"
-        else "--fg_mode",  # TODO: fix pytest-* common --mode args,
+        "--mode",
         action="store",
         default="normal",
         required=False,
