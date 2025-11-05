@@ -8,6 +8,7 @@ from ctypes import CDLL, RTLD_GLOBAL
 import triton
 import os
 
+SPINE_MLIR_BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 
 def get_spine_mlir_cc_debug() -> bool:
     debug_or_not = int(os.getenv("SPINE_MLIR_DEBUG_MODE", "0"))
@@ -17,20 +18,19 @@ def get_spine_mlir_cc_debug() -> bool:
 def get_spine_mlir_opt_path() -> str:
     path = os.getenv("SPINE_MLIR_OPT_PATH", "")
     if path == "":
-        print("SPINE_MLIR_OPT_PATH is not set.")
+        return os.path.join(SPINE_MLIR_BASE_PATH, "bin", "spine-opt")
     return path
 
 
 def get_llvm_bin_path(bin_name: str) -> str:
     path = os.getenv("LLVM_BINARY_DIR", "")
     if path == "":
-        raise Exception("LLVM_BINARY_DIR is not set.")
+        return os.path.join(SPINE_MLIR_BASE_PATH, "bin", bin_name)
     return os.path.join(path, bin_name)
 
 
 def get_spine_triton_opt_path() -> str:
-    triton_path = os.path.dirname(triton.__file__)
-    spine_triton_opt_path = os.path.join(triton_path, "backends", "spine_triton", "bin", "spine-triton-opt")
+    spine_triton_opt_path = os.path.join(SPINE_MLIR_BASE_PATH, "bin", "spine-triton-opt")
     if os.path.isfile(spine_triton_opt_path):
         path = spine_triton_opt_path
     else:
@@ -62,9 +62,7 @@ def extract_kernel_name(pattern, ir):
 try:
     spine_mlir_opt_path = get_spine_mlir_opt_path()
     if os.path.isfile(spine_mlir_opt_path):
-        spine_mlir_lib_dir = os.path.join(
-            os.path.dirname(os.path.dirname(spine_mlir_opt_path)), "lib"
-        )
+        spine_mlir_lib_dir = os.path.join(SPINE_MLIR_BASE_PATH, "lib")
         libspeirruntime_path = os.path.join(
             spine_mlir_lib_dir, "libSpeIRRuntimeLibs.so"
         )

@@ -128,101 +128,89 @@ index 1dd7b4ed..c2d3a3e0
 diff --git a/setup.py b/setup.py
 old mode 100644
 new mode 100755
-index 345986fa..08274e9a
+index 345986fa..d31770c8
 --- a/setup.py
 +++ b/setup.py
-@@ -27,6 +27,7 @@ from setuptools.command.sdist import sdist
- from dataclasses import dataclass
+@@ -55,6 +55,8 @@ class Backend:
+     tools_dir: Optional[str]
+     install_dir: str
+     is_external: bool
++    bin_dir: Optional[str]
++    lib_dir: Optional[str]
  
- import pybind11
-+import glob
  
- try:
-     from setuptools.command.bdist_wheel import bdist_wheel
-@@ -329,7 +330,7 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
-     arch = platform.machine()
-     # NOTE: This might be wrong for jetson if both grace chips and jetson chips return aarch64
-     arch = {"arm64": "sbsa", "aarch64": "sbsa"}.get(arch, arch)
--    supported = {"Linux": "linux", "Darwin": "linux"}
-+    supported = {"Linux": "linux", "Darwin": "macos"}
-     url = url_func(supported[system], arch, version)
-     src_path = src_func(supported[system], arch, version)
-     tmp_path = os.path.join(triton_cache_path, "nvidia", name)  # path to cache the download
-@@ -518,8 +519,55 @@ class CMakeBuild(build_ext):
-         cmake_dir = get_cmake_dir()
-         subprocess.check_call(["cmake", self.base_dir] + cmake_args, cwd=cmake_dir, env=env)
-         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
-+        self.copy_to_package(cmake_dir)
+ class BackendInstaller:
+@@ -88,13 +90,40 @@ class BackendInstaller:
+         if not os.path.exists(tools_dir):
+             tools_dir = None
+ 
++        bin_dir = os.path.join(backend_src_dir, "backend", "bin")
++        if not os.path.exists(bin_dir):
++            bin_dir = None
++        elif backend_name == "spine_triton":
++            spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR", None)
++            assert spine_mlir_install_dir is not None
++            bin_install_list = ["llc", "spine-opt", "mlir-translate"]
++            for bin_file in bin_install_list:
++                shutil.copy(
++                    os.path.join(spine_mlir_install_dir, "bin", bin_file),
++                    os.path.join(bin_dir, bin_file)
++                )
 +
++        lib_dir = os.path.join(backend_src_dir, "backend", "lib")
++        if not os.path.exists(lib_dir):
++            lib_dir = None
++        elif backend_name == "spine_triton":
++            spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR", None)
++            assert spine_mlir_install_dir is not None
++            import glob
++            so_file_list = glob.glob(os.path.join(spine_mlir_install_dir, "lib", "libSpeIR*.so"))
++            for so_file in so_file_list:
++                shutil.copy(
++                    so_file,
++                    os.path.join(lib_dir, os.path.basename(so_file))
++                )
++
+         for file in ["compiler.py", "driver.py"]:
+             assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
+ 
+         install_dir = os.path.join(os.path.dirname(__file__), "python", "triton", "backends", backend_name)
+ 
+         return Backend(name=backend_name, src_dir=backend_src_dir, backend_dir=backend_path, language_dir=language_dir,
+-                       tools_dir=tools_dir, install_dir=install_dir, is_external=is_external)
++                       tools_dir=tools_dir, install_dir=install_dir, is_external=is_external, bin_dir=bin_dir, lib_dir=lib_dir)
+ 
+     # Copy all in-tree backends under triton/third_party.
+     @staticmethod
+@@ -520,6 +549,14 @@ class CMakeBuild(build_ext):
+         subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
          subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
  
-+    def copy_to_package(self, cmake_dir, file_mappings=None):
-+        if file_mappings is None:
-+            file_mappings = {
-+                "**/spine-triton-opt/spine-triton-opt": "bin",
-+            }
-+
-+        base_target_dir = os.path.join(self.base_dir, "python", "triton", "backends", "spine_triton")
-+        copied_files = []
-+        file_conflicts = set()
-+
-+        for pattern, sub_dir in file_mappings.items():
-+            target_dir = os.path.join(base_target_dir, sub_dir)
-+            os.makedirs(target_dir, exist_ok=True)
-+            found_files = glob.glob(os.path.join(cmake_dir, pattern), recursive=True)
-+
-+            if not found_files:
-+                print(f"Warning: No files matching the pattern '{pattern}' were found")
-+                continue
-+
-+            for src_file_path in found_files:
-+                file_name = os.path.basename(src_file_path)
-+                target_path = os.path.join(target_dir, file_name)
-+                if file_name in file_conflicts:
-+                    print(f"Warning: The file {file_name} may match multiple patterns, resulting in a path conflict")
-+                    continue
-+
-+                file_conflicts.add(file_name)
-+
-+                try:
-+                    shutil.copy(src_file_path, target_path)
-+                    if not file_name.endswith('.whl') and not file_name.endswith('.so'):
-+                        os.chmod(target_path, 0o755)
-+
-+                    copied_files.append((file_name, sub_dir))
-+                    print(f"Copied {file_name} to: {target_path}")
-+                except Exception as e:
-+                    print(f"Error copying file {file_name} to {sub_dir}: {e}")
-+
-+        if not copied_files:
-+            print("Warning: No files were successfully copied")
-+        else:
-+            print(f"Successfully copied {len(copied_files)} files:")
-+            for file_name, sub_dir in copied_files:
-+                print(f"  - {file_name} -> {sub_dir}/")
++        for backend in backends:
++            if backend.name == "spine_triton":
++                spine_triton_opt_path = os.path.join(cmake_dir, "third_party", "spine_triton", "tools", "spine-triton-opt", "spine-triton-opt")
++                shutil.copy(
++                    spine_triton_opt_path,
++                    os.path.join(backend.bin_dir, "spine-triton-opt")
++                )
 +
  
  def download_and_copy_dependencies():
      return
-@@ -621,6 +669,8 @@ def get_package_dirs():
-             for x in os.listdir(backend.tools_dir):
-                 yield (f"triton.tools.extra.{x}", os.path.join(backend.tools_dir, x))
- 
-+    yield ("triton.backends.spine_triton.bin", "python/triton/backends/spine_triton/bin")
-+
-     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
-         yield ("triton.profiler", "third_party/proton/proton")
- 
-@@ -643,6 +693,8 @@ def get_packages():
+@@ -643,6 +680,12 @@ def get_packages():
              for x in os.listdir(backend.tools_dir):
                  yield f"triton.tools.extra.{x}"
  
-+    yield "triton.backends.spine_triton.bin"
++        if backend.bin_dir:
++            yield f"triton.backends.{backend.name}.bin"
++
++        if backend.lib_dir:
++            yield f"triton.backends.{backend.name}.bin"
 +
      if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
          yield "triton.profiler"
  
-@@ -766,7 +818,7 @@ def get_git_version_suffix():
+@@ -766,7 +809,7 @@ def get_git_version_suffix():
  
  
  # keep it separate for easy substitution
@@ -231,16 +219,3 @@ index 345986fa..08274e9a
  
  # Dynamically define supported Python versions and classifiers
  MIN_PYTHON = (3, 9)
-@@ -797,8 +849,11 @@ setup(
-     ],
-     packages=list(get_packages()),
-     package_dir=dict(get_package_dirs()),
--    entry_points=get_entry_points(),
-+    package_data={
-+        'triton.backends.spine_triton.bin': ['spine-triton-opt'],
-+    },
-     include_package_data=True,
-+    entry_points=get_entry_points(),
-     ext_modules=[CMakeExtension("triton", "triton/_C/")],
-     cmdclass={
-         "bdist_wheel": plugin_bdist_wheel,
