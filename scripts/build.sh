@@ -1,6 +1,7 @@
 # !/bin/bash
 LLVM_INSTALL_DIR=${1}
 BUILD_DIR=build-${2}
+CUR_DIR=${PWD}
 
 echo "LLVM_INSTALL_DIR: ${LLVM_INSTALL_DIR}"
 
@@ -13,7 +14,7 @@ mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
 
 pushd triton
 git checkout .
-ls ../patch/*.patch | xargs -n1 git apply
+ls ${CUR_DIR}/patch/*.patch | xargs -n1 git apply
 
 # git checkout ${COMMIT_ID} 可以省略
 

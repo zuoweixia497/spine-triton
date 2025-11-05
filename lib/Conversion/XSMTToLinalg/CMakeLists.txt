@@ -1,9 +1,9 @@
-add_triton_library(XsmtToLinalg
-  XsmtToLinalg.cpp
-  XsmtToLinalgPass.cpp
+add_triton_library(XSMTToLinalg
+  XSMTToLinalg.cpp
+  XSMTToLinalgPass.cpp
 
   DEPENDS
-  XsmtToLinalgConversionPassIncGen
+  XSMTToLinalgConversionPassIncGen
 
   LINK_LIBS PUBLIC
   MLIRLinalgTransforms

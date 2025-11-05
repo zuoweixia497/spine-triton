@@ -1,65 +1,30 @@
-diff --git a/CMakeLists.txt b/CMakeLists.txt
-index ec87f18f..c28bc4ac 100644
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -154,7 +154,7 @@ include_directories(${PROJECT_SOURCE_DIR}/include)
- include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
- include_directories(${PROJECT_SOURCE_DIR}/third_party)
- include_directories(${PROJECT_BINARY_DIR}/third_party) # Tablegen'd files
--
-+include_directories(${PROJECT_BINARY_DIR}/third_party/spine_triton/include)
- # link_directories(${LLVM_LIBRARY_DIR})
- add_subdirectory(include)
- add_subdirectory(lib)
-diff --git a/bin/RegisterTritonDialects.h b/bin/RegisterTritonDialects.h
-index 39bf50b7..3660b743 100644
---- a/bin/RegisterTritonDialects.h
-+++ b/bin/RegisterTritonDialects.h
-@@ -26,6 +26,7 @@
- #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
- #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
- #include "mlir/InitAllPasses.h"
-+#include "../../include/triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
-
- namespace mlir {
- namespace test {
-@@ -80,7 +81,8 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
-       mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect,
-       mlir::triton::gpu::TritonGPUDialect, mlir::math::MathDialect,
-       mlir::arith::ArithDialect, mlir::scf::SCFDialect, mlir::gpu::GPUDialect,
--      mlir::LLVM::LLVMDialect, mlir::NVVM::NVVMDialect
-+      mlir::LLVM::LLVMDialect, mlir::NVVM::NVVMDialect,
-+      mlir::xsmt::XSMTDialect
-       // mlir::triton::nvgpu::NVGPUDialect,
-       // mlir::triton::nvws::NVWSDialect,
-       // mlir::triton::amdgpu::TritonAMDGPUDialect,
 diff --git a/python/src/ir.cc b/python/src/ir.cc
-index 387f73d1..03dc631d 100644
+old mode 100644
+new mode 100755
+index 387f73d1..9e48a278
 --- a/python/src/ir.cc
 +++ b/python/src/ir.cc
-@@ -38,8 +38,7 @@
- #include "llvm/Support/SourceMgr.h"
-
+@@ -39,14 +39,18 @@
+ 
  #include "third_party/proton/dialect/include/Dialect/Proton/IR/Dialect.h"
--
+ 
 -namespace {
-+#include "../../../include/triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
-
+-
  namespace py = pybind11;
  using namespace mlir;
-@@ -47,7 +46,12 @@ using namespace triton;
+ using namespace triton;
  namespace tt = triton;
  namespace ttg = triton::gpu;
  namespace ttng = triton::nvidia_gpu;
 +namespace ir {
-
++
 +// Pointer to the TritonOpBuilder class, used to register IR ops for third-party
 +// dialects.
 +static py::class_<TritonOpBuilder> *builderClassPtr = nullptr;
 +py::class_<TritonOpBuilder> *getBuilderClass() { return builderClassPtr; }
+ 
  llvm::raw_fd_ostream &mlir_dumps() {
    std::error_code EC;
-   static llvm::raw_fd_ostream S(::triton::tools::getStrEnv("MLIR_DUMP_PATH"),
 @@ -190,13 +194,13 @@ py::list getTensorDescMetadata(ModuleOp &mod) {
    }
    return result;
@@ -67,36 +32,27 @@ index 387f73d1..03dc631d 100644
 -
 -} // anonymous namespace
 +}
-
+ 
  /*****************************************************************************/
  /* Python bindings for ir                                                    */
  /*****************************************************************************/
-
+ 
 +using namespace ir;
  void init_triton_ir(py::module &&m) {
    using ret = py::return_value_policy;
    using namespace pybind11::literals;
-@@ -304,7 +308,7 @@ void init_triton_ir(py::module &&m) {
-                     math::MathDialect, arith::ArithDialect, scf::SCFDialect,
-                     ::mlir::gpu::GPUDialect, cf::ControlFlowDialect,
-                     ::mlir::triton::proton::ProtonDialect, LLVM::LLVMDialect,
--                    mlir::ub::UBDialect>();
-+                    mlir::ub::UBDialect, mlir::xsmt::XSMTDialect, tensor::TensorDialect>();
-     mlir::LLVM::registerInlinerInterface(registry);
-     registerBuiltinDialectTranslation(registry);
-     registerLLVMDialectTranslation(registry);
 @@ -458,6 +462,7 @@ void init_triton_ir(py::module &&m) {
    py::class_<IntegerAttr, Attribute>(m, "integer_attr", py::module_local());
    py::class_<BoolAttr, Attribute>(m, "bool_attr", py::module_local());
    py::class_<UnitAttr, Attribute>(m, "unit_attr", py::module_local());
 +  py::class_<StringAttr, Attribute>(m, "string_attr", py::module_local());
-
+ 
    // Ops
    py::class_<OpState>(m, "OpState", py::module_local())
 @@ -711,9 +716,13 @@ void init_triton_ir(py::module &&m) {
-
+ 
    py::class_<OpBuilder::InsertPoint>(m, "InsertPoint", py::module_local());
-
+ 
 -  py::class_<TritonOpBuilder>(m, "builder", py::module_local(),
 -                              py::dynamic_attr())
 -      .def(py::init<MLIRContext *>())
@@ -111,7 +67,9 @@ index 387f73d1..03dc631d 100644
        .def("create_module",
             [](TritonOpBuilder &self) -> ModuleOp {
 diff --git a/python/src/ir.h b/python/src/ir.h
-index b27c41a7..2e4d3b31 100644
+old mode 100644
+new mode 100755
+index b27c41a7..2e4d3b31
 --- a/python/src/ir.h
 +++ b/python/src/ir.h
 @@ -2,6 +2,9 @@
@@ -121,7 +79,7 @@ index b27c41a7..2e4d3b31 100644
 +#include <pybind11/pybind11.h>
 +
 +namespace py = pybind11;
-
+ 
  // A custom op builder that keeps track of the last location
  class TritonOpBuilder {
 @@ -88,3 +91,7 @@ private:
@@ -134,7 +92,9 @@ index b27c41a7..2e4d3b31 100644
 +} // namespace ir
 \ No newline at end of file
 diff --git a/python/triton/compiler/code_generator.py b/python/triton/compiler/code_generator.py
-index 1dd7b4ed..c2d3a3e0 100644
+old mode 100644
+new mode 100755
+index 1dd7b4ed..c2d3a3e0
 --- a/python/triton/compiler/code_generator.py
 +++ b/python/triton/compiler/code_generator.py
 @@ -1063,7 +1063,8 @@ class CodeGenerator(ast.NodeVisitor):
@@ -162,19 +122,21 @@ index 1dd7b4ed..c2d3a3e0 100644
                  for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
 +            if (bind_sub_block is not None) and bind_sub_block:
 +                for_op.set_attr("bind_sub_block", self.builder.get_bool_attr(bind_sub_block))
-
+ 
              self.scf_stack.append(node)
              for_op_body = for_op.get_body(0)
 diff --git a/setup.py b/setup.py
-index 345986fa..db4bd46c 100644
+old mode 100644
+new mode 100755
+index 345986fa..08274e9a
 --- a/setup.py
 +++ b/setup.py
 @@ -27,6 +27,7 @@ from setuptools.command.sdist import sdist
  from dataclasses import dataclass
-
+ 
  import pybind11
 +import glob
-
+ 
  try:
      from setuptools.command.bdist_wheel import bdist_wheel
 @@ -329,7 +330,7 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
@@ -193,7 +155,7 @@ index 345986fa..db4bd46c 100644
 +        self.copy_to_package(cmake_dir)
 +
          subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
-
+ 
 +    def copy_to_package(self, cmake_dir, file_mappings=None):
 +        if file_mappings is None:
 +            file_mappings = {
@@ -239,34 +201,34 @@ index 345986fa..db4bd46c 100644
 +            for file_name, sub_dir in copied_files:
 +                print(f"  - {file_name} -> {sub_dir}/")
 +
-
+ 
  def download_and_copy_dependencies():
      return
 @@ -621,6 +669,8 @@ def get_package_dirs():
              for x in os.listdir(backend.tools_dir):
                  yield (f"triton.tools.extra.{x}", os.path.join(backend.tools_dir, x))
-
+ 
 +    yield ("triton.backends.spine_triton.bin", "python/triton/backends/spine_triton/bin")
 +
      if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
          yield ("triton.profiler", "third_party/proton/proton")
-
+ 
 @@ -643,6 +693,8 @@ def get_packages():
              for x in os.listdir(backend.tools_dir):
                  yield f"triton.tools.extra.{x}"
-
+ 
 +    yield "triton.backends.spine_triton.bin"
 +
      if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
          yield "triton.profiler"
-
+ 
 @@ -766,7 +818,7 @@ def get_git_version_suffix():
-
-
+ 
+ 
  # keep it separate for easy substitution
 -TRITON_VERSION = "3.3.0" + get_git_version_suffix() + os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", "")
 +TRITON_VERSION = "3.3.0"  + get_git_version_suffix() + os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", "") + "spacemit"
-
+ 
  # Dynamically define supported Python versions and classifiers
  MIN_PYTHON = (3, 9)
 @@ -797,8 +849,11 @@ setup(

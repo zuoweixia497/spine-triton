@@ -7,11 +7,11 @@
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
-#include "triton-shared/Conversion/XsmtToLinalg/XsmtToLinalg.h"
+#include "triton-shared/Conversion/XSMTToLinalg/XSMTToLinalg.h"
 #include "triton-shared/Dialect/TPtr/IR/TPtrDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
-#include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -37,15 +37,15 @@ using namespace triton;
 namespace mlir {
 namespace triton {
 #define GEN_PASS_DEF_XSMTTOLINALG
-#include "triton-shared/Conversion/XsmtToLinalg/Passes.h.inc"
+#include "triton-shared/Conversion/XSMTToLinalg/Passes.h.inc"
 } // namespace triton
 } // namespace mlir
 
 namespace {
 
-class XsmtToLinalgPass
-    : public triton::impl::XsmtToLinalgBase<XsmtToLinalgPass> {
-  using XsmtToLinalgBase<XsmtToLinalgPass>::XsmtToLinalgBase;
+class XSMTToLinalgPass
+    : public triton::impl::XSMTToLinalgBase<XSMTToLinalgPass> {
+  using XSMTToLinalgBase<XSMTToLinalgPass>::XSMTToLinalgBase;
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -60,15 +60,15 @@ public:
   void runOnOperation() override {
     auto moduleOp = getOperation();
 
-    bool hasXsmtUser = false;
+    bool hasXSMTUser = false;
     moduleOp.walk([&](Operation *op) {
       if (op->getName().getStringRef().starts_with("xsmt.")) {
-        hasXsmtUser = true;
+        hasXSMTUser = true;
         return WalkResult::interrupt();
       }
       return WalkResult::advance();
     });
-    if (!hasXsmtUser) {
+    if (!hasXSMTUser) {
       RewritePatternSet patterns(&getContext());
       triton::ForToForallConversionPatterns(patterns);
       if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
@@ -98,7 +98,7 @@ public:
     }
 
     target.addIllegalOp<bufferization::MaterializeInDestinationOp, tensor::ExtractSliceOp, xsmt::DescriptorLoadViewOp, xsmt::ViewOp>();
-    triton::populateXsmtToLinalgConversionPatterns(patterns2);
+    triton::populateXSMTToLinalgConversionPatterns(patterns2);
     if (failed(applyPartialConversion(moduleOp, target, std::move(patterns2)))) {
       signalPassFailure();
     }
@@ -156,6 +156,6 @@ public:
 } // namespace
 
 std::unique_ptr<OperationPass<ModuleOp>>
-triton::createXsmtToLinalgPass() {
-  return std::make_unique<XsmtToLinalgPass>();
+triton::createXSMTToLinalgPass() {
+  return std::make_unique<XSMTToLinalgPass>();
 }

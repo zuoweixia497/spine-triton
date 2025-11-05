@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -18,8 +18,8 @@
 #include "triton/Dialect/Triton/IR/Utility.h"
 
 #define GET_OP_CLASSES
-#include "triton-shared/Dialect/xsmt/IR/XSMTOps.cpp.inc"
-#include "triton-shared/Dialect/xsmt/IR/OpsEnums.cpp.inc"
+#include "triton-shared/Dialect/XSMT/IR/XSMTOps.cpp.inc"
+#include "triton-shared/Dialect/XSMT/IR/OpsEnums.cpp.inc"
 
 namespace mlir {
 namespace xsmt {

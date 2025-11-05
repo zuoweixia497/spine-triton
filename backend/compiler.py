@@ -1,5 +1,5 @@
 from triton.backends.compiler import BaseBackend, GPUTarget
-from triton._C.libtriton import ir, passes
+from triton._C.libtriton import ir, passes, spine_triton
 from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 from types import ModuleType
@@ -328,7 +328,7 @@ class CPUBackend(BaseBackend):
     # Our compilation pipeline isn't in python like nvidia or amd, no need to load
     # dialects. See `spine-triton.cc`
     def load_dialects(self, ctx):
-        return
+        spine_triton.load_dialects(ctx)
 
     @staticmethod
     def make_ttir(mod, metadata, opt):

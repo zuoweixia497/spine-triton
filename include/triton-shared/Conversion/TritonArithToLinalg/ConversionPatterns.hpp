@@ -17,7 +17,7 @@
 #include "triton-shared/Utils/Utils.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"

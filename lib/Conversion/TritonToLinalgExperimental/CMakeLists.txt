@@ -39,5 +39,5 @@ add_triton_library(TritonToLinalgExperimental
   TritonPtrToMemref
   UnstructuredToMemref
   AddTargetDescription
-  XsmtToLinalg
+  XSMTToLinalg
 )

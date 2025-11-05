@@ -6,7 +6,7 @@ include "mlir/IR/OpBase.td"
 include "triton/Dialect/Triton/IR/TritonTypes.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/Interfaces/SideEffectInterfaces.td" // Pure
-include "triton-shared/Dialect/xsmt/IR/XSMTDialect.td"
+include "triton-shared/Dialect/XSMT/IR/XSMTDialect.td"
 
 
 class XSMT_Op<string mnemonic, list<Trait> traits = []> :

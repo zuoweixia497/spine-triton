@@ -7,10 +7,12 @@ from triton.language.core import (
 from . import semantic as smt_semantic
 from triton.language import core as tl
 
+
 def _constexpr_to_value(v):
     if isinstance(v, constexpr):
         return v.value
     return v
+
 
 @builtin
 def compile_hint(ptr, hint_name, hint_val=None, _semantic=None):
@@ -30,9 +32,11 @@ class parallel(range):
         This is used in the mixed cube-vector kernel on 910B. The number of vector cores is determined by the number of
         iteration in this loop. Currently on 910B, max 2 vector cores could be used.
     """
+
     def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None, bind_sub_block: bool = True):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
         self.bind_sub_block = bind_sub_block
+
 
 @builtin
 def descriptor_load(base, offsets_or_view, shape=None, micro_size=None, _semantic=None):
@@ -80,8 +84,9 @@ def view(base, offsets, shape, micro_size,  _semantic=None):
     """
     return smt_semantic.view(base, offsets, shape, micro_size, _semantic)
 
+
 @builtin
-def alloc(shape, micro_size, dtype = tl.float32, _semantic=None):
+def alloc(shape, micro_size, dtype=tl.float32, _semantic=None):
     """Allocate a tensor in shared memory with specified shape and micro tile size.
 
     :param shape: shape of the tensor to allocate (e.g., [BLOCK_SIZE_N, BLOCK_SIZE_K])
@@ -95,6 +100,7 @@ def alloc(shape, micro_size, dtype = tl.float32, _semantic=None):
         b_packed_shared = tl.alloc([BLOCK_SIZE_N, BLOCK_SIZE_K], [16, 8])
     """
     return smt_semantic.alloc(shape, micro_size, dtype, _semantic)
+
 
 @builtin
 def dot(a_packed, b_packed, out_unpacked, _semantic=None):
@@ -115,5 +121,3 @@ def dot(a_packed, b_packed, out_unpacked, _semantic=None):
     # assert a_packed.shape[3] == b_packed.shape[3], f"kb dim mismatch: A{a_packed.shape[3]} vs B{b_packed.shape[3]}"
 
     return smt_semantic.mmt4d(a_packed, b_packed, out_unpacked, _semantic)
-
-

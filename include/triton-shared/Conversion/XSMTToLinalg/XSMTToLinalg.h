@@ -17,14 +17,14 @@ namespace mlir {
 namespace triton {
 
 #define GEN_PASS_DECL
-#include "triton-shared/Conversion/XsmtToLinalg/Passes.h.inc"
+#include "triton-shared/Conversion/XSMTToLinalg/Passes.h.inc"
 
 void fillToMemrefConversionPatterns(RewritePatternSet &patterns);
 void ForToForallConversionPatterns(RewritePatternSet &patterns);
-void populateXsmtToLinalgConversionPatterns(RewritePatternSet &patterns);
+void populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns);
 void MMT4DOpConversionPatterns(RewritePatternSet &patterns);
 
-std::unique_ptr<OperationPass<ModuleOp>> createXsmtToLinalgPass();
+std::unique_ptr<OperationPass<ModuleOp>> createXSMTToLinalgPass();
 
 } // namespace triton
 } // namespace mlir

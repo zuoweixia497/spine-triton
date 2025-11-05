@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "triton-shared/Conversion/XsmtToLinalg/XsmtToLinalg.h"
+#include "triton-shared/Conversion/XSMTToLinalg/XSMTToLinalg.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Analysis/OpFoldResultUtils.h"
 
@@ -33,7 +33,7 @@
 
 #define DEBUG_TYPE "xsmt-to-linalg"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 
 using namespace mlir;
 using namespace mlir::arith;
@@ -44,7 +44,7 @@ using namespace mlir::bufferization;
 using namespace mlir::xsmt;
 
 #define GEN_PASS_CLASSES
-#include "triton-shared/Conversion/XsmtToLinalg/Passes.h.inc"
+#include "triton-shared/Conversion/XSMTToLinalg/Passes.h.inc"
 
 
 Value ensureIndexType(Location loc, Value value, PatternRewriter &rewriter) {
@@ -621,7 +621,7 @@ void mlir::triton::fillToMemrefConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<FillOpPattern>(patterns.getContext());
 }
 
-void mlir::triton::populateXsmtToLinalgConversionPatterns(RewritePatternSet &patterns) {
+void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<ExtractSliceMaterializePattern>(patterns.getContext());
   patterns.add<ViewOpPattern>(patterns.getContext());
   patterns.add<DescriptorLoadPattern>(patterns.getContext());

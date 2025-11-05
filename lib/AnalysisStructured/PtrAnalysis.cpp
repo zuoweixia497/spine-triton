@@ -21,7 +21,7 @@
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
-#include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"

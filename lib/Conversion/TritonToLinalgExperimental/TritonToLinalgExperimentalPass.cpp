@@ -24,7 +24,7 @@
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Conversion/AddTargetDescription/AddTargetDescription.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ConvertScanOp.h"
-#include "triton-shared/Conversion/XsmtToLinalg/XsmtToLinalg.h"
+#include "triton-shared/Conversion/XSMTToLinalg/XSMTToLinalg.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
@@ -37,7 +37,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
-#include "triton-shared/Dialect/xsmt/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 
 using namespace mlir;
 using namespace triton;
@@ -87,7 +87,7 @@ public:
     // again, particularly unused loop iter-args that were created
     // during triton-to-structured.
     pm.addPass(createRemoveDeadValuesPass());
-    pm.addPass(createXsmtToLinalgPass());
+    pm.addPass(createXSMTToLinalgPass());
     pm.addPass(createReconcileUnrealizedCastsPass());
     pm.addPass(createReconcilePtrCastsPass());
     pm.addPass(createReconcileLlvmPtrCastsPass());

@@ -512,11 +512,14 @@ class CPUDriver(DriverBase):
         return ("cpu", 0)
 
     def get_current_stream(self, device):
-        import ctypes
-        libspeirruntime.spine_get_current_stream.argtypes = [ctypes.c_int64]
-        libspeirruntime.spine_get_current_stream.restype = ctypes.c_void_p
-        expected_streams = 2
-        return libspeirruntime.spine_get_current_stream(expected_streams)
+        try:
+            import ctypes
+            libspeirruntime.spine_get_current_stream.argtypes = [ctypes.c_int64]
+            libspeirruntime.spine_get_current_stream.restype = ctypes.c_void_p
+            expected_streams = 2
+            return libspeirruntime.spine_get_current_stream(expected_streams)
+        except:
+            return None
 
     def get_current_device(self):
         # CPU doesn't have a device to return. Return something.

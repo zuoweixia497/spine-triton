@@ -1,5 +1,3 @@
-option(SPINE_TRITON_BUILD_CPU_BACKEND "Build spine-triton CPU backend" ON)
-
 set(SPINE_TRITON_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 set(SPINE_TRITON_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}")
 
@@ -14,7 +12,5 @@ add_subdirectory(backend)
 add_subdirectory(test)
 add_subdirectory(tools/spine-triton-opt)
 
-if (SPINE_TRITON_BUILD_CPU_BACKEND)
-    add_triton_plugin(TritonShared ${CMAKE_CURRENT_SOURCE_DIR}/triton_shared.cc LINK_LIBS TritonSharedAnalysis TritonToLinalg TritonTilingExtIR)
-    target_link_libraries(TritonShared PRIVATE Python3::Module pybind11::headers ${Python3_LIBRARIES})
-endif()
+add_triton_plugin(SpineTriton ${CMAKE_CURRENT_SOURCE_DIR}/triton_shared.cc LINK_LIBS TritonSharedAnalysis TritonToLinalg TritonTilingExtIR XSMTIR)
+target_link_libraries(SpineTriton PRIVATE Python3::Module pybind11::headers ${Python3_LIBRARIES})

@@ -3,7 +3,7 @@
 
 include "mlir/Pass/PassBase.td"
 
-def XsmtToLinalg : Pass<"xsmt-to-linalg", "mlir::ModuleOp"> {
+def XSMTToLinalg : Pass<"xsmt-to-linalg", "mlir::ModuleOp"> {
   let summary = "Convert xsmt operations into linalg";
 }
 
