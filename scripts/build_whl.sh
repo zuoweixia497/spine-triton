@@ -1,6 +1,12 @@
 # !/bin/bash
+# bash build.sh ${LLVM_INSTALL_DIR} {arch/x86_64/riscv64} {spine-mlir-install-dir}
+
 LLVM_INSTALL_DIR=${1}
 BUILD_DIR=build-wheel-${2}
+SPINE_MLIR_INSTALL_DIR=${3}
+
+CUR_DIR=${PWD}
+VERSION_NUMBER=$(cat VERSION_NUMBER)
 
 echo "LLVM_INSTALL_DIR: ${LLVM_INSTALL_DIR}"
 
@@ -13,18 +19,13 @@ mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
 
 pushd triton
 git checkout .
-ls ../patch/*.patch | xargs -n1 git apply
+ls ${CUR_DIR}/patch/*.patch | xargs -n1 git apply
 
-# git checkout ${COMMIT_ID} 可以省略
-
+export SPINE_MLIR_INSTALL_DIR=${SPINE_MLIR_INSTALL_DIR}
+export SPINE_TRITON_VERSION_NUMBER=${VERSION_NUMBER}
 TRITON_BUILD_PROTON=false TRITON_BUILD_WITH_CLANG_LLD=false TRITON_BUILD_UT=false TRITON_OFFLINE_BUILD=true \
 TRITON_BUILD_WITH_CCACHE=false LLVM_ROOT_DIR=${LLVM_INSTALL_DIR} MAX_JOBS=20 \
 python3 setup.py bdist_wheel --plat=linux-${2}
+
+cp dist/*.whl ${CUR_DIR}/${BUILD_DIR}/
 popd
-
-mkdir -p ${BUILD_DIR}/triton/backends/spine_triton/bin
-mkdir -p ${BUILD_DIR}/triton/backends/spine_triton/lib
-cp -r triton/build/lib.linux-${2}*/triton ${BUILD_DIR}
-cp triton/build/cmake.linux-${2}*/third_party/spine_triton/tools/spine-triton-opt/spine-triton-opt ${BUILD_DIR}/triton/backends/spine_triton/bin
-cp triton/dist/*.whl ${BUILD_DIR}/triton/backends/spine_triton/bin
-

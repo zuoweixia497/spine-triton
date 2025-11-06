@@ -128,7 +128,7 @@ index 1dd7b4ed..c2d3a3e0
 diff --git a/setup.py b/setup.py
 old mode 100644
 new mode 100755
-index 345986fa..d31770c8
+index 345986fa..318cd431
 --- a/setup.py
 +++ b/setup.py
 @@ -55,6 +55,8 @@ class Backend:
@@ -215,7 +215,7 @@ index 345986fa..d31770c8
  
  # keep it separate for easy substitution
 -TRITON_VERSION = "3.3.0" + get_git_version_suffix() + os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", "")
-+TRITON_VERSION = "3.3.0"  + get_git_version_suffix() + os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", "") + "spacemit"
++TRITON_VERSION = "3.3.0" + "+" + os.environ.get("SPINE_TRITON_VERSION_NUMBER", "")
  
  # Dynamically define supported Python versions and classifiers
  MIN_PYTHON = (3, 9)
