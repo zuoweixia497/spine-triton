@@ -4,6 +4,9 @@ import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
 triton.runtime.driver.set_active(CPUDriver())
+driver = CPUDriver()
+driver.set_current_arch_id("0xA03C")
+triton.runtime.driver.set_active(driver)
 import flag_gems
 import numpy as np
 from .conftest import QUICK_MODE, TO_CPU
@@ -194,7 +197,6 @@ def test_accuracy_dropout(shape, p, dtype):
             abs(num_equal - exp_equal) / exp_equal <= 0.05
         ), f"num_equal: {num_equal}, exp_equal: {exp_equal}, num_total: {res_inp.numel()}"
 
-@pytest.mark.skipif(flag_gems.vendor_name == "spacemit", reason="need spine-mlir")
 @pytest.mark.gelu
 @pytest.mark.parametrize("shape", POINTWISE_SHAPES)
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
@@ -210,7 +212,6 @@ def test_accuracy_gelu(shape, dtype, approximate):
     gems_assert_close(res_out, ref_out, dtype)
 
 
-# @pytest.mark.skipif(flag_gems.vendor_name == "spacemit", reason="TODO")
 @pytest.mark.layernorm
 @pytest.mark.native_layer_norm
 @pytest.mark.parametrize(

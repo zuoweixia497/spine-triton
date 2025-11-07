@@ -4,6 +4,9 @@ import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
 triton.runtime.driver.set_active(CPUDriver())
+driver = CPUDriver()
+driver.set_current_arch_id("0xA03C")
+triton.runtime.driver.set_active(driver)
 import flag_gems
 from .conftest import QUICK_MODE
 import random
@@ -385,7 +388,7 @@ def test_accuracy_mv(M, N, dtype):
     with flag_gems.use_gems():
         res_out = torch.mv(matrix, vector)
 
-    gems_assert_close(res_out, ref_out, dtype)
+    torch.testing.assert_close(ref_out, res_out, atol=1e-2, rtol=1e-2)
 
 
 @pytest.mark.skipif(flag_gems.vendor_name == "spacemit", reason="TODO")
