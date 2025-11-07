@@ -53,70 +53,12 @@ def _linalgdir_to_llir(linalgdir: str, metadata):
         llmlir_path = os.path.join(tmpdir, "ll.mlir")
         llir_path = os.path.join(tmpdir, "ll.ir")
 
-        transform_code = """
-module attributes {transform.with_named_sequence} {
-  transform.named_sequence @__transform_main(%module_op: !transform.any_op {transform.readonly}) {
-    // Lower pack operations
-    %pack = transform.structured.match ops{["linalg.pack"]} in %module_op
-      : (!transform.any_op) -> !transform.op<"linalg.pack">
-    transform.structured.lower_pack %pack : (!transform.op<"linalg.pack">)
-      -> (!transform.op<"tensor.pad">, !transform.op<"tensor.expand_shape">, !transform.op<"linalg.transpose">)
-
-    // Lower unpack operations
-    %unpack = transform.structured.match ops{["linalg.unpack"]} in %module_op
-      : (!transform.any_op) -> !transform.op<"linalg.unpack">
-    transform.structured.lower_unpack %unpack : (!transform.op<"linalg.unpack">)
-      -> (!transform.op<"tensor.empty">,
-          !transform.op<"linalg.transpose">,
-          !transform.op<"tensor.collapse_shape">,
-          !transform.op<"tensor.extract_slice">)
-
-    transform.yield
-  }
-}"""
-        combined_ir = linalgdir + transform_code
-        Path(linalg_path).write_text(combined_ir)
-
-        combined_ir = linalgdir + transform_code
-        Path(linalg_path).write_text(combined_ir)
-        mlir_opt_path = get_llvm_bin_path("mlir-opt")
         # SpineTriton-MLIR to LLVM-MLIR
         subprocess.check_call(
             [
-                mlir_opt_path,
+                spine_mlir_path,
                 linalg_path,
-                "--convert-linalg-to-affine-loops",
-                # Note: eliminate-empty-tensors fails when there are multiple func.return ops
-                # in a single kernel which are the results of early returns.
-                # See python/examples/test_early_return.py for examples.
-                # We disable this pass for now since performance on CPU isn't the main
-                # focus at the moment.
-                # "--eliminate-empty-tensors",
-                "--empty-tensor-to-alloc-tensor",
-                "--transform-interpreter",
-                "--cse",
-                "--one-shot-bufferize=allow-return-allocs-from-loops=true",
-                "--lower-affine",
-                "--convert-linalg-to-loops",
-                "--expand-strided-metadata",
-                "--convert-scf-to-cf",
-                "--convert-arith-to-llvm",
-                "--convert-math-to-llvm",
-                "--convert-complex-to-llvm",
-                "--convert-vector-to-llvm",
-                "--convert-index-to-llvm",
-                "--memref-expand",
-                "--finalize-memref-to-llvm",
-                "--convert-func-to-llvm",
-                "--convert-cf-to-llvm",
-                # Lowering memrefs creates more affine.apply ops.
-                # Lowering these affine ops again creates further arith ops,
-                # so we have to run these two passes again here.
-                "--lower-affine",
-                "--convert-arith-to-llvm",
-                # Remove all unrealized casts created
-                "--reconcile-unrealized-casts",
-                "--mlir-print-debuginfo",
+                "--spine-ref-pipeline",
                 "-o",
                 llmlir_path,
             ]
@@ -147,7 +89,7 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
     with tempfile.TemporaryDirectory() as tmpdir:
         linalg_path = os.path.join(tmpdir, "linalg.mlir")
         llmlir_path = os.path.join(tmpdir, "ll.mlir")
-        llir_path = os.path.join(tmpdir, "ll.ir")
+        llir_path = os.path.join(tmpdir, ".ll")
         Path(linalg_path).write_text(linalgdir)
         spine_mlir_path = get_spine_mlir_opt_path()
         vec_method = os.getenv("SPINE_MLIR_VEC_METHOD", "")
@@ -199,8 +141,8 @@ def _optimize_llir(llir: str):
 def _llir_to_so(llir: str, metadata):
     cpu_arch = platform.machine()
     with tempfile.TemporaryDirectory() as tmpdir:
-        src_path = os.path.join(tmpdir, "kernel.ll")
-        dst_path = os.path.join(tmpdir, "kernel.o")
+        src_path = os.path.join(tmpdir, ".ll")
+        dst_path = os.path.join(tmpdir, ".o")
         Path(src_path).write_text(llir)
         llc_path = get_llvm_bin_path("llc")
         llc_flags = ["-O3", "--float-abi=hard", "--relocation-model=pic"]
@@ -238,7 +180,7 @@ def _llir_to_so(llir: str, metadata):
             )
         cpu_backend_path = Path(__file__).resolve().parent
         include_dir = os.path.join(cpu_backend_path, "include")
-        so_path = os.path.join(tmpdir, "kernel.so")
+        so_path = os.path.join(tmpdir, ".so")
         gcc_flags = []
         if cpu_arch == "riscv64":
             gcc_flags.extend(["-march=rv64gcv_zfh_zba_zicbop", "-mabi=lp64d", "-O3"])
@@ -361,9 +303,10 @@ class CPUBackend(BaseBackend):
             _ttir_to_linalgdir(src, metadata)
         )
 
+        use_ref_pipeline = os.getenv("SPINE_TRITON_USE_REF_PIPELINE", "")
         spine_mlir_path = get_spine_mlir_opt_path()
 
-        if os.path.isfile(spine_mlir_path):
+        if not use_ref_pipeline:
             stages["llir"] = lambda src, metadata: _optimize_llir(
                 _spine_mlir_linalgdir_to_llir(src, metadata)
             )
