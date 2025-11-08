@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. All rights reserved.
+# SPDX-License-Identifier: MIT
+
 from triton.language import core as tl
 from typing import List
 from triton.language import semantic as tl_semantic
