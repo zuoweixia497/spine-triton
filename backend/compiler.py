@@ -52,8 +52,9 @@ def _linalgdir_to_llir(linalgdir: str, metadata):
         linalg_path = os.path.join(tmpdir, "linalg.mlir")
         llmlir_path = os.path.join(tmpdir, "ll.mlir")
         llir_path = os.path.join(tmpdir, "ll.ir")
-
+        Path(linalg_path).write_text(linalgdir)
         # SpineTriton-MLIR to LLVM-MLIR
+        spine_mlir_path = get_spine_mlir_opt_path()
         subprocess.check_call(
             [
                 spine_mlir_path,
@@ -93,7 +94,7 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
         Path(linalg_path).write_text(linalgdir)
         spine_mlir_path = get_spine_mlir_opt_path()
         vec_method = os.getenv("SPINE_MLIR_VEC_METHOD", "")
-        # TritonShared-MLIR to LLVM-MLIR
+        # SpineTriton-MLIR to LLVM-MLIR
         vectorization_method_option = ("=vectorization-method=" + vec_method) if vec_method in ("linalg", "affine", "mix") else ""
         subprocess.check_call(
             [
