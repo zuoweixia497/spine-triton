@@ -65,18 +65,6 @@ def _linalgdir_to_llir(linalgdir: str, metadata):
             ]
         )
 
-        dump_ir_if_needed([llmlir_path], metadata["name"])
-        with open(llmlir_path, 'r') as f:
-            mlir_content = f.read()
-        cleaned_mlir = remove_transform_code(mlir_content)
-        Path(llmlir_path).write_text(cleaned_mlir)
-
-        dump_ir_if_needed([llmlir_path], metadata["name"])
-        with open(llmlir_path, 'r') as f:
-            mlir_content = f.read()
-        cleaned_mlir = remove_transform_code(mlir_content)
-        Path(llmlir_path).write_text(cleaned_mlir)
-
         # LLVM-MLIR to LLVM-IR
         mlir_translate_path = get_llvm_bin_path("mlir-translate")
         subprocess.check_call(
