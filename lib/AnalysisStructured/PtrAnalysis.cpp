@@ -1899,6 +1899,39 @@ LogicalResult PtrAnalysis::rewriteDescriptorLoadOp(xsmt::DescriptorLoadOp op) {
   return success();
 }
 
+LogicalResult PtrAnalysis::rewriteDescriptorLoadViewOp(xsmt::DescriptorLoadViewOp op) {
+  Value ptrOperand = op->getOperand(0);
+  auto newPtr = ptrMap.lookupOrNull(ptrOperand);
+  if (!newPtr) {
+    op->emitRemark("PtrAnalysis: pointer is not replaced with tts.make_tptr so "
+                   "xsmt.descriptor_load_view cannot be rewritten");
+    return failure();
+  }
+
+  auto ptrType = dyn_cast<triton::PointerType>(newPtr.getType());
+  if (ptrType && !isa<ShapedType>(ptrType.getPointeeType())) {
+    op->emitRemark("PtrAnalysis: scalar pointer used in xsmt.descriptor_load_view "
+                   "will not be rewritten");
+    return failure();
+  }
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "Rewriting xsmt.descriptor_load_view with new pointer:\n";
+    newPtr.dump();
+    llvm::dbgs() << "Original operation:\n";
+    op->dump();
+  });
+
+  op->setOperand(0, newPtr);
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "Rewritten xsmt.descriptor_load_view:\n";
+    op->dump();
+  });
+
+  return success();
+}
+
 LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
   LLVM_DEBUG({
     llvm::dbgs() << "rewriting rootOp\n";
@@ -1971,6 +2004,12 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
         .Case<xsmt::DescriptorLoadOp>([&](auto descriptor_load) {
           if (rewriteDescriptorLoadOp(descriptor_load).failed()) {
             descriptor_load->emitRemark("PtrAnalysis: Failed to rewrite xsmt.descriptor_load");
+          }
+          return WalkResult::advance();
+        })
+        .Case<xsmt::DescriptorLoadViewOp>([&](auto descriptor_load_view) {
+          if (rewriteDescriptorLoadViewOp(descriptor_load_view).failed()) {
+            descriptor_load_view->emitRemark("PtrAnalysis: Failed to rewrite xsmt.descriptor_load_view");
           }
           return WalkResult::advance();
         })

@@ -70,19 +70,26 @@ def DescriptorLoadViewOp : XSMT_Op<"descriptor_load_view", [Pure, MemoryEffects<
 
   let arguments = (ins
     TT_Ptr:$base,
-    TT_Tensor:$view
+    Variadic<I64>:$offsets,
+    DenseI32ArrayAttr:$shape,
+    DenseI32ArrayAttr:$micro_size,
+    TT_Tensor:$destination
   );
 
   let results = (outs TT_Tensor:$result);
 
   let assemblyFormat = [{
-    $base `,` $view attr-dict `:` type($base) `,` type($view) `->` type($result)
+    $base `,` $destination `,` `[` $offsets `]` `,` `[` $shape `]` `,` `[` $micro_size `]` attr-dict `:`
+    type($base) `,` type($destination) `->` type($result)
   }];
 
   let builders = [
     OpBuilder<(ins
       "Value":$base,
-      "Value":$view
+      "ValueRange":$offsets,
+      "ArrayRef<int32_t>":$shape,
+      "ArrayRef<int32_t>":$micro_size,
+      "Value":$destination
     )>
   ];
 }

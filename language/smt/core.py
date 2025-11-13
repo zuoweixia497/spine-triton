@@ -42,17 +42,17 @@ class parallel(range):
 
 
 @builtin
-def descriptor_load(base, offsets_or_view, shape=None, micro_size=None, _semantic=None):
+def descriptor_load(base, offsets, shape, micro_size, destination=None, _semantic=None):
     """Descriptor-based block load operation with two forms:
 
     Form 1: descriptor_load(base, offsets, shape, micro_size)
-    Form 2: descriptor_load(base, view)
+    Form 2: descriptor_load(base, offsets, shape, micro_size, destination)
 
     :param base: the base tensor pointer to load from
-    :param offsets_or_view: either variadic offset values (e.g., [s * SUB_BLK_M, 0])
-                           or a view tensor
+    :param offsets: offset values (e.g., [s * SUB_BLK_M, 0])
     :param shape: shape of the block to load (e.g., [SUB_BLK_M, BLOCK_SIZE_N])
     :param micro_size: micro tile size for tensor cores (e.g., [8, 8])
+    :param destination: destination
 
     Examples
     *******
@@ -61,14 +61,12 @@ def descriptor_load(base, offsets_or_view, shape=None, micro_size=None, _semanti
         # Form 1
         a_packed = smt.descriptor_load(a_block_ptr, [s * SUB_BLK_M, 0], [SUB_BLK_M, BLOCK_SIZE_N], [8, 8])
         # Form 2
-        b_packed = smt.descriptor_load(b_block_ptr, b_packed_shared_view)
+        b_packed = smt.descriptor_load(a_block_ptr, [s * SUB_BLK_M, 0], [SUB_BLK_M, BLOCK_SIZE_N], [8, 8], b_view)
     """
-    # Handle Form 2: descriptor_load(base, view)
-    if shape is None and micro_size is None:
-        return smt_semantic.descriptor_load_view(base, offsets_or_view, _semantic)
+    if destination is None:
+        return smt_semantic.descriptor_load(base, offsets, shape, micro_size, _semantic)
 
-    # Handle Form 1: descriptor_load(base, offsets, shape, micro_size)
-    return smt_semantic.descriptor_load(base, offsets_or_view, shape, micro_size, _semantic)
+    return smt_semantic.descriptor_load_view(base, offsets, shape, micro_size, destination, _semantic)
 
 
 @builtin

@@ -53,9 +53,12 @@ void DescriptorLoadOp::build(OpBuilder &builder, OperationState &state,
 }
 
 void DescriptorLoadViewOp::build(OpBuilder &builder, OperationState &state,
-                                 Value base, Value view) {
-  auto resultType = view.getType();
-  return build(builder, state, resultType, base, view);
+                                 Value base, ValueRange offsets, ArrayRef<int32_t> shape,
+                                 ArrayRef<int32_t> micro_size, Value destination) {
+  auto resultType = destination.getType();
+  return build(builder, state, resultType, base, offsets,
+               builder.getDenseI32ArrayAttr(shape),
+               builder.getDenseI32ArrayAttr(micro_size), destination);
 }
 
 

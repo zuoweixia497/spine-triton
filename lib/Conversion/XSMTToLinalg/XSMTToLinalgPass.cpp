@@ -28,6 +28,7 @@
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "triton-shared/Conversion/XSMTToLinalg/ViewOpInfoStorage.h"
 
 #define DEBUG_TYPE "xsmt-to-linalg"
 
@@ -46,6 +47,8 @@ namespace {
 class XSMTToLinalgPass
     : public triton::impl::XSMTToLinalgBase<XSMTToLinalgPass> {
   using XSMTToLinalgBase<XSMTToLinalgPass>::XSMTToLinalgBase;
+private:
+  ViewOpInfoStorage storage;
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
@@ -77,10 +80,12 @@ public:
       return;
     }
 
+    RewritePatternSet patterns0(&getContext());
     RewritePatternSet patterns1(&getContext());
     RewritePatternSet patterns2(&getContext());
     RewritePatternSet patterns3(&getContext());
     RewritePatternSet patterns4(&getContext());
+    RewritePatternSet patterns5(&getContext());
     ConversionTarget target(getContext());
 
     target.addLegalDialect<
@@ -91,21 +96,31 @@ public:
         memref::MemRefDialect>();
 
 
-    target.addIllegalOp<linalg::FillOp>();
+    triton::TransposeEliminationConversionPatterns(patterns0);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns0)))) {
+      signalPassFailure();
+    }
+
+    target.addIllegalOp<linalg::FillOp, xsmt::AllocOp>();
     triton::fillToMemrefConversionPatterns(patterns1);
     if (failed(applyPartialConversion(moduleOp, target, std::move(patterns1)))) {
       signalPassFailure();
     }
 
-    target.addIllegalOp<bufferization::MaterializeInDestinationOp, tensor::ExtractSliceOp, xsmt::DescriptorLoadViewOp, xsmt::ViewOp>();
-    triton::populateXSMTToLinalgConversionPatterns(patterns2);
+    target.addIllegalOp<xsmt::DescriptorLoadOp, xsmt::ViewOp>();
+    triton::populateXSMTToLinalgConversionPatterns(patterns2, storage);
     if (failed(applyPartialConversion(moduleOp, target, std::move(patterns2)))) {
       signalPassFailure();
     }
 
+    triton::DescriptorLoadViewOpConversionPatterns(patterns3, storage);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns3)))) {
+      signalPassFailure();
+    }
+
     target.addIllegalOp<xsmt::MMT4DOp>();
-    triton::MMT4DOpConversionPatterns(patterns3);
-    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns3)))) {
+    triton::MMT4DOpConversionPatterns(patterns4);
+    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns4)))) {
       signalPassFailure();
     }
 
@@ -131,8 +146,8 @@ public:
       materializeOp.setWritable(true);
     });
 
-    triton::ForToForallConversionPatterns(patterns4);
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns4)))) {
+    triton::ForToForallConversionPatterns(patterns5);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns5)))) {
       signalPassFailure();
     }
   }

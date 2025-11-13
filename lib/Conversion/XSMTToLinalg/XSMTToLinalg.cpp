@@ -27,6 +27,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/MathExtras.h"
+#include "triton-shared/Conversion/XSMTToLinalg/ViewOpInfoStorage.h"
 
 #include <numeric>
 #include <type_traits>
@@ -77,27 +78,131 @@ Value createZeroConstant(PatternRewriter &rewriter, Location loc, Type elementTy
     return nullptr;
   }
 
-
-tensor::ExtractSliceOp CheckExtractSliceOpUser(Value value) {
-    SmallVector<tensor::ExtractSliceOp> ExtractSliceOps;
-    for (Operation *user : value.getUsers()) {
-        if (auto ExtractSliceOp = dyn_cast<tensor::ExtractSliceOp>(user)) {
-          ExtractSliceOps.push_back(ExtractSliceOp);
-        }
-    }
-    if (ExtractSliceOps.size() == 1) {
-      return ExtractSliceOps[0];
-    }
-    return nullptr;
-}
-
 Value createCeilDivUI(PatternRewriter &rewriter, Location loc, Value dividend, Value divisor) {
-  auto type = dividend.getType();
-  auto one = rewriter.create<arith::ConstantOp>(loc, rewriter.getIntegerAttr(type, 1));
-  auto sum = rewriter.create<arith::AddIOp>(loc, dividend, divisor);
+  auto indexType = rewriter.getIndexType();
+  Value dividendIndex = ensureIndexType(loc, dividend, rewriter);
+  Value divisorIndex = ensureIndexType(loc, divisor, rewriter);
+
+  auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+  auto sum = rewriter.create<arith::AddIOp>(loc, dividendIndex, divisorIndex);
   auto numerator = rewriter.create<arith::SubIOp>(loc, sum, one);
-  return rewriter.create<arith::DivUIOp>(loc, numerator, divisor);
+  return rewriter.create<arith::DivUIOp>(loc, numerator, divisorIndex);
 }
+
+
+class TransposeEliminationPattern : public OpRewritePattern<linalg::TransposeOp> {
+public:
+  TransposeEliminationPattern(MLIRContext *context)
+      : OpRewritePattern<linalg::TransposeOp>(context) {}
+
+  LogicalResult matchAndRewrite(linalg::TransposeOp transposeOp,
+                                PatternRewriter &rewriter) const override {
+    auto permutation = transposeOp.getPermutation();
+    SmallVector<int64_t> expectedPerm = {1, 0, 3, 2};
+    if (!permutation.equals(expectedPerm)) {
+      return failure();
+    }
+
+    Value transposeInput = transposeOp.getInput();
+    auto viewOp = transposeInput.getDefiningOp<xsmt::ViewOp>();
+    if (!viewOp) return failure();
+    auto allocOp = viewOp.getBase().getDefiningOp<xsmt::AllocOp>();
+    if (!allocOp) return failure();
+
+    xsmt::DescriptorLoadViewOp descriptorLoadViewOp = nullptr;
+    for (auto user : viewOp.getResult().getUsers()) {
+      if (auto loadOp = dyn_cast<xsmt::DescriptorLoadViewOp>(user)) {
+        descriptorLoadViewOp = loadOp;
+        break;
+      }
+    }
+    if (!descriptorLoadViewOp) return failure();
+
+    Value transposeOutput = transposeOp->getResult(0);
+    if (!transposeOutput.hasOneUse()) return failure();
+
+    auto mmt4dUser = *transposeOutput.user_begin();
+    auto mmt4dOp = dyn_cast<xsmt::MMT4DOp>(mmt4dUser);
+    if (!mmt4dOp) return failure();
+
+    rewriter.setInsertionPoint(allocOp);
+    auto oldAllocType = dyn_cast<RankedTensorType>(allocOp.getResult().getType());
+    if (!oldAllocType) return failure();
+    auto oldShape = oldAllocType.getShape();
+    if (oldShape.size() != 4) return failure();
+
+    SmallVector<int64_t> newAllocShape;
+    newAllocShape.push_back(oldShape[1]);
+    newAllocShape.push_back(oldShape[0]);
+    newAllocShape.push_back(oldShape[3]);
+    newAllocShape.push_back(oldShape[2]);
+
+    auto newAllocType = RankedTensorType::get(newAllocShape, oldAllocType.getElementType());
+    auto oldShapeAttr = allocOp.getShape();
+    auto oldMicroSizeAttr = allocOp.getMicroSize();
+
+    SmallVector<int32_t> newShapeVec = {oldShapeAttr[1], oldShapeAttr[0]};
+    SmallVector<int32_t> newMicroSizeVec = {oldMicroSizeAttr[1], oldMicroSizeAttr[0]};
+
+    auto newAlloc = rewriter.create<xsmt::AllocOp>(
+        allocOp.getLoc(), newAllocType,
+        rewriter.getDenseI32ArrayAttr(newShapeVec),
+        rewriter.getDenseI32ArrayAttr(newMicroSizeVec));
+
+    rewriter.setInsertionPoint(viewOp);
+    auto oldOffsets = viewOp.getOffsets();
+    auto oldShapeView = viewOp.getShape();
+    auto oldMicroSizeView = viewOp.getMicroSize();
+    SmallVector<Value> newOffsets = {oldOffsets[1], oldOffsets[0]};
+
+    SmallVector<int32_t> newShapeViewVec = {oldShapeView[1], oldShapeView[0]};
+    SmallVector<int32_t> newMicroSizeViewVec = {oldMicroSizeView[1], oldMicroSizeView[0]};
+
+    auto oldViewType = dyn_cast<RankedTensorType>(viewOp.getResult().getType());
+    if (!oldViewType) return failure();
+    auto oldViewShape = oldViewType.getShape();
+
+    SmallVector<int64_t> newViewShape;
+    newViewShape.push_back(oldViewShape[1]);
+    newViewShape.push_back(oldViewShape[0]);
+    newViewShape.push_back(oldViewShape[3]);
+    newViewShape.push_back(oldViewShape[2]);
+
+    auto newViewType = RankedTensorType::get(newViewShape, oldViewType.getElementType());
+
+    auto newView = rewriter.create<xsmt::ViewOp>(
+        viewOp.getLoc(), newViewType, newAlloc, newOffsets,
+        rewriter.getDenseI32ArrayAttr(newShapeViewVec),
+        rewriter.getDenseI32ArrayAttr(newMicroSizeViewVec));
+
+    rewriter.setInsertionPoint(descriptorLoadViewOp);
+
+    auto newDescriptorLoad = rewriter.create<xsmt::DescriptorLoadViewOp>(
+        descriptorLoadViewOp.getLoc(), newViewType,
+        descriptorLoadViewOp.getBase(), oldOffsets, oldShapeView, oldMicroSizeView, newView);
+    newDescriptorLoad->setAttr("transpose", rewriter.getBoolAttr(true));
+    rewriter.replaceAllUsesWith(transposeOp.getResult(), newView.getResult());
+
+    rewriter.eraseOp(transposeOp);
+    if (auto emptyOp = transposeOp.getDpsInitOperand(0)->get().getDefiningOp<tensor::EmptyOp>()) {
+      if (emptyOp->use_empty()) {
+        rewriter.eraseOp(emptyOp);
+      }
+    }
+    if (descriptorLoadViewOp->use_empty()) {
+      rewriter.eraseOp(descriptorLoadViewOp);
+    }
+    if (viewOp->use_empty()) {
+      rewriter.eraseOp(viewOp);
+    }
+    if (allocOp->use_empty()) {
+      rewriter.eraseOp(allocOp);
+    }
+
+    return success();
+  }
+};
+
 
 struct DescriptorLoadPattern : public OpRewritePattern<DescriptorLoadOp> {
   DescriptorLoadPattern(MLIRContext *context)
@@ -304,6 +409,144 @@ private:
 };
 
 
+
+struct DescriptorLoadViewOpPattern : public OpRewritePattern<DescriptorLoadViewOp> {
+private:
+  ViewOpInfoStorage &storage;
+public:
+  DescriptorLoadViewOpPattern(MLIRContext *context, ViewOpInfoStorage& storage)
+      : OpRewritePattern<xsmt::DescriptorLoadViewOp>(context), storage(storage) {}
+
+  LogicalResult matchAndRewrite(DescriptorLoadViewOp DescriptorLoadViewOp,
+                                PatternRewriter &rewriter) const override {
+    Value result = DescriptorLoadViewOp.getResult();
+
+    Value sourcePtr = DescriptorLoadViewOp.getBase();
+    auto unrealizedCast = sourcePtr.getDefiningOp<UnrealizedConversionCastOp>();
+    if (!unrealizedCast) return failure();
+
+    Value reinterpretCast = unrealizedCast.getOperand(0);
+    auto reinterpretCastOp = reinterpretCast.getDefiningOp<memref::ReinterpretCastOp>();
+    if (!reinterpretCastOp) return failure();
+
+    auto sizes = reinterpretCastOp.getSizes();
+    if (sizes.size() != 2) {
+      return failure();
+    }
+    bool hasTranspose = DescriptorLoadViewOp->hasAttr("transpose") && DescriptorLoadViewOp->getAttrOfType<BoolAttr>("transpose").getValue();
+    if (!hasTranspose){
+      return failure();
+    }
+
+    Value  dim0Value = sizes[1];
+    Value  dim1Value = sizes[0];
+
+    llvm::SmallVector<Value, 2> offsets;
+    llvm::SmallVector<int32_t, 2> shapes;
+    llvm::SmallVector<int32_t, 2> microSizeAttr;
+
+    if (!storage.contains(DescriptorLoadViewOp.getOperation())) {
+        llvm::errs() << "ERROR: Storage does NOT contain entry for this operation\n";
+    }
+
+    if (!storage.getInfoForDescriptor(DescriptorLoadViewOp.getOperation(), &offsets, &shapes, &microSizeAttr)) {
+        return rewriter.notifyMatchFailure(DescriptorLoadViewOp, "No corresponding ViewOp info found in storage");
+    }
+
+    int32_t tile0 = microSizeAttr[0];
+    int32_t tile1 = microSizeAttr[1];
+
+    Location loc = DescriptorLoadViewOp.getLoc();
+    Value c1 = rewriter.create<ConstantIndexOp>(loc, 1);
+    Value tile0Value = rewriter.create<ConstantIndexOp>(loc, tile0);
+    Value tile1Value = rewriter.create<ConstantIndexOp>(loc, tile1);
+
+    Value offset0 = offsets[0];
+    Value offset1 = offsets[1];
+    Value rankedMemRef = reinterpretCast;
+
+    Value indexOffset0 = ensureIndexType(loc, offset0, rewriter);
+    Value indexOffset1 = ensureIndexType(loc, offset1, rewriter);
+    Value indexDim0Value = ensureIndexType(loc, dim0Value, rewriter);
+    Value indexDim1Value = ensureIndexType(loc, dim1Value, rewriter);
+
+    Value size_m1 = rewriter.create<SubIOp>(loc, indexDim0Value, indexOffset0);
+    Value shape0 = rewriter.create<ConstantIndexOp>(loc, shapes[0]);
+    Value dim0 = rewriter.create<MinSIOp>(loc, size_m1, shape0);
+
+    Value size_k1 = rewriter.create<SubIOp>(loc, indexDim1Value, indexOffset1);
+    Value shape1 = rewriter.create<ConstantIndexOp>(loc, shapes[1]);
+    Value dim1 = rewriter.create<MinSIOp>(loc, size_k1, shape1);
+
+    Value subview = rewriter.create<SubViewOp>(
+        loc,
+        rankedMemRef,
+        ArrayRef<OpFoldResult>{indexOffset1, indexOffset0},
+        ArrayRef<OpFoldResult>{dim1, dim0},
+        ArrayRef<OpFoldResult>{c1, c1}
+    );
+
+    auto subviewType = cast<MemRefType>(subview.getType());
+    auto tensorType = RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
+    Value tensor = rewriter.create<ToTensorOp>(loc, tensorType, subview,
+                                              /*restrict=*/rewriter.getUnitAttr());
+    Value packedRows = createCeilDivUI(rewriter, loc, dim0, tile0Value);
+    Value packedCols = createCeilDivUI(rewriter, loc, dim1, tile1Value);
+
+    SmallVector<int64_t, 4> shapeDims;
+    shapeDims.push_back(ShapedType::kDynamic);
+    shapeDims.push_back(ShapedType::kDynamic);
+    shapeDims.push_back(tile0);
+    shapeDims.push_back(tile1);
+    Type elementType = tensorType.getElementType();
+
+    auto emptyType = RankedTensorType::get(shapeDims, elementType);
+
+    Value emptyTensor = rewriter.create<EmptyOp>(
+        loc, emptyType, ValueRange{packedRows, packedCols});
+    Value paddingValue = createZeroConstant(rewriter, loc, elementType);
+
+    auto packOp = rewriter.create<PackOp>(
+          loc,
+          tensor,
+          emptyTensor,
+          ArrayRef<int64_t>{1, 0},
+          ArrayRef<OpFoldResult>{rewriter.getIndexAttr(tile0), rewriter.getIndexAttr(tile1)},
+          paddingValue,
+          ArrayRef<int64_t>{1, 0});
+    packOp.dump();
+
+
+    Value desSubview;
+    Value castValue = DescriptorLoadViewOp->getOperand(3);
+    if (auto subviewValue = findSubview(castValue)) {
+      desSubview = subviewValue;
+    } else {
+      llvm::errs() << "Error: There is no subviewop\n";
+      return failure();
+    }
+    auto materializeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(packOp.getLoc(), packOp.getResult(), desSubview);
+    materializeOp.setWritable(true);
+    materializeOp.dump();
+    rewriter.eraseOp(DescriptorLoadViewOp);
+
+    return success();
+  }
+
+private:
+  Value findSubview(mlir::Value castValue) const {
+    if (auto castOp = castValue.getDefiningOp<tensor::CastOp>()) {
+      Value toTensorValue = castOp.getSource();
+      if (auto toTensorOp = toTensorValue.getDefiningOp<bufferization::ToTensorOp>()) {
+        Value subviewValue = toTensorOp->getOperand(0);
+        return subviewValue;
+        }
+      }
+    return nullptr;
+  }
+};
+
+
 struct FillOpPattern : public OpRewritePattern<linalg::FillOp> {
 public:
   FillOpPattern(MLIRContext *context)
@@ -356,61 +599,38 @@ public:
   }
 };
 
-struct ExtractSliceMaterializePattern : public OpRewritePattern<tensor::ExtractSliceOp> {
+
+class ConvertXSMTAllocToMemRef : public OpRewritePattern<xsmt::AllocOp> {
 public:
-  ExtractSliceMaterializePattern(MLIRContext *context)
-      : OpRewritePattern<tensor::ExtractSliceOp>(context) {}
+  using OpRewritePattern<xsmt::AllocOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(tensor::ExtractSliceOp extractSliceOp,
+  LogicalResult matchAndRewrite(xsmt::AllocOp allocOp,
                                 PatternRewriter &rewriter) const override {
-    if (!extractSliceOp->hasOneUse()) {
-      return rewriter.notifyMatchFailure(extractSliceOp, "FAIL: extractSliceOp has more than one user");
-    }
+    Location loc = allocOp.getLoc();
+    TensorType resultType = cast<TensorType>(allocOp.getResult().getType());
 
-    auto materializeOp = dyn_cast<bufferization::MaterializeInDestinationOp>(
-        *extractSliceOp->getUsers().begin());
-    if (!materializeOp) {
-      return rewriter.notifyMatchFailure(extractSliceOp, "FAIL: extractSliceOp user is not materialize_in_destination");
-    }
-
-    return convertExtractSliceToSubView(extractSliceOp, materializeOp, rewriter);
-  }
-
-private:
-  LogicalResult convertExtractSliceToSubView(
-      tensor::ExtractSliceOp extractSliceOp,
-      bufferization::MaterializeInDestinationOp materializeOp,
-      PatternRewriter &rewriter) const {
-    Location loc = extractSliceOp.getLoc();
-
-    Value source = extractSliceOp.getSource();
-    auto toTensorOp = source.getDefiningOp<bufferization::ToTensorOp>();
-    if (!toTensorOp) {
-      return rewriter.notifyMatchFailure(extractSliceOp, "FAIL: Source is not a ToTensorOp");
-    }
-
-    Value memrefSource = toTensorOp->getOperand(0);
-    Value destMemref = materializeOp.getDest();
-
-    rewriter.setInsertionPointAfter(materializeOp);
-    auto subViewOp = rewriter.create<memref::SubViewOp>(
-        loc,
-        memrefSource,
-        extractSliceOp.getMixedOffsets(),
-        extractSliceOp.getMixedSizes(),
-        extractSliceOp.getMixedStrides()
+    MemRefType memrefType = MemRefType::get(
+        resultType.getShape(),
+        resultType.getElementType()
     );
-    auto copyOp = rewriter.create<memref::CopyOp>(loc, subViewOp, destMemref);
-    rewriter.eraseOp(materializeOp);
-    rewriter.eraseOp(extractSliceOp);
+
+    Value memref = rewriter.create<memref::AllocOp>(loc, memrefType);
+
+    Value newTensor = rewriter.create<bufferization::ToTensorOp>(
+        loc, resultType, memref);
+
+    rewriter.replaceOp(allocOp, newTensor);
+
     return success();
   }
 };
 
 struct ViewOpPattern : public OpRewritePattern<xsmt::ViewOp> {
+private:
+  ViewOpInfoStorage &storage;
 public:
-  ViewOpPattern(MLIRContext *context)
-      : OpRewritePattern<xsmt::ViewOp>(context) {}
+  ViewOpPattern(MLIRContext *context, ViewOpInfoStorage& storage)
+      : OpRewritePattern<xsmt::ViewOp>(context), storage(storage) {}
 
   LogicalResult matchAndRewrite(xsmt::ViewOp viewOp,
                                 PatternRewriter &rewriter) const override {
@@ -437,18 +657,44 @@ public:
       return rewriter.notifyMatchFailure(viewOp, "Base is not a ToTensorOp result");
     }
 
+    auto baseType = dyn_cast<TensorType>(base.getType());
+    if (!baseType) {
+      return rewriter.notifyMatchFailure(viewOp, "Base is not a tensor type");
+    }
+    int64_t baseRank = baseType.getRank();
+    if (baseRank == 2) {
+      return convertFrom2DBase(viewOp, toTensorOp, rewriter);
+    }else if (baseRank == 4){
+      return convertFrom4DBase(viewOp, toTensorOp, rewriter);
+    }else{
+      return failure();
+    }
+}
+
+private:
+    LogicalResult convertFrom2DBase(xsmt::ViewOp viewOp, bufferization::ToTensorOp toTensorOp, PatternRewriter &rewriter) const {
+    Location loc = viewOp.getLoc();
+    Value base = viewOp.getBase();
+    ValueRange offsets = viewOp.getOffsets();
+    ArrayRef<int32_t> shape = viewOp.getShape();
+    ArrayRef<int32_t> microSize = viewOp.getMicroSize();
+
+    auto resultType = cast<TensorType>(viewOp.getResult().getType());
+    Type elementType = resultType.getElementType();
+
     Value memrefBaseValue = toTensorOp->getOperand(0);
     SmallVector<OpFoldResult> sliceSizes;
     SmallVector<OpFoldResult> offsetValues;
+
     for (auto offset : offsets) {
       offsetValues.push_back(ensureIndexType(loc, offset, rewriter));
     }
 
-    if (auto ExtractSliceOp = CheckExtractSliceOpUser(base)) {
-        sliceSizes = ExtractSliceOp.getMixedSizes();
+    if (auto extractSliceOp = CheckExtractSliceOpUser(base)) {
+      sliceSizes = extractSliceOp.getMixedSizes();
     } else {
-        llvm::errs() << "Error: There are multiple ExtractSliceOp users\n";
-        return failure();
+      llvm::errs() << "Error: There are multiple ExtractSliceOp users\n";
+      return failure();
     }
 
     Value c1 = rewriter.create<ConstantIndexOp>(loc, 1);
@@ -469,9 +715,10 @@ public:
         ArrayRef<OpFoldResult>{size_m3, size_n3},
         ArrayRef<OpFoldResult>{c1, c1}
     );
+
     auto subviewType = cast<MemRefType>(subview.getType());
     auto tensorType = RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
-    Value toTensorOp2 = rewriter.create<ToTensorOp>(loc, tensorType, subview,
+    Value toTensorOp2 = rewriter.create<bufferization::ToTensorOp>(loc, tensorType, subview,
                                               /*restrict=*/rewriter.getUnitAttr());
 
     Value tile0Value = rewriter.create<ConstantIndexOp>(loc, microSize[0]);
@@ -504,10 +751,136 @@ public:
         },
         paddingValue,
         ArrayRef<int64_t>{0, 1});
+
     auto originalResultType = cast<RankedTensorType>(viewOp.getResult().getType());
     Value castResult = rewriter.create<tensor::CastOp>(loc, originalResultType, packedResult);
     rewriter.replaceOp(viewOp, castResult);
     return success();
+  }
+
+  LogicalResult convertFrom4DBase(xsmt::ViewOp viewOp, bufferization::ToTensorOp toTensorOp, PatternRewriter &rewriter) const {
+
+    Location loc = viewOp.getLoc();
+    Value base = viewOp.getBase();
+    ValueRange offsets = viewOp.getOffsets();
+    ArrayRef<int32_t> shape = viewOp.getShape();
+    ArrayRef<int32_t> microSize = viewOp.getMicroSize();
+
+    auto resultType = cast<TensorType>(viewOp.getResult().getType());
+    Type elementType = resultType.getElementType();
+
+    Value memrefBaseValue = toTensorOp->getOperand(0);
+    SmallVector<OpFoldResult> sliceSizes;
+    SmallVector<OpFoldResult> offsetValues;
+
+    for (auto offset : offsets) {
+      offsetValues.push_back(ensureIndexType(loc, offset, rewriter));
+    }
+
+    if(auto reinterpretCastOp = CheckReinterpretCastUser(viewOp.getResult())){
+        sliceSizes = reinterpretCastOp.getMixedSizes();
+    }else {
+      llvm::errs() << "Error: There is no ReinterpretCastOp\n";
+      return failure();
+    }
+
+    Value c1 = rewriter.create<ConstantIndexOp>(loc, 1);
+    auto size_m1 = subOFRs(sliceSizes[1], offsetValues[0], loc, rewriter);
+    Value size_m2 = ofrToIndexValue(size_m1, loc, rewriter);
+    Value shape0 = rewriter.create<ConstantIndexOp>(loc, shape[0]);
+    Value size_m3 = rewriter.create<MinSIOp>(loc, size_m2, shape0);
+
+    auto size_n1 = subOFRs(sliceSizes[0], offsetValues[1], loc, rewriter);
+    Value size_n2 = ofrToIndexValue(size_n1, loc, rewriter);
+    Value shape1 = rewriter.create<ConstantIndexOp>(loc, shape[1]);
+    Value size_n3 = rewriter.create<MinSIOp>(loc, size_n2, shape1);
+
+    Value tile0Value = rewriter.create<ConstantIndexOp>(loc, microSize[0]);
+    Value tile1Value = rewriter.create<ConstantIndexOp>(loc, microSize[1]);
+    Value size0 = createCeilDivUI(rewriter, loc, size_m3, tile0Value);
+    Value size1 = createCeilDivUI(rewriter, loc, size_n3, tile1Value);
+
+    Value offset0 = createCeilDivUI(rewriter, loc, offsets[0], tile0Value);
+    Value offset1 = createCeilDivUI(rewriter, loc, offsets[1], tile1Value);
+
+    auto subview = rewriter.create<memref::SubViewOp>(
+        loc,
+        memrefBaseValue,
+        ArrayRef<OpFoldResult>{offset0, offset1, tile0Value, tile1Value},
+        ArrayRef<OpFoldResult>{size0, size1, tile0Value, tile1Value},
+        ArrayRef<OpFoldResult>{c1, c1, c1, c1}
+    );
+
+    auto subviewMemRefType = subview.getType();
+    auto subviewTensorType = RankedTensorType::get(
+        subviewMemRefType.getShape(),
+        subviewMemRefType.getElementType()
+    );
+
+    Value newTensor = rewriter.create<bufferization::ToTensorOp>(
+        loc,
+        subviewTensorType,
+        subview.getResult(),
+        /*restrict=*/rewriter.getUnitAttr()
+    );
+
+    Value castResult = rewriter.create<tensor::CastOp>(loc, resultType, newTensor);
+
+    if (auto descriptorLoadViewOp = findDescriptorLoadViewOp(viewOp.getResult())) {
+      storage.storeViewOpInfo(
+          descriptorLoadViewOp.getOperation(),
+          offsets,
+          shape,
+          microSize,
+          viewOp.getOperation()
+      );
+    } else {
+      llvm::errs() << "Error: No DescriptorLoadViewOp found!\n";
+    }
+    rewriter.replaceOp(viewOp, castResult);
+
+    return success();
+  }
+
+  memref::ReinterpretCastOp CheckReinterpretCastUser(Value value) const {
+    SmallVector<xsmt::DescriptorLoadViewOp> descriptorLoadViewOps;;
+    for (Operation* user : value.getUsers()) {
+      if (auto descriptorLoadViewOp = dyn_cast<xsmt::DescriptorLoadViewOp>(user)) {
+        descriptorLoadViewOps.push_back(descriptorLoadViewOp);
+      }
+    }
+    if (descriptorLoadViewOps.size() == 1) {
+        Value descriptorBase = descriptorLoadViewOps[0].getBase();
+        if (auto unrealizedCast = descriptorBase.getDefiningOp<UnrealizedConversionCastOp>()) {
+          Value castOperand = unrealizedCast->getOperand(0);
+          if (auto reinterpretCast = castOperand.getDefiningOp<memref::ReinterpretCastOp>()) {
+            return reinterpretCast;
+        }
+      }
+    }
+    return nullptr;
+  }
+
+  tensor::ExtractSliceOp CheckExtractSliceOpUser(Value value) const {
+    SmallVector<tensor::ExtractSliceOp> ExtractSliceOps;
+    for (Operation *user : value.getUsers()) {
+        if (auto ExtractSliceOp = dyn_cast<tensor::ExtractSliceOp>(user)) {
+          ExtractSliceOps.push_back(ExtractSliceOp);
+        }
+    }
+    if (ExtractSliceOps.size() == 1) {
+      return ExtractSliceOps[0];
+    }
+    return nullptr;
+  }
+
+  xsmt::DescriptorLoadViewOp findDescriptorLoadViewOp(mlir::Value value) const {
+    for (Operation* user : value.getUsers()) {
+      if (auto descriptorOp = dyn_cast<xsmt::DescriptorLoadViewOp>(user)) {
+        return descriptorOp;
+      }
+    }
+    return nullptr;
   }
 };
 
@@ -617,14 +990,23 @@ public:
   }
 };
 
-void mlir::triton::fillToMemrefConversionPatterns(RewritePatternSet &patterns) {
-  patterns.add<FillOpPattern>(patterns.getContext());
+
+void mlir::triton::TransposeEliminationConversionPatterns(RewritePatternSet &patterns) {
+  patterns.add<TransposeEliminationPattern>(patterns.getContext());
 }
 
-void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns) {
-  patterns.add<ExtractSliceMaterializePattern>(patterns.getContext());
-  patterns.add<ViewOpPattern>(patterns.getContext());
+void mlir::triton::fillToMemrefConversionPatterns(RewritePatternSet &patterns) {
+  patterns.add<FillOpPattern>(patterns.getContext());
+  patterns.add<ConvertXSMTAllocToMemRef>(patterns.getContext());
+}
+
+void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns, ViewOpInfoStorage &storage) {
+  patterns.add<ViewOpPattern>(patterns.getContext(), storage);
   patterns.add<DescriptorLoadPattern>(patterns.getContext());
+}
+
+void mlir::triton::DescriptorLoadViewOpConversionPatterns(RewritePatternSet &patterns, ViewOpInfoStorage &storage) {
+  patterns.add<DescriptorLoadViewOpPattern>(patterns.getContext(), storage);
 }
 
 void mlir::triton::MMT4DOpConversionPatterns(RewritePatternSet &patterns) {

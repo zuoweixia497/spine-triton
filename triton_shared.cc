@@ -32,8 +32,9 @@ void init_triton_xsmt_ir(py::module &&m) {
                                                         micro_size);
            })
       .def("create_descriptor_load_view",
-           [](TritonOpBuilder &self, Value &base, Value &view) -> Value {
-             return self.create<xsmt::DescriptorLoadViewOp>(base, view);
+           [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
+              std::vector<int32_t> &shape, std::vector<int32_t> &micro_size , Value &destination) -> Value {
+             return self.create<xsmt::DescriptorLoadViewOp>(base, offsets, shape, micro_size, destination);
            })
       .def("create_view",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,

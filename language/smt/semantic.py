@@ -48,11 +48,17 @@ def descriptor_load(base: tl.tensor, offsets, shape, micro_size, _semantic=None)
     return tl.tensor(handle, tl.block_type(element_ty, result_shape))
 
 
-def descriptor_load_view(base: tl.tensor, view: tl.tensor, _semantic=None) -> tl.tensor:
-    """Form 2: descriptor_load(base, view)"""
+def descriptor_load_view(base: tl.tensor, offsets, shape, micro_size, destination: tl.tensor, _semantic=None) -> tl.tensor:
+    semantic_instance = tl_semantic.TritonSemantic(_semantic.builder)
+    offsets = semantic_instance._convert_to_ir_values(offsets)
+    shape = [elem.value if isinstance(
+        elem, tl.constexpr) else elem for elem in shape]
+    micro_size = [elem.value if isinstance(
+        elem, tl.constexpr) else elem for elem in micro_size]
+
     handle = _semantic.builder.create_descriptor_load_view(
-        base.handle, view.handle)
-    result_tensor = tl.tensor(handle, view.type)
+        base.handle, offsets, shape, micro_size, destination.handle)
+    result_tensor = tl.tensor(handle, destination.type)
     return result_tensor
 
 

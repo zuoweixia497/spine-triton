@@ -375,6 +375,8 @@ public:
 
   LogicalResult rewriteDescriptorLoadOp(xsmt::DescriptorLoadOp op);
 
+  LogicalResult rewriteDescriptorLoadViewOp(xsmt::DescriptorLoadViewOp op);
+
   LogicalResult rewriteOp(Operation *op, bool useUnsafeMask = false);
 };
 

@@ -12,6 +12,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "ViewOpInfoStorage.h"
 
 namespace mlir {
 namespace triton {
@@ -19,9 +20,11 @@ namespace triton {
 #define GEN_PASS_DECL
 #include "triton-shared/Conversion/XSMTToLinalg/Passes.h.inc"
 
+void TransposeEliminationConversionPatterns(RewritePatternSet &patterns);
 void fillToMemrefConversionPatterns(RewritePatternSet &patterns);
 void ForToForallConversionPatterns(RewritePatternSet &patterns);
-void populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns);
+void populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns, ViewOpInfoStorage &storage);
+void DescriptorLoadViewOpConversionPatterns(RewritePatternSet &patterns, ViewOpInfoStorage &storage);
 void MMT4DOpConversionPatterns(RewritePatternSet &patterns);
 
 std::unique_ptr<OperationPass<ModuleOp>> createXSMTToLinalgPass();
