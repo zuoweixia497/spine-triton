@@ -28,7 +28,6 @@
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "triton-shared/Conversion/XSMTToLinalg/ViewOpInfoStorage.h"
 
 #define DEBUG_TYPE "xsmt-to-linalg"
 
@@ -47,9 +46,6 @@ namespace {
 class XSMTToLinalgPass
     : public triton::impl::XSMTToLinalgBase<XSMTToLinalgPass> {
   using XSMTToLinalgBase<XSMTToLinalgPass>::XSMTToLinalgBase;
-private:
-  ViewOpInfoStorage storage;
-
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
@@ -84,8 +80,6 @@ public:
     RewritePatternSet patterns1(&getContext());
     RewritePatternSet patterns2(&getContext());
     RewritePatternSet patterns3(&getContext());
-    RewritePatternSet patterns4(&getContext());
-    RewritePatternSet patterns5(&getContext());
     ConversionTarget target(getContext());
 
     target.addLegalDialect<
@@ -101,71 +95,24 @@ public:
       signalPassFailure();
     }
 
-    target.addIllegalOp<linalg::FillOp, xsmt::AllocOp>();
-    triton::fillToMemrefConversionPatterns(patterns1);
-    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns1)))) {
-      signalPassFailure();
-    }
 
-    target.addIllegalOp<xsmt::DescriptorLoadOp, xsmt::ViewOp>();
-    triton::populateXSMTToLinalgConversionPatterns(patterns2, storage);
-    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns2)))) {
-      signalPassFailure();
-    }
-
-    triton::DescriptorLoadViewOpConversionPatterns(patterns3, storage);
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns3)))) {
+    triton::populateXSMTToLinalgConversionPatterns(patterns1);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns1)))) {
       signalPassFailure();
     }
 
     target.addIllegalOp<xsmt::MMT4DOp>();
-    triton::MMT4DOpConversionPatterns(patterns4);
-    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns4)))) {
+    triton::MMT4DOpConversionPatterns(patterns2);
+    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns2)))) {
       signalPassFailure();
     }
 
-
-    moduleOp.walk([&](linalg::UnPackOp unpackOp) {
-      auto mmt4dOp = unpackOp.getSource().getDefiningOp<linalg::Mmt4DOp>();
-      if (!mmt4dOp) return;
-      if (mmt4dOp->getNumOperands() < 3) {
-        llvm::dbgs() << "MMT4D operation has fewer than 3 operands\n";
-        return;
-      }
-      Value outputOperand = mmt4dOp->getOperand(mmt4dOp->getNumOperands() - 1);
-      Value destination = traceDestinationFromOutput(outputOperand);
-      if (!destination) {
-        llvm::dbgs() << "Destination not found\n";
-        return;
-      }
-
-      OpBuilder builder(unpackOp);
-      builder.setInsertionPointAfter(unpackOp);
-      auto materializeOp = builder.create<bufferization::MaterializeInDestinationOp>(
-          unpackOp.getLoc(), unpackOp.getResult(), destination);
-      materializeOp.setWritable(true);
-    });
-
-    triton::ForToForallConversionPatterns(patterns5);
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns5)))) {
+    triton::ForToForallConversionPatterns(patterns3);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns3)))) {
       signalPassFailure();
     }
   }
 
-  Value traceDestinationFromOutput(Value output) {
-    if (auto packOp = output.getDefiningOp<linalg::PackOp>()) {
-      Value packInput = packOp.getSource();
-      if (auto toTensorOp = packInput.getDefiningOp<bufferization::ToTensorOp>()) {
-        return toTensorOp->getOperand(0);
-      }
-
-      return packInput;
-    }
-    if (auto toTensorOp = output.getDefiningOp<bufferization::ToTensorOp>()) {
-      return toTensorOp->getOperand(0);
-    }
-    return Value();
-  }
 };
 
 } // namespace

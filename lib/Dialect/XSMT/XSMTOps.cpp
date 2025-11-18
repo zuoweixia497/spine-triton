@@ -67,19 +67,37 @@ void ViewOp::build(OpBuilder &builder, OperationState &state,
                    ArrayRef<int32_t> shape,
                    ArrayRef<int32_t> micro_size) {
   auto baseType = cast<RankedTensorType>(base.getType());
-  Type elementType = baseType.getElementType();
-
-  SmallVector<int64_t> resultShape;
-  resultShape.push_back(shape[0] / micro_size[0]);
-  resultShape.push_back(shape[1] / micro_size[1]);
-  resultShape.push_back(micro_size[0]);
-  resultShape.push_back(micro_size[1]);
-
-  auto resultType = RankedTensorType::get(resultShape, elementType);
-
-  return build(builder, state, resultType, base, offsets,
+  bool allOnes = true;
+  for (int32_t size : micro_size) {
+    if (size != 1) {
+      allOnes = false;
+      break;
+    }
+  }
+  if(allOnes){
+    auto baseShape = baseType.getShape();
+    auto actualMicroSize = {
+      static_cast<int32_t>(baseShape[baseShape.size() - 2]),
+      static_cast<int32_t>(baseShape[baseShape.size() - 1])
+    };
+    return build(builder, state, baseType, base, offsets,
                builder.getDenseI32ArrayAttr(shape),
-               builder.getDenseI32ArrayAttr(micro_size));
+               builder.getDenseI32ArrayAttr(actualMicroSize));
+  }else{
+    Type elementType = baseType.getElementType();
+
+    SmallVector<int64_t> resultShape;
+    resultShape.push_back(shape[0] / micro_size[0]);
+    resultShape.push_back(shape[1] / micro_size[1]);
+    resultShape.push_back(micro_size[0]);
+    resultShape.push_back(micro_size[1]);
+
+    auto resultType = RankedTensorType::get(resultShape, elementType);
+
+    return build(builder, state, resultType, base, offsets,
+                builder.getDenseI32ArrayAttr(shape),
+                builder.getDenseI32ArrayAttr(micro_size));
+  }
 }
 
 void AllocOp::build(OpBuilder &builder, OperationState &state,

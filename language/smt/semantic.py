@@ -48,7 +48,7 @@ def descriptor_load(base: tl.tensor, offsets, shape, micro_size, _semantic=None)
     return tl.tensor(handle, tl.block_type(element_ty, result_shape))
 
 
-def descriptor_load_view(base: tl.tensor, offsets, shape, micro_size, destination: tl.tensor, _semantic=None) -> tl.tensor:
+def descriptor_load_view(base: tl.tensor, offsets, shape, destination: tl.tensor, micro_size, _semantic=None) -> tl.tensor:
     semantic_instance = tl_semantic.TritonSemantic(_semantic.builder)
     offsets = semantic_instance._convert_to_ir_values(offsets)
     shape = [elem.value if isinstance(
@@ -85,18 +85,21 @@ def view(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tens
     handle = _semantic.builder.create_view(
         base.handle, offsets, shape, micro_size)
 
-    result_shape = [
-        shape[0] // micro_size[0],
-        shape[1] // micro_size[1],
-        micro_size[0],
-        micro_size[1]
-    ]
+    if all(s == 1 for s in micro_size):
+        result_tensor = tl.tensor(handle, base.type)
+    else:
+        result_shape = [
+            shape[0] // micro_size[0],
+            shape[1] // micro_size[1],
+            micro_size[0],
+            micro_size[1]
+        ]
+        element_ty = base.type.element_ty
+        result_tensor = tl.tensor(handle, tl.block_type(element_ty, result_shape))
+    return result_tensor
 
-    element_ty = base.type.element_ty
-    return tl.tensor(handle, tl.block_type(element_ty, result_shape))
 
-
-def alloc(shape, micro_size, dtype, _semantic=None) -> tl.tensor:
+def alloc(shape, dtype, micro_size, storage: str, _semantic=None) -> tl.tensor:
     dtype = dtype.to_ir(_semantic.builder)
     shape = [elem.value if isinstance(
         elem, tl.constexpr) else elem for elem in shape]
