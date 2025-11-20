@@ -1,4 +1,4 @@
-# python3 -m pytest tests/test_smt.py -v -s
+# python3 -m pytest tests/test_smt.py::test_descriptor_load -v -s
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
@@ -105,6 +105,123 @@ def test_descriptor_load(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICR
 
     del os.environ['SPINE_TRITON_USE_REF_PIPELINE']
     output = run_descriptor_load()
+    print("\n=== unset SPINE_TRITON_USE_REF_PIPELINE ===")
+    print("Output shape:", output.shape)
+    print("Output sum:", output.sum().item())
+    print("Output mean:", output.mean().item())
+    print("Output:", output)
+
+    print("\n=== Result Comparison ===")
+    print("Shapes are identical:", output_ref.shape == output.shape)
+    print("Values are exactly the same:", torch.allclose(output_ref, output))
+    print("Maximum absolute difference:", torch.max(torch.abs(output_ref - output)).item())
+    print("Mean absolute difference:", torch.mean(torch.abs(output_ref - output)).item())
+
+    assert output_ref.shape == output.shape, "Shapes are not identical"
+    assert torch.allclose(output_ref, output, rtol=1e-5, atol=1e-8), "Values are not exactly the same"
+
+    max_diff = torch.max(torch.abs(output_ref - output)).item()
+    mean_diff = torch.mean(torch.abs(output_ref - output)).item()
+
+    print(f"✅ All checks passed! Max diff: {max_diff:.2e}, Mean diff: {mean_diff:.2e}")
+    print("✅ Continuing execution...")
+
+
+
+@pytest.mark.parametrize(
+    "M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICRO_K",
+    [
+        (4, 4, 4, 4, 2, 2),
+    ]
+)
+def test_descriptor_load_transpose(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICRO_K):
+
+    def run_descriptor_load_transpose():
+        @triton.jit
+        def descriptor_load_transpose(
+            a_ptr,
+            output_ptr,
+            M,
+            K,
+            stride_am,
+            stride_ak,
+            stride_om0,
+            stride_om1,
+            stride_om2,
+            stride_om3,
+            num_blocks_m: tl.constexpr,
+            num_blocks_k: tl.constexpr,
+            SUB_BLK_M: tl.constexpr,
+            BLOCK_SIZE_M: tl.constexpr,
+            BLOCK_SIZE_K: tl.constexpr,
+            MICRO_M: tl.constexpr,
+            MICRO_K: tl.constexpr,
+        ):
+            pid = tl.program_id(0)
+
+            a_block_ptr = tl.make_block_ptr(
+                base=a_ptr,
+                shape=[M, K],
+                strides=[stride_am, stride_ak],
+                offsets=[pid * BLOCK_SIZE_M, 0],
+                block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_K],
+                order=[1, 0],
+            )
+
+            a = smt.descriptor_load(a_block_ptr, (0, 0), (SUB_BLK_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
+            a = tl.permute(a, (1, 0, 3, 2))
+
+            output_block_ptr = tl.make_block_ptr(
+                base=output_ptr,
+                shape=[num_blocks_k, num_blocks_m, MICRO_K, MICRO_M],
+                strides=[stride_om0, stride_om1, stride_om2, stride_om3],
+                offsets=[0, 0, 0, 0],
+                block_shape=[num_blocks_k, num_blocks_m, MICRO_K, MICRO_M],
+                order=[3, 2, 1, 0],
+            )
+
+            tl.store(output_block_ptr, a)
+
+        torch.manual_seed(42)
+        K = BLOCK_SIZE_K
+        device = "cpu"
+        a = torch.randn((M, K), dtype=torch.float32, device=device)
+        print("a", a)
+
+        num_blocks_m = (SUB_BLK_M + MICRO_M - 1) // MICRO_M
+        num_blocks_k = (BLOCK_SIZE_K + MICRO_K - 1) // MICRO_K
+        output_shape = (num_blocks_k, num_blocks_m, MICRO_K, MICRO_M)
+        output = torch.zeros(output_shape, dtype=torch.float32, device=device)
+
+        grid = (triton.cdiv(M, BLOCK_SIZE_M),)
+
+        descriptor_load_transpose[grid](
+            a, output,
+            M, K,
+            a.stride(0), a.stride(1),
+            output.stride(0), output.stride(1), output.stride(2), output.stride(3),
+            num_blocks_m=num_blocks_m,
+            num_blocks_k=num_blocks_k,
+            SUB_BLK_M=SUB_BLK_M,
+            BLOCK_SIZE_M=BLOCK_SIZE_M,
+            BLOCK_SIZE_K=BLOCK_SIZE_K,
+            MICRO_M=MICRO_M,
+            MICRO_K=MICRO_K
+        )
+        return output
+
+
+    os.environ['SPINE_TRITON_USE_REF_PIPELINE'] = '1'
+    os.environ['TRITON_ALWAYS_COMPILE'] = '1'
+    output_ref = run_descriptor_load_transpose()
+    print("=== set SPINE_TRITON_USE_REF_PIPELINE ===")
+    print("output_ref shape:", output_ref.shape)
+    print("output_ref sum:", output_ref.sum().item())
+    print("output_ref mean:", output_ref.mean().item())
+    print("output_ref:", output_ref)
+
+    del os.environ['SPINE_TRITON_USE_REF_PIPELINE']
+    output = run_descriptor_load_transpose()
     print("\n=== unset SPINE_TRITON_USE_REF_PIPELINE ===")
     print("Output shape:", output.shape)
     print("Output sum:", output.sum().item())
