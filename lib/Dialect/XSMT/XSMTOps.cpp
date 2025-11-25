@@ -19,7 +19,6 @@
 
 #define GET_OP_CLASSES
 #include "triton-shared/Dialect/XSMT/IR/XSMTOps.cpp.inc"
-#include "triton-shared/Dialect/XSMT/IR/OpsEnums.cpp.inc"
 
 namespace mlir {
 namespace xsmt {
@@ -67,6 +66,7 @@ void ViewOp::build(OpBuilder &builder, OperationState &state,
                    ArrayRef<int32_t> shape,
                    ArrayRef<int32_t> micro_size) {
   auto baseType = cast<RankedTensorType>(base.getType());
+  Type elementType = baseType.getElementType();
   bool allOnes = true;
   for (int32_t size : micro_size) {
     if (size != 1) {
@@ -74,24 +74,46 @@ void ViewOp::build(OpBuilder &builder, OperationState &state,
       break;
     }
   }
+
+  bool allZeros = true;
+  for (int32_t size : micro_size) {
+    if (size != 0) {
+      allZeros = false;
+      break;
+    }
+  }
+
   if(allOnes){
+    SmallVector<int64_t> resultShape;
+    resultShape.push_back(shape[0]);
+    resultShape.push_back(shape[1]);
+    auto resultType = RankedTensorType::get(resultShape, elementType);
+    return build(builder, state, resultType, base, offsets,
+               builder.getDenseI32ArrayAttr(shape),
+               builder.getDenseI32ArrayAttr(micro_size));
+  }else if (allZeros){
     auto baseShape = baseType.getShape();
-    auto actualMicroSize = {
+    std::vector<int32_t> actualMicroSize = {
       static_cast<int32_t>(baseShape[baseShape.size() - 2]),
       static_cast<int32_t>(baseShape[baseShape.size() - 1])
     };
-    return build(builder, state, baseType, base, offsets,
+
+    SmallVector<int64_t> resultShape;
+    resultShape.push_back(shape[0] / actualMicroSize[0]);
+    resultShape.push_back(shape[1] / actualMicroSize[1]);
+    resultShape.push_back(actualMicroSize[0]);
+    resultShape.push_back(actualMicroSize[1]);
+
+    auto resultType = RankedTensorType::get(resultShape, elementType);
+    return build(builder, state, resultType, base, offsets,
                builder.getDenseI32ArrayAttr(shape),
                builder.getDenseI32ArrayAttr(actualMicroSize));
   }else{
-    Type elementType = baseType.getElementType();
-
     SmallVector<int64_t> resultShape;
     resultShape.push_back(shape[0] / micro_size[0]);
     resultShape.push_back(shape[1] / micro_size[1]);
     resultShape.push_back(micro_size[0]);
     resultShape.push_back(micro_size[1]);
-
     auto resultType = RankedTensorType::get(resultShape, elementType);
 
     return build(builder, state, resultType, base, offsets,

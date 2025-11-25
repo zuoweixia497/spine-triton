@@ -80,37 +80,28 @@ public:
     RewritePatternSet patterns1(&getContext());
     RewritePatternSet patterns2(&getContext());
     RewritePatternSet patterns3(&getContext());
-    ConversionTarget target(getContext());
-
-    target.addLegalDialect<
-        func::FuncDialect, arith::ArithDialect, math::MathDialect,
-        linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
-        cf::ControlFlowDialect, tensor::TensorDialect,
-        bufferization::BufferizationDialect, ttx::TritonTilingExtDialect,
-        memref::MemRefDialect>();
 
 
     triton::TransposeEliminationConversionPatterns(patterns0);
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns0)))) {
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns0)))) {
       signalPassFailure();
     }
-
 
     triton::populateXSMTToLinalgConversionPatterns(patterns1);
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns1)))) {
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns1)))) {
       signalPassFailure();
     }
 
-    target.addIllegalOp<xsmt::MMT4DOp>();
     triton::MMT4DOpConversionPatterns(patterns2);
-    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns2)))) {
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns2)))) {
       signalPassFailure();
     }
 
     triton::ForToForallConversionPatterns(patterns3);
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns3)))) {
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns3)))) {
       signalPassFailure();
     }
+
   }
 
 };

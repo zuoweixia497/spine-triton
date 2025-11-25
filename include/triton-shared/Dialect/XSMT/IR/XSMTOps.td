@@ -5,8 +5,15 @@
 include "mlir/IR/OpBase.td"
 include "triton/Dialect/Triton/IR/TritonTypes.td"
 include "mlir/IR/EnumAttr.td"
-include "mlir/Interfaces/SideEffectInterfaces.td" // Pure
+include "mlir/Interfaces/SideEffectInterfaces.td"
 include "triton-shared/Dialect/XSMT/IR/XSMTDialect.td"
+include "mlir/Interfaces/InferTypeOpInterface.td"
+include "mlir/Interfaces/ControlFlowInterfaces.td"
+include "mlir/Interfaces/DestinationStyleOpInterface.td"
+include "mlir/Interfaces/ViewLikeInterface.td"
+include "triton/Dialect/Triton/IR/TritonOpInterfaces.td"
+include "triton/Dialect/Triton/IR/TritonAttrDefs.td"
+include "mlir/Dialect/Arith/IR/ArithBase.td"
 
 
 class XSMT_Op<string mnemonic, list<Trait> traits = []> :
@@ -160,22 +167,98 @@ def MMT4DOp : XSMT_Op<"mmt4d", [Pure, MemoryEffects<[MemWrite]>]> {
     The `xsmt.mmt4d` operation performs matrix multiplication on two 4D packed tensors.
     The operation expects the two inputs to be packed with the same inner_tile on the K dimension.
 
+    If `c` is provided, performs `result = a @ b + c` (accumulation).
+    If `c` is not provided, performs `result = a @ b` (no accumulation).
+
     Example:
     ```mlir
-    %result = xsmt.mmt4d %a, %b :
+    // With accumulator
+    %result = xsmt.mmt4d %a, %b, %c :
+        (tensor<4x8x8x16xf32>, tensor<8x8x8x16xf32>, tensor<4x8x8x8xf32>) -> tensor<4x8x8x8xf32>
+
+    // Without accumulator
+    %result += xsmt.mmt4d %a, %b :
         (tensor<4x8x8x16xf32>, tensor<8x8x8x16xf32>) -> tensor<4x8x8x8xf32>
     ```
   }];
 
-  let arguments = (ins TT_Tensor:$a, TT_Tensor:$b, TT_Tensor:$c);
+  let arguments = (ins
+    TT_Tensor:$a,
+    TT_Tensor:$b,
+    Optional<TT_Tensor>:$c  // 使用 Optional<> 包装
+  );
 
   let results = (outs TT_Tensor:$result);
 
   let assemblyFormat = [{
-    $a `,` $b`,` $c attr-dict `:` type($a) `,` type($b) `,` type($c) `->` type($result)
+    $a `,` $b (`,` $c^)? attr-dict `:` type($a) `,` type($b) (`,` type($c)^)? `->` type($result)
+  }];
+}
+
+def XSMT_MBarrierCreateOp : XSMT_Op<"mbarrier_create"> {
+  let summary = "Create a software barrier for thread synchronization.";
+
+  let description = [{
+    Creates a software barrier handle with specified configuration:
+    - `flag`: Barrier mode (0=normal, 1=async, 2=with fence)
+    - `atc`: Initial arrival thread count
+    - `tc`: Total threads that must arrive before release
+    - `exp`: Expected version value after barrier release
+
+    Returns an opaque barrier handle for use with arrive/wait operations.
   }];
 
-  // let hasVerifier = 1;
+  let arguments = (ins
+    I16:$flag,
+    I16:$atc,
+    I16:$tc,
+    I16:$exp
+  );
+
+  let results = (outs TT_Ptr:$barrier);
+
+  let assemblyFormat = [{
+    $flag `,` $atc `,` $tc `,` $exp attr-dict `:` type($barrier)
+  }];
+
+}
+
+def XSMT_BarrierArriveOp : XSMT_Op<"barrier_arrive"> {
+  let summary = "Signal thread arrival at software barrier.";
+
+  let description = [{
+    Signals that the calling thread has arrived at the barrier.
+    Decrements the pending arrival count. When count reaches zero,
+    waiting threads are released.
+  }];
+
+  let arguments = (ins TT_Ptr:$barrier);
+
+  let assemblyFormat = "$barrier attr-dict `:` type($barrier)";
+
+}
+
+def XSMT_BarrierWaitOp : XSMT_Op<"barrier_wait"> {
+  let summary = "Wait for barrier to reach expected version.";
+
+  let description = [{
+    Blocks the calling thread until the barrier reaches the expected
+    version value, indicating all required threads have arrived.
+
+    - `flag`: Wait mode (0=normal, 1=async, 2=with fence)
+    - `exp`: Expected version to wait for
+  }];
+
+  let arguments = (ins
+    TT_Ptr:$barrier,
+    I16:$flag,
+    I16:$exp
+  );
+
+  let assemblyFormat = [{
+    $barrier `,` $flag `,` $exp attr-dict `:` type($barrier)
+  }];
+
 }
 
 #endif

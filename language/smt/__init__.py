@@ -8,6 +8,9 @@ from .core import (
     view,
     alloc,
     dot,
+    mbarrier,
+    barrier_arrive,
+    barrier_wait,
 )
 
 __all__ = [
@@ -17,5 +20,8 @@ __all__ = [
     "view",
     "alloc",
     "dot",
+    "mbarrier",
+    "barrier_arrive",
+    "barrier_wait",
 ]
 

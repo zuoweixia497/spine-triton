@@ -63,7 +63,7 @@ def descriptor_load(base, offsets, shape, micro_size=None, destination=None, _se
     """
     rank = len(shape)
     if micro_size is None:
-        micro_size = [1] * rank
+        micro_size = [0] * rank
 
     if destination is None:
         return smt_semantic.descriptor_load(base, offsets, shape, micro_size, _semantic)
@@ -88,7 +88,7 @@ def view(base, offsets, shape, micro_size=None, _semantic=None):
     """
     rank = len(shape)
     if micro_size is None:
-        micro_size = [1] * rank
+        micro_size = [0] * rank
     return smt_semantic.view(base, offsets, shape, micro_size, _semantic)
 
 
@@ -108,13 +108,13 @@ def alloc(shape, dtype=tl.float32, micro_size=None, storage="l2",  _semantic=Non
     """
     rank = len(shape)
     if micro_size is None:
-        micro_size = [1] * rank
+        micro_size = [0] * rank
 
     return smt_semantic.alloc(shape, dtype, micro_size, storage, _semantic)
 
 
 @builtin
-def dot(a_packed, b_packed, out_unpacked, _semantic=None):
+def dot(a_packed, b_packed, out_unpacked=None, _semantic=None):
     """
     Args:
         a_packed: packed A matrix, shape [MB, KB, mb, kb] (from MxK)
@@ -125,3 +125,28 @@ def dot(a_packed, b_packed, out_unpacked, _semantic=None):
     """
 
     return smt_semantic.mmt4d(a_packed, b_packed, out_unpacked, _semantic)
+
+
+@builtin
+def mbarrier(flag = tl.constexpr(0), atc = tl.constexpr(1), tc = tl.constexpr(1), exp = tl.constexpr(1), _semantic=None):
+    """Initialize a memory barrier for thread synchronization.
+
+    :param flag: Barrier mode flag (0=normal, 1=async, 2=with fence)
+    :param atc: Initial arrival thread count
+    :param tc: Total threads to wait for
+    :param exp: Expected version value after release
+
+    Example:
+        bar = smt.mbarrier(flag=0, atc=0, tc=128, exp=1)
+    """
+    return smt_semantic.mbarrier(flag, atc, tc, exp, _semantic)
+
+@builtin
+def barrier_arrive(bar, _semantic=None):
+    """Signal thread arrival at barrier."""
+    return smt_semantic.barrier_arrive(bar, _semantic)
+
+@builtin
+def barrier_wait(bar, flag = tl.constexpr(0), exp = tl.constexpr(1), _semantic=None):
+    """Wait for barrier to reach expected version."""
+    return smt_semantic.barrier_wait(bar, flag, exp, _semantic)

@@ -78,15 +78,24 @@ def view(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tens
     assert len(shape) == len(micro_size), \
         "Shape and micro_size must have the same length"
 
-    for i, (dim, micro) in enumerate(zip(shape, micro_size)):
-        assert dim % micro == 0, \
-            f"Dimension {i} of shape ({dim}) must be divisible by micro_size ({micro})"
-
     handle = _semantic.builder.create_view(
         base.handle, offsets, shape, micro_size)
 
-    if all(s == 1 for s in micro_size):
-        result_tensor = tl.tensor(handle, base.type)
+    element_ty = base.type.element_ty
+
+    if all(s == 0 for s in micro_size):
+        base_tensor = tl.tensor(handle, base.type)
+
+        actualMicroSize = [base_tensor.shape[2], base_tensor.shape[3]]
+        result_shape = [
+            shape[0] // actualMicroSize[0],
+            shape[1] // actualMicroSize[1],
+            actualMicroSize[0],
+            actualMicroSize[1]
+        ]
+        result_tensor = tl.tensor(handle, tl.block_type(element_ty, result_shape))
+    elif all(s == 1 for s in micro_size):
+        result_tensor = tl.tensor(handle, tl.block_type(element_ty, shape))
     else:
         result_shape = [
             shape[0] // micro_size[0],
@@ -94,7 +103,6 @@ def view(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tens
             micro_size[0],
             micro_size[1]
         ]
-        element_ty = base.type.element_ty
         result_tensor = tl.tensor(handle, tl.block_type(element_ty, result_shape))
     return result_tensor
 
@@ -143,8 +151,67 @@ def mmt4d(a_packed: tl.tensor, b_packed: tl.tensor, out_unpacked: tl.tensor, _se
     nb = b_packed.shape[1]
     mb_micro_sizes = a_packed.shape[2]
     nb_micro_sizes = b_packed.shape[3]
-    output_shape = [mb * mb_micro_sizes, nb * nb_micro_sizes]
+    output_shape = [mb, nb, mb_micro_sizes, nb_micro_sizes]
     ret_type = tl.block_type(a_packed.type.scalar, output_shape)
-    out = _semantic.builder.create_mmt4d(
-        a_packed.handle, b_packed.handle, out_unpacked.handle)
+    if out_unpacked is None:
+        out = _semantic.builder.create_mmt4d(a_packed.handle, b_packed.handle, None)
+    else:
+        out = _semantic.builder.create_mmt4d(
+            a_packed.handle,
+            b_packed.handle,
+            out_unpacked.handle
+        )
     return tl.tensor(out, ret_type)
+
+
+def mbarrier(flag, atc, tc, exp, _semantic=None) -> tl.tensor:
+    from triton.language.core import _unwrap_if_constexpr
+
+    flag = _unwrap_if_constexpr(flag)
+    atc = _unwrap_if_constexpr(atc)
+    tc = _unwrap_if_constexpr(tc)
+    exp = _unwrap_if_constexpr(exp)
+
+    if isinstance(flag, int):
+        assert 0 <= flag <= 2, "Invalid flag value"
+    if isinstance(atc, int):
+        assert atc >= 0, "atc must be non-negative"
+    if isinstance(tc, int):
+        assert tc > 0, "tc must be positive"
+    if isinstance(exp, int):
+        assert exp > 0, "exp must be positive"
+
+    semantic_inst = tl_semantic.TritonSemantic(_semantic.builder)
+    flag_val = semantic_inst.to_tensor(flag)
+    atc_val = semantic_inst.to_tensor(atc)
+    tc_val = semantic_inst.to_tensor(tc)
+    exp_val = semantic_inst.to_tensor(exp)
+
+    flag_val = semantic_inst.cast(flag_val, tl.int16)
+    atc_val = semantic_inst.cast(atc_val, tl.int16)
+    tc_val = semantic_inst.cast(tc_val, tl.int16)
+    exp_val = semantic_inst.cast(exp_val, tl.int16)
+
+    bar_handle = _semantic.builder.create_mbarrier(flag_val.handle, atc_val.handle, tc_val.handle, exp_val.handle)
+    return tl.tensor(bar_handle, tl.pointer_type(tl.int64, 1))
+
+def barrier_arrive(bar: tl.tensor, _semantic=None):
+    _semantic.builder.create_barrier_arrive(bar.handle)
+
+def barrier_wait(bar: tl.tensor, flag, exp, _semantic=None):
+    from triton.language.core import _unwrap_if_constexpr
+    flag = _unwrap_if_constexpr(flag)
+    exp = _unwrap_if_constexpr(exp)
+
+    semantic_inst = tl_semantic.TritonSemantic(_semantic.builder)
+    flag_tensor = semantic_inst.to_tensor(flag)
+    exp_tensor = semantic_inst.to_tensor(exp)
+
+    flag_tensor = semantic_inst.cast(flag_tensor, tl.int16)
+    exp_tensor = semantic_inst.cast(exp_tensor, tl.int16)
+
+    _semantic.builder.create_barrier_wait(
+        bar.handle,
+        flag_tensor.handle,
+        exp_tensor.handle
+    )

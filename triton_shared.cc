@@ -48,27 +48,54 @@ void init_triton_xsmt_ir(py::module &&m) {
              return self.create<xsmt::AllocOp>(shape, micro_size, elementType);
            })
       .def("create_mmt4d",
-           [](TritonOpBuilder &self, Value &a, Value &b, Value &c) -> Value {
-             auto aType = cast<RankedTensorType>(a.getType());
-             auto bType = cast<RankedTensorType>(b.getType());
+     [](TritonOpBuilder &self, Value &a, Value &b, std::optional<Value> c = std::nullopt) -> Value {
+       auto aType = cast<RankedTensorType>(a.getType());
+       auto bType = cast<RankedTensorType>(b.getType());
 
-             assert(aType.getRank() == 4 && "A must be 4D packed tensor");
-             assert(bType.getRank() == 4 && "B must be 4D packed tensor");
+       assert(aType.getRank() == 4 && "A must be 4D packed tensor");
+       assert(bType.getRank() == 4 && "B must be 4D packed tensor");
 
-             auto aShape = aType.getShape();
-             auto bShape = bType.getShape();
-             assert(aShape[1] == bShape[0] && "KB dimension must match");
-             assert(aShape[3] == bShape[2] && "kb dimension must match");
+       auto aShape = aType.getShape();
+       auto bShape = bType.getShape();
+       assert(aShape[1] == bShape[0] && "KB dimension must match");
+       assert(aShape[3] == bShape[2] && "kb dimension must match");
 
-             SmallVector<int64_t> outputShape = {
-                 aShape[0] * aShape[2],
-                 bShape[1] * bShape[3],
-             };
-             auto resultType =
-                 RankedTensorType::get(outputShape, aType.getElementType());
-             auto perm = std::vector<int>{1, 0, 3, 2};
-             auto transb = self.create<mlir::triton::TransOp>(b, perm);
-             return self.create<xsmt::MMT4DOp>(resultType, a, transb, c);
+       SmallVector<int64_t> outputShape = {
+           aShape[0], bShape[1], aShape[2], bShape[3],
+       };
+       auto resultType =
+           RankedTensorType::get(outputShape, aType.getElementType());
+
+       auto perm = std::vector<int>{1, 0, 3, 2};
+       auto transbOp = self.create<mlir::triton::TransOp>(b, perm);
+       mlir::Value transbValue = transbOp->getResult(0);
+
+       mlir::Value cValue;
+       if (c.has_value()) {
+         cValue = *c;
+       } else {
+         cValue = Value();
+       }
+
+       return self.create<xsmt::MMT4DOp>(
+           resultType,
+           a,
+           transbValue,
+           cValue
+       );
+     })
+      .def("create_mbarrier", [](TritonOpBuilder &self, Value &flag, Value &atc,
+                            Value &tc, Value &exp) -> Value {
+         auto barrierType = triton::PointerType::get(
+             self.getBuilder().getI64Type(), 1);
+         return self.create<xsmt::MBarrierCreateOp>(barrierType, flag, atc, tc, exp);
+       })
+      .def("create_barrier_arrive", [](TritonOpBuilder &self, Value &bar) {
+             self.create<xsmt::BarrierArriveOp>(bar);
+           })
+      .def("create_barrier_wait", [](TritonOpBuilder &self, Value &bar,
+                                    Value &flag, Value &exp) {
+             self.create<xsmt::BarrierWaitOp>(bar, flag, exp);
            });
 }
 
