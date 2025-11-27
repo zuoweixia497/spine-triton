@@ -402,9 +402,13 @@ class CPUUtils(object):
         self.load_binary = mod.load_binary
         self.get_device_properties = mod.get_device_properties
         self._get_current_stream = mod.get_current_stream
+        self._get_arch_id = mod.get_arch_id
 
-    def get_current_stream(self, expected_streams=2):
-        return self._get_current_stream(expected_streams)
+    def get_current_stream(self):
+        return self._get_current_stream()
+
+    def get_arch_id(self):
+        return self._get_arch_id()
 
 class CPULauncher(object):
     def __init__(self, src, metadata):
@@ -484,7 +488,7 @@ class CPUDriver(DriverBase):
         self.utils = CPUUtils()
         self.launcher_cls = CPULauncher
         self.binary_ext = "so"
-        self.current_arch_id = "0"
+        self.current_arch_id = self.utils.get_arch_id()
 
     # CPU driver won't be automatically chosen unless explicitly set through
     # triton.runtime.driver.set_active(CPUDriver())
@@ -511,20 +515,6 @@ class CPUDriver(DriverBase):
         # CPU doesn't have a device to set
         assert device == "cpu"
         return
-
-    def set_current_arch_id(self, arch_id):
-        valid_arch_ids = [
-            "0",
-            "0x503C",
-            "0x5064",
-            "0x50C8",
-            "0xA03C",
-            "0xA064",
-            "0xA0C8"
-        ]
-        if arch_id not in valid_arch_ids:
-            raise ValueError(f"invalid arch_id: {arch_id}。must be one of the following values: {valid_arch_ids}")
-        self.current_arch_id = arch_id
 
     def get_current_target(self):
         return AICPUTarget("cpu", "a60", 0, 8, 4, self.current_arch_id, 3)
