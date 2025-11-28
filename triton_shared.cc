@@ -1,4 +1,6 @@
 ﻿#include "include/triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
+#include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
 #include "ir.h"
 #include "mlir/Pass/PassManager.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -13,6 +15,7 @@ namespace py = pybind11;
 using namespace ir;
 using namespace mlir;
 namespace xsmt = mlir::xsmt;
+namespace xsmt_async = mlir::xsmt_async;
 
 void init_triton_xsmt_ir(py::module &&m) {
   auto *builder_cls = ir::getBuilderClass();
@@ -27,25 +30,25 @@ void init_triton_xsmt_ir(py::module &&m) {
       .def("create_descriptor_load",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
               std::vector<int32_t> &shape,
-              std::vector<int32_t> &micro_size) -> Value {
+              std::vector<int32_t> &packed_size) -> Value {
              return self.create<xsmt::DescriptorLoadOp>(base, offsets, shape,
-                                                        micro_size);
+                                                        packed_size);
            })
       .def("create_descriptor_load_view",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
-              std::vector<int32_t> &shape, std::vector<int32_t> &micro_size , Value &destination) -> Value {
-             return self.create<xsmt::DescriptorLoadViewOp>(base, offsets, shape, micro_size, destination);
+              std::vector<int32_t> &shape, std::vector<int32_t> &packed_size , Value &destination) -> Value {
+             return self.create<xsmt::DescriptorLoadViewOp>(base, offsets, shape, packed_size, destination);
            })
       .def("create_view",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
               std::vector<int32_t> &shape,
-              std::vector<int32_t> &micro_size) -> Value {
-             return self.create<xsmt::ViewOp>(base, offsets, shape, micro_size);
+              std::vector<int32_t> &packed_size) -> Value {
+             return self.create<xsmt::ViewOp>(base, offsets, shape, packed_size);
            })
       .def("create_alloc",
            [](TritonOpBuilder &self, std::vector<int32_t> &shape,
-              std::vector<int32_t> &micro_size, Type &elementType) -> Value {
-             return self.create<xsmt::AllocOp>(shape, micro_size, elementType);
+              std::vector<int32_t> &packed_size, Type &elementType) -> Value {
+             return self.create<xsmt::AllocOp>(shape, packed_size, elementType);
            })
       .def("create_mmt4d",
      [](TritonOpBuilder &self, Value &a, Value &b, std::optional<Value> c = std::nullopt) -> Value {
@@ -86,16 +89,15 @@ void init_triton_xsmt_ir(py::module &&m) {
      })
       .def("create_mbarrier", [](TritonOpBuilder &self, Value &flag, Value &atc,
                             Value &tc, Value &exp) -> Value {
-         auto barrierType = triton::PointerType::get(
-             self.getBuilder().getI64Type(), 1);
-         return self.create<xsmt::MBarrierCreateOp>(barrierType, flag, atc, tc, exp);
+         auto barrierType = self.getBuilder().getI64Type();
+         return self.create<mlir::xsmt_async::MBarrierAllocOp>(barrierType, flag, atc, tc, exp);
        })
       .def("create_barrier_arrive", [](TritonOpBuilder &self, Value &bar) {
-             self.create<xsmt::BarrierArriveOp>(bar);
+             self.create<mlir::xsmt_async::MBarrierArriveOp>(bar);
            })
       .def("create_barrier_wait", [](TritonOpBuilder &self, Value &bar,
                                     Value &flag, Value &exp) {
-             self.create<xsmt::BarrierWaitOp>(bar, flag, exp);
+             self.create<mlir::xsmt_async::MBarrierWaitOp>(bar, flag, exp);
            });
 }
 
@@ -103,7 +105,7 @@ void init_triton_spine_triton(py::module &&m) {
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
-    registry.insert<mlir::xsmt::XSMTDialect, tensor::TensorDialect>();
+    registry.insert<mlir::xsmt::XSMTDialect, mlir::xsmt_async::XSMTAsyncDialect, tensor::TensorDialect>();
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });

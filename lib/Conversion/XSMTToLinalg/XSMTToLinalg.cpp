@@ -34,6 +34,8 @@
 #define DEBUG_TYPE "xsmt-to-linalg"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
 
 using namespace mlir;
 using namespace mlir::arith;
@@ -1337,6 +1339,47 @@ struct ReplaceRedundantMaterializePattern2
 };
 
 
+struct InsertMBarrierReleasePattern : public mlir::OpRewritePattern<xsmt_async::MBarrierAllocOp> {
+  using OpRewritePattern<xsmt_async::MBarrierAllocOp>::OpRewritePattern;
+
+  mlir::LogicalResult matchAndRewrite(xsmt_async::MBarrierAllocOp op,
+                                      mlir::PatternRewriter &rewriter) const override {
+    mlir::Value barrier = op.getResult();
+    mlir::Block *parentBlock = op->getBlock();
+
+    for (mlir::Operation *user : barrier.getUsers()) {
+      if (mlir::isa<xsmt_async::MBarrierReleaseOp>(user)) {
+        return mlir::failure();
+      }
+    }
+
+    mlir::Operation *lastUser = op.getOperation();
+    bool usedInReturn = false;
+
+    for (mlir::Operation *user : barrier.getUsers()) {
+      mlir::Operation *ancestor = parentBlock->findAncestorOpInBlock(*user);
+
+      if (!ancestor || ancestor->hasTrait<mlir::OpTrait::IsTerminator>()) {
+         usedInReturn = true;
+         break;
+      }
+
+      if (lastUser->isBeforeInBlock(ancestor)) {
+        lastUser = ancestor;
+      }
+    }
+
+    if (usedInReturn) {
+      return mlir::failure();
+    }
+
+    rewriter.setInsertionPointAfter(lastUser);
+    rewriter.create<xsmt_async::MBarrierReleaseOp>(op.getLoc(), barrier);
+    return mlir::success();
+  }
+};
+
+
 void mlir::triton::TransposeEliminationConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<TransposeEliminationPattern>(patterns.getContext());
 }
@@ -1347,7 +1390,9 @@ void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &pat
   patterns.add<ViewOpPattern>(patterns.getContext());
   patterns.add<DescriptorLoadPattern>(patterns.getContext());
   patterns.add<DescriptorLoadViewOpPattern>(patterns.getContext());
-}
+  patterns.add<InsertMBarrierReleasePattern>(patterns.getContext());
+  }
+
 
 void mlir::triton::MMT4DOpConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<LowerXSMTMMT4D>(patterns.getContext());

@@ -128,18 +128,18 @@ def dot(a_packed, b_packed, out_unpacked=None, _semantic=None):
 
 
 @builtin
-def mbarrier(flag = tl.constexpr(0), atc = tl.constexpr(1), tc = tl.constexpr(1), exp = tl.constexpr(1), _semantic=None):
+def mbarrier(flag = tl.constexpr(0), arrive_count = tl.constexpr(1), transaction_count = tl.constexpr(1), expect_count = tl.constexpr(-1), _semantic=None):
     """Initialize a memory barrier for thread synchronization.
 
     :param flag: Barrier mode flag (0=normal, 1=async, 2=with fence)
-    :param atc: Initial arrival thread count
-    :param tc: Total threads to wait for
-    :param exp: Expected version value after release
+    :param arrive_count: Initial arrival thread count
+    :param transaction_count: Total threads to wait for
+    :param expect_count: Expected version value after release
 
     Example:
-        bar = smt.mbarrier(flag=0, atc=0, tc=128, exp=1)
+        bar = smt.mbarrier(flag=0, arrive_count=0, transaction_count=0, expect_count=1)
     """
-    return smt_semantic.mbarrier(flag, atc, tc, exp, _semantic)
+    return smt_semantic.mbarrier(flag, arrive_count, transaction_count, expect_count, _semantic)
 
 @builtin
 def barrier_arrive(bar, _semantic=None):
@@ -147,6 +147,6 @@ def barrier_arrive(bar, _semantic=None):
     return smt_semantic.barrier_arrive(bar, _semantic)
 
 @builtin
-def barrier_wait(bar, flag = tl.constexpr(0), exp = tl.constexpr(1), _semantic=None):
+def barrier_wait(bar, flag = tl.constexpr(0), expect_count = tl.constexpr(-1), _semantic=None):
     """Wait for barrier to reach expected version."""
-    return smt_semantic.barrier_wait(bar, flag, exp, _semantic)
+    return smt_semantic.barrier_wait(bar, flag, expect_count, _semantic)
