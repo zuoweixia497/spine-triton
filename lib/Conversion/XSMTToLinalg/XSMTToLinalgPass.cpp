@@ -12,6 +12,8 @@
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -53,7 +55,8 @@ public:
                 linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
                 tensor::TensorDialect, bufferization::BufferizationDialect,
                 triton::TritonDialect, ttx::TritonTilingExtDialect,
-                tts::TritonStructuredDialect, mlir::LLVM::LLVMDialect, mlir::xsmt::XSMTDialect>();
+                tts::TritonStructuredDialect, mlir::LLVM::LLVMDialect,
+                mlir::xsmt::XSMTDialect, mlir::xsmt_async::XSMTAsyncDialect>();
   }
 
   void runOnOperation() override {

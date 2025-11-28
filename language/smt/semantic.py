@@ -164,48 +164,48 @@ def mmt4d(a_packed: tl.tensor, b_packed: tl.tensor, out_unpacked: tl.tensor, _se
     return tl.tensor(out, ret_type)
 
 
-def mbarrier(flag, atc, tc, exp, _semantic=None) -> tl.tensor:
+def mbarrier(flag, arrive_count, transaction_count, expect_count, _semantic=None) -> tl.tensor:
     from triton.language.core import _unwrap_if_constexpr
 
     flag = _unwrap_if_constexpr(flag)
-    atc = _unwrap_if_constexpr(atc)
-    tc = _unwrap_if_constexpr(tc)
-    exp = _unwrap_if_constexpr(exp)
+    arrive_count = _unwrap_if_constexpr(arrive_count)
+    transaction_count = _unwrap_if_constexpr(transaction_count)
+    expect_count = _unwrap_if_constexpr(expect_count)
 
     if isinstance(flag, int):
         assert 0 <= flag <= 2, "Invalid flag value"
-    if isinstance(atc, int):
-        assert atc >= 0, "atc must be non-negative"
-    if isinstance(tc, int):
-        assert tc > 0, "tc must be positive"
-    if isinstance(exp, int):
-        assert exp > 0, "exp must be positive"
+    if isinstance(arrive_count, int):
+        assert arrive_count >= 0, "arrive_count must be non-negative"
+    if isinstance(transaction_count, int):
+        assert transaction_count > 0, "transaction_count must be positive"
+    if isinstance(expect_count, int):
+        assert expect_count > 0, "expect_count must be positive"
 
     semantic_inst = tl_semantic.TritonSemantic(_semantic.builder)
     flag_val = semantic_inst.to_tensor(flag)
-    atc_val = semantic_inst.to_tensor(atc)
-    tc_val = semantic_inst.to_tensor(tc)
-    exp_val = semantic_inst.to_tensor(exp)
+    arrive_count_val = semantic_inst.to_tensor(arrive_count)
+    transaction_count_val = semantic_inst.to_tensor(transaction_count)
+    exp_val = semantic_inst.to_tensor(expect_count)
 
     flag_val = semantic_inst.cast(flag_val, tl.int16)
-    atc_val = semantic_inst.cast(atc_val, tl.int16)
-    tc_val = semantic_inst.cast(tc_val, tl.int16)
+    arrive_count_val = semantic_inst.cast(arrive_count_val, tl.int16)
+    transaction_count_val = semantic_inst.cast(transaction_count_val, tl.int16)
     exp_val = semantic_inst.cast(exp_val, tl.int16)
 
-    bar_handle = _semantic.builder.create_mbarrier(flag_val.handle, atc_val.handle, tc_val.handle, exp_val.handle)
-    return tl.tensor(bar_handle, tl.pointer_type(tl.int64, 1))
+    bar_handle = _semantic.builder.create_mbarrier(flag_val.handle, arrive_count_val.handle, transaction_count_val.handle, exp_val.handle)
+    return tl.tensor(bar_handle, tl.int64)
 
 def barrier_arrive(bar: tl.tensor, _semantic=None):
     _semantic.builder.create_barrier_arrive(bar.handle)
 
-def barrier_wait(bar: tl.tensor, flag, exp, _semantic=None):
+def barrier_wait(bar: tl.tensor, flag, expect_count, _semantic=None):
     from triton.language.core import _unwrap_if_constexpr
     flag = _unwrap_if_constexpr(flag)
-    exp = _unwrap_if_constexpr(exp)
+    expect_count = _unwrap_if_constexpr(expect_count)
 
     semantic_inst = tl_semantic.TritonSemantic(_semantic.builder)
     flag_tensor = semantic_inst.to_tensor(flag)
-    exp_tensor = semantic_inst.to_tensor(exp)
+    exp_tensor = semantic_inst.to_tensor(expect_count)
 
     flag_tensor = semantic_inst.cast(flag_tensor, tl.int16)
     exp_tensor = semantic_inst.cast(exp_tensor, tl.int16)
