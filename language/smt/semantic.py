@@ -215,3 +215,6 @@ def barrier_wait(bar: tl.tensor, flag, expect_count, _semantic=None):
         flag_tensor.handle,
         exp_tensor.handle
     )
+
+def get_num_of_thread(_semantic=None):
+    _semantic.builder.create_get_num_of_thread()

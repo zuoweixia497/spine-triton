@@ -98,6 +98,9 @@ void init_triton_xsmt_ir(py::module &&m) {
       .def("create_barrier_wait", [](TritonOpBuilder &self, Value &bar,
                                     Value &flag, Value &exp) {
              self.create<mlir::xsmt_async::MBarrierWaitOp>(bar, flag, exp);
+           })
+      .def("create_get_num_of_thread", [](TritonOpBuilder &self) {
+             self.create<xsmt::GetThreadOp>();
            });
 }
 

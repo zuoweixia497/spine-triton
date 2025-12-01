@@ -261,4 +261,21 @@ def XSMT_BarrierWaitOp : XSMT_Op<"barrier_wait"> {
 
 }
 
+def GetThreadOp : XSMT_Op<"get_num_of_thread", [Pure, MemoryEffects<[MemWrite]>]> {
+
+  let summary = "Get the current thread";
+
+  let description = [{
+    Returns the thread ID of the current context.
+    Example:
+      %0 = xsmt.get_num_of_thread
+  }];
+
+  let arguments = (ins);
+
+  let results = (outs I32:$result);
+
+  let assemblyFormat = "attr-dict";
+}
+
 #endif

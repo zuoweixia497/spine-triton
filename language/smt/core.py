@@ -150,3 +150,7 @@ def barrier_arrive(bar, _semantic=None):
 def barrier_wait(bar, flag = tl.constexpr(0), expect_count = tl.constexpr(-1), _semantic=None):
     """Wait for barrier to reach expected version."""
     return smt_semantic.barrier_wait(bar, flag, expect_count, _semantic)
+
+@builtin
+def get_num_of_thread(_semantic=None):
+    return smt_semantic.get_num_of_thread(_semantic)

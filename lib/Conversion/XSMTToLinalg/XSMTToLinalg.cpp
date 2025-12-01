@@ -27,6 +27,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/MathExtras.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 
 #include <numeric>
 #include <type_traits>
@@ -1520,6 +1521,46 @@ struct RemoveRedundantBufferizationRoundtrip : public OpRewritePattern<ToTensorO
 };
 
 
+struct GetThreadOpToLLVMCallPattern : public OpRewritePattern<xsmt::GetThreadOp> {
+  using OpRewritePattern<xsmt::GetThreadOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(xsmt::GetThreadOp getThreadOp,
+                                PatternRewriter &rewriter) const override {
+    Location loc = getThreadOp.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    auto moduleOp = getThreadOp->getParentOfType<ModuleOp>();
+    if (!moduleOp) {
+      return failure();
+    }
+
+    StringRef funcName = "spine_get_stream_threads";
+    Type resultType = rewriter.getI32Type();
+
+    auto llvmFuncOp = moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(funcName);
+    if (!llvmFuncOp) {
+      auto funcType = LLVM::LLVMFunctionType::get(resultType, /*params=*/{}, /*isVarArg=*/false);
+
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+      llvmFuncOp = rewriter.create<LLVM::LLVMFuncOp>(loc, funcName, funcType);
+      llvmFuncOp.setLinkage(LLVM::Linkage::External);
+    }
+
+    auto callOp = rewriter.create<LLVM::CallOp>(
+        loc,
+        resultType,
+        funcName,
+        ValueRange{}
+    );
+
+    rewriter.replaceOp(getThreadOp, callOp.getResults());
+
+    return success();
+  }
+};
+
+
 struct InsertMBarrierReleasePattern : public mlir::OpRewritePattern<xsmt_async::MBarrierAllocOp> {
   using OpRewritePattern<xsmt_async::MBarrierAllocOp>::OpRewritePattern;
 
@@ -1572,6 +1613,7 @@ void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &pat
   patterns.add<DescriptorLoadPattern>(patterns.getContext());
   patterns.add<DescriptorLoadViewOpPattern>(patterns.getContext());
   patterns.add<InsertMBarrierReleasePattern>(patterns.getContext());
+  patterns.add<GetThreadOpToLLVMCallPattern>(patterns.getContext());
   }
 
 
