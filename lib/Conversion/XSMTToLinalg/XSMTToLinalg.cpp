@@ -1041,7 +1041,71 @@ struct LowerXSMTMMT4D : public OpRewritePattern<xsmt::MMT4DOp> {
     if (auto cast = b.getDefiningOp<tensor::CastOp>())
       b = cast.getSource();
 
+    bool unpack = false;
+
     if (c) {
+      if(c.hasOneUse() && op.getResult().use_empty())
+        unpack = true;
+      if(unpack){
+        if (auto cast = c.getDefiningOp<tensor::CastOp>())
+          c = cast.getSource();
+        auto cPackOp = c.getDefiningOp<linalg::PackOp>();
+        if (!cPackOp)
+          return rewriter.notifyMatchFailure(op, "C must be result of linalg.pack");
+
+        Value packInput = cPackOp.getSource();
+        auto toTensorOp = packInput.getDefiningOp<bufferization::ToTensorOp>();
+        if (!toTensorOp)
+          return rewriter.notifyMatchFailure(op, "Packed input must come from to_tensor");
+
+        Value subview = toTensorOp->getOperand(0);
+
+
+        auto cType = dyn_cast<RankedTensorType>(c.getType());
+        auto zeroAttr = FloatAttr::get(cType.getElementType(), 0.0);
+        auto zero = rewriter.create<arith::ConstantOp>(loc, zeroAttr);
+
+        auto fillOp = rewriter.create<linalg::FillOp>(
+            loc, TypeRange{c.getType()},
+            ValueRange{zero},
+            ValueRange{c}
+        );
+
+        auto mmt4dOp = rewriter.create<linalg::Mmt4DOp>(
+            loc, ValueRange{a, b}, ValueRange{fillOp.getResult(0)});
+
+        RankedTensorType unpackedType = cast<RankedTensorType>(packInput.getType());
+
+        SmallVector<OpFoldResult> mixedSizes =
+            tensor::getMixedSizes(rewriter, loc, packInput);
+        Value emptyUnpack = rewriter.create<tensor::EmptyOp>(
+            loc, mixedSizes, unpackedType.getElementType());
+        ArrayRef<int64_t> staticInnerTiles = cPackOp.getStaticInnerTiles();
+        if (staticInnerTiles.empty()) {
+          return rewriter.notifyMatchFailure(op, "static_inner_tiles is empty");
+        }
+
+        SmallVector<OpFoldResult> innerTiles;
+        for (int64_t tile : staticInnerTiles) {
+          innerTiles.push_back(rewriter.getIndexAttr(tile));
+        }
+        auto unpackOp = rewriter.create<linalg::UnPackOp>(
+            loc,
+            mmt4dOp.getResult(0),
+            emptyUnpack,
+            cPackOp.getInnerDimsPos(),
+            innerTiles,
+            cPackOp.getOuterDimsPerm());
+
+        Value destination = traceDestinationFromOutput(c);
+
+        auto materializeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
+            unpackOp.getLoc(), unpackOp.getResult(), destination);
+        materializeOp.setWritable(true);
+
+        rewriter.replaceOp(op, unpackOp.getResult());
+        return success();
+      }else{
       if (auto cast = c.getDefiningOp<tensor::CastOp>())
         c = cast.getSource();
       auto toTensorOp = c.getDefiningOp<bufferization::ToTensorOp>();
@@ -1068,9 +1132,37 @@ struct LowerXSMTMMT4D : public OpRewritePattern<xsmt::MMT4DOp> {
         materializeOp.setWritable(true);
       rewriter.replaceOp(op, mmt4dOp.getResult(0));
       return success();
+      }
     }else{
-      return failure();
+      auto resultType = dyn_cast<RankedTensorType>(op.getResult().getType());
+      Value initTensor = rewriter.create<tensor::EmptyOp>(
+          loc, resultType.getShape(), resultType.getElementType());
+      auto zeroAttr = FloatAttr::get(resultType.getElementType(), 0.0);
+      auto zero = rewriter.create<arith::ConstantOp>(loc, zeroAttr);
+
+      auto fillOp = rewriter.create<linalg::FillOp>(
+          loc, ValueRange{zero}, ValueRange{initTensor}
+      );
+
+      auto mmt4dOp = rewriter.create<linalg::Mmt4DOp>(
+          loc, ValueRange{a, b}, ValueRange{fillOp.getResult(0)});
+      rewriter.replaceOp(op, mmt4dOp.getResult(0));
+      return success();
     }
+  }
+    Value traceDestinationFromOutput(Value output) const{
+    if (auto packOp = output.getDefiningOp<linalg::PackOp>()) {
+      Value packInput = packOp.getSource();
+      if (auto toTensorOp = packInput.getDefiningOp<bufferization::ToTensorOp>()) {
+        return toTensorOp->getOperand(0);
+      }
+
+      return packInput;
+    }
+    if (auto toTensorOp = output.getDefiningOp<bufferization::ToTensorOp>()) {
+      return toTensorOp->getOperand(0);
+    }
+    return Value();
   }
 };
 
