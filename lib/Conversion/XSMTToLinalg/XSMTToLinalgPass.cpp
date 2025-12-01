@@ -64,7 +64,7 @@ public:
 
     bool hasXSMTUser = false;
     moduleOp.walk([&](Operation *op) {
-      if (op->getName().getStringRef().starts_with("xsmt.")) {
+      if (op->getName().getStringRef().starts_with("xsmt.") || op->getName().getStringRef().starts_with("xsmt_async."))  {
         hasXSMTUser = true;
         return WalkResult::interrupt();
       }
@@ -72,7 +72,7 @@ public:
     });
     if (!hasXSMTUser) {
       RewritePatternSet patterns(&getContext());
-      triton::ForToForallConversionPatterns(patterns);
+      triton::LoopParallelizationConversionPatterns(patterns);
       if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
         signalPassFailure();
       }
@@ -83,7 +83,7 @@ public:
     RewritePatternSet patterns1(&getContext());
     RewritePatternSet patterns2(&getContext());
     RewritePatternSet patterns3(&getContext());
-
+    RewritePatternSet patterns4(&getContext());
 
     triton::TransposeEliminationConversionPatterns(patterns0);
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns0)))) {
@@ -100,11 +100,15 @@ public:
       signalPassFailure();
     }
 
-    triton::ForToForallConversionPatterns(patterns3);
+    triton::LoopParallelizationConversionPatterns(patterns3);
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns3)))) {
       signalPassFailure();
     }
 
+    triton::BufferizationCleanupConversionPatterns(patterns4);
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns4)))) {
+      signalPassFailure();
+    }
   }
 
 };

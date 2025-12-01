@@ -20,9 +20,11 @@ namespace triton {
 #include "triton-shared/Conversion/XSMTToLinalg/Passes.h.inc"
 
 void TransposeEliminationConversionPatterns(RewritePatternSet &patterns);
-void ForToForallConversionPatterns(RewritePatternSet &patterns);
+void LoopParallelizationConversionPatterns(RewritePatternSet &patterns);
 void populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns);
 void MMT4DOpConversionPatterns(RewritePatternSet &patterns);
+void BufferizationCleanupConversionPatterns(RewritePatternSet &patterns);
+
 
 std::unique_ptr<OperationPass<ModuleOp>> createXSMTToLinalgPass();
 

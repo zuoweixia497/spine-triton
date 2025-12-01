@@ -1338,6 +1338,95 @@ struct ReplaceRedundantMaterializePattern2
   }
 };
 
+struct RemoveUnusedAllocPattern : public OpRewritePattern<memref::AllocOp> {
+  using OpRewritePattern<memref::AllocOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::AllocOp allocOp,
+                                PatternRewriter &rewriter) const override {
+    Value memrefResult = allocOp.getMemref();
+
+    SmallVector<Operation *> opsToErase;
+
+    for (Operation *user : memrefResult.getUsers()) {
+
+      if (auto matOp = dyn_cast<MaterializeInDestinationOp>(user)) {
+        if (matOp.getDest() == memrefResult) {
+          opsToErase.push_back(user);
+          continue;
+        }
+      }
+
+      if (isa<memref::DeallocOp>(user)) {
+        opsToErase.push_back(user);
+        continue;
+      }
+
+      return failure();
+    }
+    for (Operation *op : opsToErase) {
+      rewriter.eraseOp(op);
+    }
+    rewriter.eraseOp(allocOp);
+
+    return success();
+  }
+};
+
+struct RemoveRedundantBufferizationRoundtrip : public OpRewritePattern<ToTensorOp> {
+  using OpRewritePattern<ToTensorOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ToTensorOp toTensorOp, PatternRewriter &rewriter) const override {
+    Value memref = toTensorOp->getOperand(0);
+
+    auto allocOp = memref.getDefiningOp<memref::AllocOp>();
+    if (!allocOp) {
+      return failure();
+    }
+
+    MaterializeInDestinationOp matOp;
+    Operation *deallocOp = nullptr;
+
+    for (Operation *user : memref.getUsers()) {
+      if (user == toTensorOp) continue;
+
+      if (auto m = dyn_cast<MaterializeInDestinationOp>(user)) {
+        if (m.getDest() == memref) {
+          if (matOp) {
+            return failure();
+          }
+          matOp = m;
+          continue;
+        }
+      }
+
+      if (isa<memref::DeallocOp>(user)) {
+        deallocOp = user;
+        continue;
+      }
+      return failure();
+    }
+
+    if (!matOp) {
+      return failure();
+    }
+
+    Value sourceTensor = matOp.getSource();
+
+    if (sourceTensor.getType() != toTensorOp.getResult().getType()) {
+      return failure();
+    }
+
+    rewriter.replaceOp(toTensorOp, sourceTensor);
+    if (deallocOp) {
+      rewriter.eraseOp(deallocOp);
+    }
+    rewriter.eraseOp(matOp);
+    rewriter.eraseOp(allocOp);
+
+    return success();
+  }
+};
+
 
 struct InsertMBarrierReleasePattern : public mlir::OpRewritePattern<xsmt_async::MBarrierAllocOp> {
   using OpRewritePattern<xsmt_async::MBarrierAllocOp>::OpRewritePattern;
@@ -1399,8 +1488,13 @@ void mlir::triton::MMT4DOpConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<ConvertMMT4DAddPattern>(patterns.getContext());
 }
 
-void mlir::triton::ForToForallConversionPatterns(RewritePatternSet &patterns) {
+void mlir::triton::LoopParallelizationConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<ForToForallPattern>(patterns.getContext());
   patterns.add<ReplaceRedundantMaterializePattern1>(patterns.getContext());
   patterns.add<ReplaceRedundantMaterializePattern2>(patterns.getContext());
+}
+
+void mlir::triton::BufferizationCleanupConversionPatterns(RewritePatternSet &patterns) {
+  patterns.add<RemoveUnusedAllocPattern>(patterns.getContext());
+  patterns.add<RemoveRedundantBufferizationRoundtrip>(patterns.getContext());
 }
