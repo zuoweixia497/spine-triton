@@ -1,11 +1,9 @@
 # python3 -m pytest tests/test_smt.py::test_descriptor_load -v -s
 import torch
 import triton
+
 from triton.backends.spine_triton.driver import CPUDriver
 triton.runtime.driver.set_active(CPUDriver())
-driver = CPUDriver()
-driver.set_current_arch_id("0xA03C")
-triton.runtime.driver.set_active(driver)
 import triton.language as tl
 import pytest
 import triton.language.extra.smt as smt
@@ -242,3 +240,63 @@ def test_descriptor_load_transpose(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MIC
 
     print(f"✅ All checks passed! Max diff: {max_diff:.2e}, Mean diff: {mean_diff:.2e}")
     print("✅ Continuing execution...")
+
+
+@pytest.mark.parametrize(
+    "BLOCK_SIZE",
+    [
+        (8),
+        (16),
+    ]
+)
+def test_mbarrier(BLOCK_SIZE):
+
+    def run_simple_test():
+        @triton.jit
+        def mbarrier_kernel(
+            input_ptr,
+            output_ptr,
+            N,
+            BLOCK_SIZE: tl.constexpr,
+        ):
+            pid = tl.program_id(0)
+
+            bar = smt.mbarrier(flag=0, expect_count=3)
+
+            offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+            mask = offs < N
+            x = tl.load(input_ptr + offs, mask=mask, other=0.0)
+
+            for s in smt.parallel(0, 3):
+                smt.barrier_arrive(bar)
+                smt.barrier_wait(bar, flag=1)
+
+            tl.store(output_ptr + offs, x * 2.0, mask=mask)
+
+        torch.manual_seed(42)
+        device = "cpu"
+        N = BLOCK_SIZE * 2
+        input_data = torch.randn((N,), dtype=torch.float32, device=device)
+        output = torch.zeros((N,), dtype=torch.float32, device=device)
+
+        grid = (triton.cdiv(N, BLOCK_SIZE),)
+
+        mbarrier_kernel[grid](
+            input_data, output,
+            N,
+            BLOCK_SIZE=BLOCK_SIZE,
+        )
+
+        return output, input_data
+
+    output, input_data = run_simple_test()
+
+    output, _ = run_simple_test()
+    print("\n=== without SPINE_TRITON_USE_REF_PIPELINE ===")
+    print("output:", output)
+
+    expected = input_data * 2.0
+
+    assert torch.allclose(output, expected, rtol=1e-5, atol=1e-8), "Output doesn't match expected"
+
+    print(f"\n✅ mbarrier simple test passed!")
