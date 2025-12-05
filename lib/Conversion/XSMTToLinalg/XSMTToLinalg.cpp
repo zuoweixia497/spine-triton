@@ -579,24 +579,28 @@ public:
         loc, MemRefType::get(shape, outputType.getElementType()));
     PatternRewriter::InsertionGuard guard(rewriter);
 
-    if (shape.size() == 2) {
-      Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-      Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
-      Value dim0 = rewriter.create<arith::ConstantIndexOp>(loc, shape[0]);
-      Value dim1 = rewriter.create<arith::ConstantIndexOp>(loc, shape[1]);
-      auto outerLoop = rewriter.create<scf::ForOp>(loc, c0, dim0, c1);
+    SmallVector<Value> ivs;
 
-      rewriter.setInsertionPointToStart(outerLoop.getBody());
-      auto innerLoop = rewriter.create<scf::ForOp>(loc, c0, dim1, c1);
-      rewriter.setInsertionPointToStart(innerLoop.getBody());
+    scf::ForOp outermostLoop;
 
-      Value i = outerLoop.getInductionVar();
-      Value j = innerLoop.getInductionVar();
-      auto storeOp = rewriter.create<memref::StoreOp>(loc, fillValue, allocOp, ValueRange{i, j});
-      rewriter.setInsertionPointAfter(outerLoop);
-    } else {
-      return rewriter.notifyMatchFailure(fillOp, "FAIL: Not 2D tensor");
+    for (size_t i = 0; i < shape.size(); ++i) {
+      Value dimLimit = rewriter.create<arith::ConstantIndexOp>(loc, shape[i]);
+      auto loop = rewriter.create<scf::ForOp>(loc, c0, dimLimit, c1);
+
+      if (i == 0) {
+        outermostLoop = loop;
+      }
+
+      ivs.push_back(loop.getInductionVar());
+      rewriter.setInsertionPointToStart(loop.getBody());
+    }
+
+    rewriter.create<memref::StoreOp>(loc, fillValue, allocOp, ivs);
+    if (outermostLoop) {
+      rewriter.setInsertionPointAfter(outermostLoop);
     }
 
     auto toTensorOp = rewriter.create<bufferization::ToTensorOp>(
@@ -705,7 +709,17 @@ public:
         sizes.push_back(rewriter.getIndexAttr(shape));
       }
     }else{
-      return convertIsDiffMicroSize(viewOp, memref, rewriter);
+      if (baseType.getRank() == 2) {
+        auto shapes = baseType.getShape();
+        for (int64_t s : shapes) {
+          sizes.push_back(rewriter.getIndexAttr(s));
+        }
+        return convertNormal(viewOp, memref, sizes, rewriter);
+      } else if (baseType.getRank() == 4){
+        return convertIsDiffMicroSize(viewOp, memref, rewriter);
+      } else{
+        return failure();
+      }
     }
 
 
@@ -963,10 +977,14 @@ private:
 
     Value dim0 = rewriter.create<tensor::DimOp>(loc, packedTensor, 0);
     Value dim1 = rewriter.create<tensor::DimOp>(loc, packedTensor, 1);
+
+    int64_t dim2 = shapedTy.getDimSize(2);
+    int64_t dim3 = shapedTy.getDimSize(3);
+
     Value flatRows = rewriter.create<arith::MulIOp>(
-        loc, dim0, rewriter.create<arith::ConstantIndexOp>(loc, preMicroSize[0]));
+        loc, dim0, rewriter.create<arith::ConstantIndexOp>(loc, dim2));
     Value flatCols = rewriter.create<arith::MulIOp>(
-        loc, dim1, rewriter.create<arith::ConstantIndexOp>(loc, preMicroSize[1]));
+        loc, dim1, rewriter.create<arith::ConstantIndexOp>(loc, dim3));
 
     auto flatTy = RankedTensorType::get({ShapedType::kDynamic, ShapedType::kDynamic}, elementType);
     Value flatEmpty = rewriter.create<tensor::EmptyOp>(loc, flatTy, ValueRange{flatRows, flatCols});
@@ -975,8 +993,8 @@ private:
         loc, packedTensor, flatEmpty,
         ArrayRef<int64_t>{0, 1},
         ArrayRef<OpFoldResult>{
-            rewriter.getIndexAttr(preMicroSize[0]),
-            rewriter.getIndexAttr(preMicroSize[1])
+            rewriter.getIndexAttr(dim2),
+            rewriter.getIndexAttr(dim3)
         });
 
     Value off0 = ensureIndexType(loc, offsets[0], rewriter);
@@ -1616,10 +1634,12 @@ void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &pat
   patterns.add<GetThreadOpToLLVMCallPattern>(patterns.getContext());
   }
 
+void mlir::triton::ConvertMMT4DAddConversionPatterns(RewritePatternSet &patterns) {
+  patterns.add<ConvertMMT4DAddPattern>(patterns.getContext());
+}
 
 void mlir::triton::MMT4DOpConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<LowerXSMTMMT4D>(patterns.getContext());
-  patterns.add<ConvertMMT4DAddPattern>(patterns.getContext());
 }
 
 void mlir::triton::LoopParallelizationConversionPatterns(RewritePatternSet &patterns) {

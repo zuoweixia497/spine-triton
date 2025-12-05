@@ -22,6 +22,7 @@ namespace triton {
 void TransposeEliminationConversionPatterns(RewritePatternSet &patterns);
 void LoopParallelizationConversionPatterns(RewritePatternSet &patterns);
 void populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns);
+void ConvertMMT4DAddConversionPatterns(RewritePatternSet &patterns);
 void MMT4DOpConversionPatterns(RewritePatternSet &patterns);
 void BufferizationCleanupConversionPatterns(RewritePatternSet &patterns);
 

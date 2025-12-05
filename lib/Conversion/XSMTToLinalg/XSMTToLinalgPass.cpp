@@ -84,6 +84,8 @@ public:
     RewritePatternSet patterns2(&getContext());
     RewritePatternSet patterns3(&getContext());
     RewritePatternSet patterns4(&getContext());
+    RewritePatternSet patterns5(&getContext());
+
 
     triton::TransposeEliminationConversionPatterns(patterns0);
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns0)))) {
@@ -95,20 +97,26 @@ public:
       signalPassFailure();
     }
 
-    triton::MMT4DOpConversionPatterns(patterns2);
+    triton::ConvertMMT4DAddConversionPatterns(patterns2);
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns2)))) {
       signalPassFailure();
     }
 
-    triton::LoopParallelizationConversionPatterns(patterns3);
+    triton::MMT4DOpConversionPatterns(patterns3);
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns3)))) {
       signalPassFailure();
     }
 
-    triton::BufferizationCleanupConversionPatterns(patterns4);
+    triton::LoopParallelizationConversionPatterns(patterns4);
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns4)))) {
       signalPassFailure();
     }
+
+    triton::BufferizationCleanupConversionPatterns(patterns5);
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns5)))) {
+      signalPassFailure();
+    }
+
   }
 
 };

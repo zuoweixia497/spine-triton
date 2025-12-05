@@ -172,15 +172,6 @@ def mbarrier(flag, arrive_count, transaction_count, expect_count, _semantic=None
     transaction_count = _unwrap_if_constexpr(transaction_count)
     expect_count = _unwrap_if_constexpr(expect_count)
 
-    if isinstance(flag, int):
-        assert 0 <= flag <= 2, "Invalid flag value"
-    if isinstance(arrive_count, int):
-        assert arrive_count >= 0, "arrive_count must be non-negative"
-    if isinstance(transaction_count, int):
-        assert transaction_count > 0, "transaction_count must be positive"
-    if isinstance(expect_count, int):
-        assert expect_count > 0, "expect_count must be positive"
-
     semantic_inst = tl_semantic.TritonSemantic(_semantic.builder)
     flag_val = semantic_inst.to_tensor(flag)
     arrive_count_val = semantic_inst.to_tensor(arrive_count)

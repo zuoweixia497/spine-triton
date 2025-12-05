@@ -105,6 +105,15 @@ public:
     if (failed(runPipeline(pm, getOperation()))) {
       signalPassFailure();
     }
+
+    moduleOp.walk([](linalg::Mmt4DOp mmt4dOp) {
+      for (OpOperand &operand : mmt4dOp->getOpOperands()) {
+        if (auto castOp = operand.get().getDefiningOp<tensor::CastOp>()) {
+          operand.set(castOp.getSource());
+        }
+      }
+    });
+
   }
 };
 } // namespace
