@@ -185,13 +185,42 @@ def MMT4DOp : XSMT_Op<"mmt4d", [Pure, MemoryEffects<[MemWrite]>]> {
   let arguments = (ins
     TT_Tensor:$a,
     TT_Tensor:$b,
-    Optional<TT_Tensor>:$c  // 使用 Optional<> 包装
+    Optional<TT_Tensor>:$c
   );
 
   let results = (outs TT_Tensor:$result);
 
   let assemblyFormat = [{
     $a `,` $b (`,` $c^)? attr-dict `:` type($a) `,` type($b) (`,` type($c)^)? `->` type($result)
+  }];
+}
+
+def BindOp : XSMT_Op<"bind", [Pure, MemoryEffects<[MemWrite]>]> {
+  let summary = "Bind a source value to a destination";
+  let description = [{
+    The `xsmt.bind` operation binds the source value to the destination.
+    It returns the source value with the type of the destination.
+
+    This operation is typically used for variable binding or value assignment
+    in the XSMT dialect. The result type always matches the destination type.
+
+    Example:
+    ```mlir
+    %bound = xsmt.bind %dest, %src : (tensor<f32>, tensor<f32>) -> tensor<f32>
+    ```
+  }];
+
+  let arguments = (ins
+    TT_Tensor:$dest,
+    TT_Tensor:$src
+  );
+
+  let results = (outs
+    TT_Tensor:$result
+  );
+
+  let assemblyFormat = [{
+    $dest `,` $src attr-dict `:` `(` type($dest) `,` type($src) `)` `->` type($result)
   }];
 }
 

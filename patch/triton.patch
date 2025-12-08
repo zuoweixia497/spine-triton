@@ -1,18 +1,20 @@
 diff --git a/python/src/ir.cc b/python/src/ir.cc
 old mode 100644
 new mode 100755
-index 387f73d1..9e48a278
+index 387f73d1..82dac0d0
 --- a/python/src/ir.cc
 +++ b/python/src/ir.cc
-@@ -39,14 +39,18 @@
+@@ -38,8 +38,8 @@
+ #include "llvm/Support/SourceMgr.h"
  
  #include "third_party/proton/dialect/include/Dialect/Proton/IR/Dialect.h"
++#include "third_party/spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
  
 -namespace {
--
+ 
  namespace py = pybind11;
  using namespace mlir;
- using namespace triton;
+@@ -47,6 +47,12 @@ using namespace triton;
  namespace tt = triton;
  namespace ttg = triton::gpu;
  namespace ttng = triton::nvidia_gpu;
@@ -25,7 +27,7 @@ index 387f73d1..9e48a278
  
  llvm::raw_fd_ostream &mlir_dumps() {
    std::error_code EC;
-@@ -190,13 +194,13 @@ py::list getTensorDescMetadata(ModuleOp &mod) {
+@@ -190,13 +196,13 @@ py::list getTensorDescMetadata(ModuleOp &mod) {
    }
    return result;
  }
@@ -41,7 +43,7 @@ index 387f73d1..9e48a278
  void init_triton_ir(py::module &&m) {
    using ret = py::return_value_policy;
    using namespace pybind11::literals;
-@@ -458,6 +462,7 @@ void init_triton_ir(py::module &&m) {
+@@ -458,6 +464,7 @@ void init_triton_ir(py::module &&m) {
    py::class_<IntegerAttr, Attribute>(m, "integer_attr", py::module_local());
    py::class_<BoolAttr, Attribute>(m, "bool_attr", py::module_local());
    py::class_<UnitAttr, Attribute>(m, "unit_attr", py::module_local());
@@ -49,7 +51,7 @@ index 387f73d1..9e48a278
  
    // Ops
    py::class_<OpState>(m, "OpState", py::module_local())
-@@ -711,9 +716,13 @@ void init_triton_ir(py::module &&m) {
+@@ -711,9 +718,13 @@ void init_triton_ir(py::module &&m) {
  
    py::class_<OpBuilder::InsertPoint>(m, "InsertPoint", py::module_local());
  
@@ -66,6 +68,18 @@ index 387f73d1..9e48a278
        // getters
        .def("create_module",
             [](TritonOpBuilder &self) -> ModuleOp {
+@@ -1717,6 +1728,11 @@ void init_triton_ir(py::module &&m) {
+       .def("create_proton_record",
+            [](TritonOpBuilder &self, bool isStart, int32_t regionId) -> void {
+              self.create<mlir::triton::proton::RecordOp>(isStart, regionId);
++           })
++      .def("create_smt_bind",
++           [](TritonOpBuilder &self, Value &dest,
++              Value &src) -> Value {
++             return self.create<mlir::xsmt::BindOp>(dest.getType(), dest, src);
+            });
+ 
+   py::class_<PassManager>(m, "pass_manager", py::module_local())
 diff --git a/python/src/ir.h b/python/src/ir.h
 old mode 100644
 new mode 100755
@@ -94,10 +108,25 @@ index b27c41a7..2e4d3b31
 diff --git a/python/triton/compiler/code_generator.py b/python/triton/compiler/code_generator.py
 old mode 100644
 new mode 100755
-index 1dd7b4ed..c2d3a3e0
+index 1dd7b4ed..68e4eb1c
 --- a/python/triton/compiler/code_generator.py
 +++ b/python/triton/compiler/code_generator.py
-@@ -1063,7 +1063,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1036,8 +1036,12 @@ class CodeGenerator(ast.NodeVisitor):
+         assert isinstance(node.ctx, ast.Store)
+         lhs = self.visit(node.value)
+         slices = self.visit(node.slice)
+-        assert isinstance(lhs, language.tuple)
+-        lhs.__setitem__(slices, value)
++        if isinstance(lhs, language.tensor):
++            lhs.__setitem__(slices, value, _semantic=self.semantic)
++        elif isinstance(lhs, language.tuple):
++            lhs.__setitem__(slices, value)
++        else:
++            raise RuntimeError('Only `tuple` and `tensor` are currently supported')
+ 
+     def visit_Subscript(self, node):
+         return self.visit_Subscript_Load(node)
+@@ -1063,7 +1067,8 @@ class CodeGenerator(ast.NodeVisitor):
          disallow_acc_multi_buffer = False
          flatten = False
          warp_specialize = False
@@ -107,7 +136,7 @@ index 1dd7b4ed..c2d3a3e0
              iterator = IteratorClass(*iter_args, **iter_kwargs)
              # visit iterator arguments
              # note: only `range` iterator is supported now
-@@ -1076,6 +1077,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1076,6 +1081,8 @@ class CodeGenerator(ast.NodeVisitor):
              disallow_acc_multi_buffer = iterator.disallow_acc_multi_buffer
              flatten = iterator.flatten
              warp_specialize = iterator.warp_specialize
@@ -116,7 +145,7 @@ index 1dd7b4ed..c2d3a3e0
          elif IteratorClass is range:
              # visit iterator arguments
              # note: only `range` iterator is supported now
-@@ -1132,6 +1135,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1132,6 +1139,8 @@ class CodeGenerator(ast.NodeVisitor):
                  for_op.set_attr("tt.flatten", self.builder.get_unit_attr())
              if warp_specialize:
                  for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
@@ -125,10 +154,37 @@ index 1dd7b4ed..c2d3a3e0
  
              self.scf_stack.append(node)
              for_op_body = for_op.get_body(0)
+diff --git a/python/triton/language/core.py b/python/triton/language/core.py
+index 0f6030c1..cb3bd574 100644
+--- a/python/triton/language/core.py
++++ b/python/triton/language/core.py
+@@ -1118,6 +1118,12 @@ class tensor(base_value):
+                 raise ValueError(f"unsupported tensor index: {sl}")
+         return ret
+ 
++    @builtin
++    def __setitem__(self, slices, value, _semantic=None):
++        if slices is Ellipsis or slices == Ellipsis:
++            return _semantic.smt_bind(self, value)
++        raise ValueError(f"Tensor __setitem__ only supports [...] (Ellipsis), got {slices}")
++
+     @property
+     def T(self):
+         """Transposes a 2D tensor."""
+diff --git a/python/triton/language/semantic.py b/python/triton/language/semantic.py
+index 0da22ade..9762df9c 100644
+--- a/python/triton/language/semantic.py
++++ b/python/triton/language/semantic.py
+@@ -1884,3 +1884,5 @@ class TritonSemantic(Generic[TensorTy]):
+         handle = self.builder.create_make_tensor_descriptor(base_handle, [s.handle for s in shape],
+                                                             [s.handle for s in strides], block_shape, is_signed_int)
+         return tl.tensor_descriptor(handle, shape, strides, type)
++    def smt_bind(self, dest: tl.tensor, src: tl.tensor):
++        return self.tensor(self.builder.create_smt_bind(src.handle, dest.handle), dest.type)
 diff --git a/setup.py b/setup.py
 old mode 100644
 new mode 100755
-index 345986fa..430abfff
+index 345986fa..2d9da394
 --- a/setup.py
 +++ b/setup.py
 @@ -55,6 +55,8 @@ class Backend:
@@ -205,7 +261,7 @@ index 345986fa..430abfff
 +            yield f"triton.backends.{backend.name}.bin"
 +
 +        if backend.lib_dir:
-+            yield f"triton.backends.{backend.name}.bin"
++            yield f"triton.backends.{backend.name}.lib"
 +
      if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
          yield "triton.profiler"

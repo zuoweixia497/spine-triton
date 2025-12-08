@@ -4,9 +4,7 @@ from functools import wraps
 import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
-driver = CPUDriver()
-driver.set_current_arch_id("0")
-triton.runtime.driver.set_active(driver)
+triton.runtime.driver.set_active(CPUDriver())
 import flag_gems
 
 if __name__ == "__main__":

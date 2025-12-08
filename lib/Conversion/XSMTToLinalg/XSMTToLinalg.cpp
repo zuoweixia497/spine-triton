@@ -205,6 +205,45 @@ public:
   }
 };
 
+struct MMT4DBindFusionPattern : public OpRewritePattern<xsmt::BindOp> {
+  MMT4DBindFusionPattern(MLIRContext *context)
+      : OpRewritePattern<xsmt::BindOp>(context) {}
+
+  LogicalResult matchAndRewrite(xsmt::BindOp bindOp,
+                                PatternRewriter &rewriter) const override {
+
+    Value mmt4dResult = bindOp.getDest();
+    Value accumulator = bindOp.getSrc();
+
+    auto mmt4dOp = mmt4dResult.getDefiningOp<xsmt::MMT4DOp>();
+    if (!mmt4dOp) {
+      return failure();
+    }
+
+    if (mmt4dOp.getC()) {
+      return failure();
+    }
+
+    rewriter.setInsertionPoint(bindOp);
+
+    auto newMMT4DOp = rewriter.create<xsmt::MMT4DOp>(
+        bindOp.getLoc(),
+        bindOp.getResult().getType(),
+        mmt4dOp.getA(),
+        mmt4dOp.getB(),
+        accumulator
+    );
+
+    rewriter.replaceOp(bindOp, newMMT4DOp.getResult());
+
+    if (mmt4dOp->use_empty()) {
+        rewriter.eraseOp(mmt4dOp);
+    }
+
+    return success();
+  }
+};
+
 
 struct DescriptorLoadPattern : public OpRewritePattern<DescriptorLoadOp> {
   DescriptorLoadPattern(MLIRContext *context)
@@ -1622,6 +1661,7 @@ struct InsertMBarrierReleasePattern : public mlir::OpRewritePattern<xsmt_async::
 
 void mlir::triton::TransposeEliminationConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<TransposeEliminationPattern>(patterns.getContext());
+  patterns.add<MMT4DBindFusionPattern>(patterns.getContext());
 }
 
 void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns) {

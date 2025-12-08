@@ -8,10 +8,10 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 
-#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h.inc"
+#include "spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTDialect.h.inc"
 
 #define GET_OP_CLASSES
-#include "triton-shared/Dialect/XSMT/IR/XSMTOps.h.inc"
+#include "spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTOps.h.inc"
 
 namespace mlir {
 namespace xsmt {

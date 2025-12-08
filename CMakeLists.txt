@@ -1,6 +1,7 @@
 set(SPINE_TRITON_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 set(SPINE_TRITON_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}")
 
+include_directories(".")
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include) # Tablegen'd files
 include_directories(${Python3_INCLUDE_DIR})

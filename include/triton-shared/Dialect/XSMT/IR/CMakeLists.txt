@@ -1,5 +1,11 @@
 set(MLIR_BINARY_DIR ${CMAKE_BINARY_DIR})
 
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/XSMTDialect.h
+  ${CMAKE_CURRENT_BINARY_DIR}/XSMTDialect.h
+  COPYONLY
+)
+
 set(LLVM_TARGET_DEFINITIONS XSMTDialect.td)
 mlir_tablegen(XSMTDialect.h.inc -gen-dialect-decls -dialect=xsmt)
 mlir_tablegen(XSMTDialect.cpp.inc -gen-dialect-defs -dialect=xsmt)
