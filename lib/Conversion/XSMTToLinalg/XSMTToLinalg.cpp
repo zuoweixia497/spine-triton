@@ -244,6 +244,28 @@ struct MMT4DBindFusionPattern : public OpRewritePattern<xsmt::BindOp> {
   }
 };
 
+struct MBarrierAllocLoopCheckPattern : public OpRewritePattern<xsmt_async::MBarrierAllocOp> {
+  MBarrierAllocLoopCheckPattern(MLIRContext *context)
+      : OpRewritePattern<xsmt_async::MBarrierAllocOp>(context) {}
+
+  LogicalResult matchAndRewrite(xsmt_async::MBarrierAllocOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Operation *currentParent = op->getParentOp();
+
+    while (currentParent) {
+      if (isa<LoopLikeOpInterface>(currentParent)) {
+        return op.emitOpError("smt.mbarrier inside a loop is NOT allowed. "
+                              "It must be allocated outside of loops.");
+      }
+      if (isa<FunctionOpInterface>(currentParent)) {
+        break;
+      }
+      currentParent = currentParent->getParentOp();
+    }
+    return failure();
+  }
+};
 
 struct DescriptorLoadPattern : public OpRewritePattern<DescriptorLoadOp> {
   DescriptorLoadPattern(MLIRContext *context)
@@ -1662,6 +1684,7 @@ struct InsertMBarrierReleasePattern : public mlir::OpRewritePattern<xsmt_async::
 void mlir::triton::TransposeEliminationConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<TransposeEliminationPattern>(patterns.getContext());
   patterns.add<MMT4DBindFusionPattern>(patterns.getContext());
+  patterns.add<MBarrierAllocLoopCheckPattern>(patterns.getContext());
 }
 
 void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns) {
