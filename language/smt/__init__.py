@@ -12,6 +12,8 @@ from .core import (
     barrier_arrive,
     barrier_wait,
     get_num_of_thread,
+    global_mbarrier,
+    barrier_set_expect,
 )
 
 __all__ = [
@@ -25,5 +27,7 @@ __all__ = [
     "barrier_arrive",
     "barrier_wait",
     "get_num_of_thread",
+    "global_mbarrier",
+    "barrier_set_expect",
 ]
 

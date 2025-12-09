@@ -307,4 +307,39 @@ def GetThreadOp : XSMT_Op<"get_num_of_thread", [Pure, MemoryEffects<[MemWrite]>]
   let assemblyFormat = "attr-dict";
 }
 
+
+def XSMT_GlobalMBarrierInitOp : XSMT_Op<"global_mbarrier_init", [MemoryEffects<[MemWrite]>]> {
+  let summary = "Create a global barrier.";
+
+  let description = [{
+
+  }];
+
+  let arguments = (ins I16:$id);
+
+  let results = (outs I64:$barrier);
+
+  let assemblyFormat = [{
+    $id attr-dict `:` type($barrier)
+  }];
+
+}
+
+def XSMT_BarrierSetEepectOp : XSMT_Op<"barrier_set_expect"> {
+  let summary = "Wait for barrier to reach expected version.";
+
+  let description = [{
+  }];
+
+  let arguments = (ins
+    I64:$barrier,
+    I16:$exp
+  );
+
+  let assemblyFormat = [{
+    $barrier `,` $exp attr-dict `:` type($barrier)
+  }];
+
+}
+
 #endif

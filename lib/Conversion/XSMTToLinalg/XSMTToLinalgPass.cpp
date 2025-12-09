@@ -87,7 +87,7 @@ public:
     RewritePatternSet patterns5(&getContext());
 
 
-    triton::TransposeEliminationConversionPatterns(patterns0);
+    triton::populateXSMTOptimizationAndValidationPatterns(patterns0);
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns0)))) {
       signalPassFailure();
     }

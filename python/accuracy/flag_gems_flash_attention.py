@@ -28,6 +28,7 @@ if __name__ == "__main__":
         .requires_grad_()
     )
     sm_scale = 0.5
+    is_causal=False
 
 
     torch_result = torch.nn.functional.scaled_dot_product_attention(
@@ -35,12 +36,12 @@ if __name__ == "__main__":
         k,
         v,
         scale=sm_scale,
-        is_causal=False,
+        is_causal=is_causal,
     )
 
 
     import flag_gems.runtime.backend._spacemit.ops as sp
-    flaggem_result = sp.flash_attention(q, k, v, sm_scale)
+    flaggem_result = sp.flash_attention(q, k, v, sm_scale, is_causal)
 
     print("flaggem_result", flaggem_result)
     print("torch_result", torch_result)

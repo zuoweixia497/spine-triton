@@ -101,9 +101,15 @@ void init_triton_xsmt_ir(py::module &&m) {
            })
       .def("create_get_num_of_thread", [](TritonOpBuilder &self) {
              self.create<xsmt::GetThreadOp>();
+           })
+      .def("create_global_mbarrier", [](TritonOpBuilder &self, Value &id) -> Value{
+             auto barrierType = self.getBuilder().getI64Type();
+             return self.create<xsmt::GlobalMBarrierInitOp>(barrierType, id);
+           })
+      .def("create_barrier_set_expect", [](TritonOpBuilder &self, Value &bar, Value &exp) {
+             self.create<xsmt::BarrierSetEepectOp>(bar, exp);
            });
 }
-
 void init_triton_spine_triton(py::module &&m) {
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {

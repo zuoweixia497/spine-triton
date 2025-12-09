@@ -154,3 +154,11 @@ def barrier_wait(bar, flag = tl.constexpr(0), expect_count = tl.constexpr(1), _s
 @builtin
 def get_num_of_thread(_semantic=None):
     return smt_semantic.get_num_of_thread(_semantic)
+
+@builtin
+def global_mbarrier(id, _semantic=None):
+    return smt_semantic.global_mbarrier(id, _semantic)
+
+@builtin
+def barrier_set_expect(bar, expect_count = tl.constexpr(1), _semantic=None):
+    return smt_semantic.barrier_set_expect(bar, expect_count, _semantic)

@@ -19,7 +19,7 @@ namespace triton {
 #define GEN_PASS_DECL
 #include "triton-shared/Conversion/XSMTToLinalg/Passes.h.inc"
 
-void TransposeEliminationConversionPatterns(RewritePatternSet &patterns);
+void populateXSMTOptimizationAndValidationPatterns(RewritePatternSet &patterns);
 void LoopParallelizationConversionPatterns(RewritePatternSet &patterns);
 void populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns);
 void ConvertMMT4DAddConversionPatterns(RewritePatternSet &patterns);

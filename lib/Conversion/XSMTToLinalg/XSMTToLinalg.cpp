@@ -91,6 +91,18 @@ Value createCeilDivUI(PatternRewriter &rewriter, Location loc, Value dividend, V
   return rewriter.create<arith::DivUIOp>(loc, numerator, divisorIndex);
 }
 
+inline bool isInsideLoop(mlir::Operation *op) {
+  mlir::Operation *parent = op->getParentOp();
+  while (parent) {
+    if (llvm::isa<mlir::scf::ForOp,
+                  mlir::scf::WhileOp,
+                  mlir::scf::ParallelOp>(parent)) {
+      return true;
+    }
+    parent = parent->getParentOp();
+  }
+  return false;
+}
 
 class TransposeEliminationPattern : public OpRewritePattern<linalg::TransposeOp> {
 public:
@@ -244,25 +256,52 @@ struct MMT4DBindFusionPattern : public OpRewritePattern<xsmt::BindOp> {
   }
 };
 
-struct MBarrierAllocLoopCheckPattern : public OpRewritePattern<xsmt_async::MBarrierAllocOp> {
-  MBarrierAllocLoopCheckPattern(MLIRContext *context)
-      : OpRewritePattern<xsmt_async::MBarrierAllocOp>(context) {}
+template <typename OpTy>
+struct MBarrierLoopCheckPattern : public OpRewritePattern<OpTy> {
+  using mlir::OpRewritePattern<OpTy>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(xsmt_async::MBarrierAllocOp op,
-                                PatternRewriter &rewriter) const override {
-
+  LogicalResult matchAndRewrite(OpTy op, PatternRewriter &rewriter) const override {
     Operation *currentParent = op->getParentOp();
 
     while (currentParent) {
-      if (isa<LoopLikeOpInterface>(currentParent)) {
-        return op.emitOpError("smt.mbarrier inside a loop is NOT allowed. "
-                              "It must be allocated outside of loops.");
+      if (isInsideLoop(op.getOperation())) {
+        return op.emitError()
+        << "'" << op->getName() << "' operation cannot be used inside a loop. ";
       }
       if (isa<FunctionOpInterface>(currentParent)) {
         break;
       }
       currentParent = currentParent->getParentOp();
     }
+    return failure();
+  }
+};
+
+template <typename OpTy>
+struct CheckGlobalMBarrierInLoopPattern : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpTy op, PatternRewriter &rewriter) const override {
+    Value barrier = op.getMbarrier();
+
+    Operation *definingOp = barrier.getDefiningOp();
+    if (!definingOp) {
+      return failure();
+    }
+
+    if (!llvm::isa<xsmt::GlobalMBarrierInitOp>(definingOp)) {
+      return failure();
+    }
+
+    if (!isInsideLoop(op.getOperation())) {
+      return failure();
+    }
+
+    op.emitError()
+        << "'" << op->getName() << "' operation with barrier defined by "
+        << "'xsmt.global_mbarrier_init' cannot be used inside a loop. "
+        << "Global barriers are not designed for loop-level synchronization.";
+
     return failure();
   }
 };
@@ -1681,10 +1720,13 @@ struct InsertMBarrierReleasePattern : public mlir::OpRewritePattern<xsmt_async::
 };
 
 
-void mlir::triton::TransposeEliminationConversionPatterns(RewritePatternSet &patterns) {
+void mlir::triton::populateXSMTOptimizationAndValidationPatterns(RewritePatternSet &patterns) {
   patterns.add<TransposeEliminationPattern>(patterns.getContext());
   patterns.add<MMT4DBindFusionPattern>(patterns.getContext());
-  patterns.add<MBarrierAllocLoopCheckPattern>(patterns.getContext());
+  patterns.add<MBarrierLoopCheckPattern<xsmt_async::MBarrierAllocOp>>(patterns.getContext());
+  patterns.add<MBarrierLoopCheckPattern<xsmt::GlobalMBarrierInitOp>>(patterns.getContext());
+  patterns.add<CheckGlobalMBarrierInLoopPattern<xsmt_async::MBarrierArriveOp>>(patterns.getContext());
+  patterns.add<CheckGlobalMBarrierInLoopPattern<xsmt_async::MBarrierWaitOp>>(patterns.getContext());
 }
 
 void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns) {

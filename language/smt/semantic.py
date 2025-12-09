@@ -209,3 +209,27 @@ def barrier_wait(bar: tl.tensor, flag, expect_count, _semantic=None):
 
 def get_num_of_thread(_semantic=None):
     _semantic.builder.create_get_num_of_thread()
+
+def global_mbarrier(id, _semantic=None) -> tl.tensor:
+    from triton.language.core import _unwrap_if_constexpr
+
+    id = _unwrap_if_constexpr(id)
+    semantic_inst = tl_semantic.TritonSemantic(_semantic.builder)
+    id_val = semantic_inst.to_tensor(id)
+    id_val = semantic_inst.cast(id_val, tl.int16)
+
+    bar_handle = _semantic.builder.create_global_mbarrier(id_val.handle)
+    return tl.tensor(bar_handle, tl.int64)
+
+def barrier_set_expect(bar: tl.tensor, expect_count, _semantic=None):
+    from triton.language.core import _unwrap_if_constexpr
+    expect_count = _unwrap_if_constexpr(expect_count)
+
+    semantic_inst = tl_semantic.TritonSemantic(_semantic.builder)
+    exp_tensor = semantic_inst.to_tensor(expect_count)
+    exp_tensor = semantic_inst.cast(exp_tensor, tl.int16)
+
+    _semantic.builder.create_barrier_set_expect(
+        bar.handle,
+        exp_tensor.handle
+    )
