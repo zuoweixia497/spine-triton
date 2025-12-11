@@ -300,3 +300,61 @@ def test_mbarrier(BLOCK_SIZE):
     assert torch.allclose(output, expected, rtol=1e-5, atol=1e-8), "Output doesn't match expected"
 
     print(f"\n✅ mbarrier simple test passed!")
+
+
+@pytest.mark.parametrize(
+    "BLOCK_SIZE",
+    [
+        (8),
+        (16),
+    ]
+)
+def test_global_mbarrier(BLOCK_SIZE):
+    def run_simple_test():
+        @triton.jit
+        def global_mbarrier_kernel(
+            input_ptr,
+            output_ptr,
+            N,
+            BLOCK_SIZE: tl.constexpr,
+        ):
+            pid = tl.program_id(0)
+            bar = smt.global_mbarrier(0)
+            smt.barrier_set_expect(bar, 2)
+
+            offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+            mask = offs < N
+            x = tl.load(input_ptr + offs, mask=mask, other=0.0)
+            x = x * 2.0
+            smt.barrier_arrive(bar)
+            smt.barrier_wait(bar, flag=1)
+
+            tl.store(output_ptr + offs, x, mask=mask)
+
+        torch.manual_seed(42)
+        device = "cpu"
+        N = BLOCK_SIZE * 2
+        input_data = torch.randn((N,), dtype=torch.float32, device=device)
+        output = torch.zeros((N,), dtype=torch.float32, device=device)
+
+        grid = (triton.cdiv(N, BLOCK_SIZE),)
+
+        global_mbarrier_kernel[grid](
+            input_data, output,
+            N,
+            BLOCK_SIZE=BLOCK_SIZE,
+        )
+
+        return output, input_data
+
+    output, input_data = run_simple_test()
+
+    print("\n=== global_mbarrier and barrier_set_expect test ===")
+    print("output:", output)
+
+    expected = input_data * 2.0
+
+    assert torch.allclose(output, expected, rtol=1e-5, atol=1e-8), \
+        "Output doesn't match expected"
+
+    print(f"\n✅ global_mbarrier and barrier_set_expect test passed! (BLOCK_SIZE={BLOCK_SIZE})")
