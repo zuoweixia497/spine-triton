@@ -46,31 +46,28 @@ struct ConvertFillI1ToI8 : public OpRewritePattern<linalg::FillOp> {
     SmallVector<Value> dynSizes;
     for (int64_t i = 0; i < outputType.getRank(); ++i) {
       if (outputType.isDynamicDim(i)) {
-        dynSizes.push_back(rewriter.create<tensor::DimOp>(loc, output, i));
+        dynSizes.push_back(tensor::DimOp::create(rewriter, loc, output, i));
       }
     }
 
     Type i8Type = rewriter.getI8Type();
     auto tensorI8Type = RankedTensorType::get(outputType.getShape(), i8Type);
     Value emptyI8 =
-        rewriter.create<tensor::EmptyOp>(loc, tensorI8Type, dynSizes);
+        tensor::EmptyOp::create(rewriter, loc, tensorI8Type, dynSizes);
 
-    Value extendedInput = rewriter.create<arith::ExtUIOp>(loc, i8Type, input);
+    Value extendedInput = arith::ExtUIOp::create(rewriter, loc, i8Type, input);
 
-    auto newFillOp = rewriter.create<linalg::FillOp>(
-        loc, ValueRange{extendedInput}, ValueRange{emptyI8});
+    auto newFillOp = linalg::FillOp::create(rewriter, loc, ValueRange{extendedInput}, ValueRange{emptyI8});
     Value filledTensor = newFillOp.getResult(0);
 
-    Value emptyI1 = rewriter.create<tensor::EmptyOp>(loc, outputType, dynSizes);
+    Value emptyI1 = tensor::EmptyOp::create(rewriter, loc, outputType, dynSizes);
 
-    Value zeroI8 = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getIntegerAttr(i8Type, 0));
+    Value zeroI8 = arith::ConstantOp::create(rewriter, loc, rewriter.getIntegerAttr(i8Type, 0));
 
     AffineMap identityMap = AffineMap::getMultiDimIdentityMap(
         outputType.getRank(), rewriter.getContext());
 
-    auto genericOp = rewriter.create<linalg::GenericOp>(
-        loc,
+    auto genericOp = linalg::GenericOp::create(rewriter, loc,
         /*resultTensorTypes=*/TypeRange{outputType},
         /*inputs=*/ValueRange{filledTensor},
         /*outputs=*/ValueRange{emptyI1},
@@ -79,9 +76,9 @@ struct ConvertFillI1ToI8 : public OpRewritePattern<linalg::FillOp> {
         SmallVector<utils::IteratorType>(outputType.getRank(),
                                          utils::IteratorType::parallel),
         [&](OpBuilder &b, Location loc, ValueRange args) {
-          Value cmp = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne,
+          Value cmp = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::ne,
                                               args[0], zeroI8);
-          b.create<linalg::YieldOp>(loc, cmp);
+          linalg::YieldOp::create(b, loc, cmp);
         });
 
     rewriter.replaceOp(fillOp, genericOp.getResult(0));
@@ -208,7 +205,7 @@ private:
 
     if (changed) {
       OpBuilder builder(yieldOp);
-      builder.create<scf::YieldOp>(yieldOp.getLoc(), newYieldValues);
+      scf::YieldOp::create(builder, yieldOp.getLoc(), newYieldValues);
       yieldOp.erase();
     }
   }

@@ -541,3 +541,6 @@ class CPUDriver(DriverBase):
 
     def clear_cache(self, cache):
         cache.zero_()
+
+    def map_python_to_cpp_type(self, ty: str) -> str:
+        return _ty_to_cpp(ty)

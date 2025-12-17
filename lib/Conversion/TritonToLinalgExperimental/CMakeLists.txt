@@ -27,9 +27,10 @@ add_triton_library(TritonToLinalgExperimental
 
   LINK_LIBS PUBLIC
   TritonTilingExtIR
+  MLIRXSMTAsyncDialect
+  MLIRIR
   MLIRArithDialect
   MLIRDialectUtils
-  MLIRIR
   MLIRMathDialect
   MLIRPass
   MLIRTensorDialect
@@ -49,5 +50,4 @@ add_triton_library(TritonToLinalgExperimental
   UnstructuredToMemref
   AddTargetDescription
   XSMTToLinalg
-  MLIRXSMTAsyncDialect
 )

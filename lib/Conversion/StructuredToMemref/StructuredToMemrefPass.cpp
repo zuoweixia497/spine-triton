@@ -53,14 +53,14 @@ public:
                                  UnrankedMemRefType resultType,
                                  ValueRange inputs,
                                  Location loc) -> Value {
-      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
           .getResult(0);
     });
 
     addSourceMaterialization([&](OpBuilder &builder, Type resultType,
                                  ValueRange inputs,
                                  Location loc) -> Value {
-      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
           .getResult(0);
     });
   }
@@ -127,10 +127,9 @@ public:
         Value memref = toTensor.getBuffer();
 
         // Create load operation to get the scalar value
-        Value loaded = builder.create<memref::LoadOp>(
-            toTensor.getLoc(),
+        Value loaded = memref::LoadOp::create(builder, toTensor.getLoc(),
             memref,
-            ValueRange{builder.create<arith::ConstantIndexOp>(toTensor.getLoc(), 0)}
+            ValueRange{arith::ConstantIndexOp::create(builder, toTensor.getLoc(), 0)}
         );
 
         // Prepare new input list:
@@ -141,8 +140,7 @@ public:
             loaded
         };
 
-        auto newPowf = builder.create<linalg::PowFOp>(
-          powfOp.getLoc(),
+        auto newPowf = linalg::PowFOp::create(builder, powfOp.getLoc(),
           powfOp.getResultTypes(),
           newInputs,
           powfOp.getOutputs()

@@ -1,20 +1,66 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a534cf430..0adf3e3aa 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -265,6 +265,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
+         LLVMPowerPCAsmParser
+         LLVMPowerPCCodeGen
+       )
++  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64")
++      list(APPEND TRITON_LIBRARIES
++        LLVMRISCVAsmParser
++        LLVMRISCVCodeGen
++      )
+   else()
+     message(FATAL_ERROR "LLVM codegen/ASM parser libs: This HW architecture (${CMAKE_SYSTEM_PROCESSOR}) is not configured in cmake lib dependencies.")
+   endif()
+@@ -300,18 +305,18 @@ if(TRITON_BUILD_PYTHON_MODULE)
+   endif()
+   target_link_options(triton PRIVATE ${LLVM_LDFLAGS})
+ 
+-  if (NOT DEFINED LLVM_SYSPATH)
+-      message(FATAL_ERROR "LLVM_SYSPATH must be set.")
+-  endif()
++  # if (NOT DEFINED LLVM_SYSPATH)
++  #     message(FATAL_ERROR "LLVM_SYSPATH must be set.")
++  # endif()
+ 
+-  if (NOT DEFINED TRITON_WHEEL_DIR)
+-      message(FATAL_ERROR "TRITON_WHEEL_DIR must be set.")
+-  endif()
++  # if (NOT DEFINED TRITON_WHEEL_DIR)
++  #     message(FATAL_ERROR "TRITON_WHEEL_DIR must be set.")
++  # endif()
+ 
+-  configure_file(
+-    "${LLVM_SYSPATH}/bin/FileCheck"
+-    "${TRITON_WHEEL_DIR}/FileCheck"
+-    COPYONLY)
++  # configure_file(
++  #   "${LLVM_SYSPATH}/bin/FileCheck"
++  #   "${TRITON_WHEEL_DIR}/FileCheck"
++  #   COPYONLY)
+ 
+ endif()
+ 
 diff --git a/python/src/ir.cc b/python/src/ir.cc
 old mode 100644
 new mode 100755
-index 387f73d1..82dac0d0
+index d4e0619cc..49ddf287e
 --- a/python/src/ir.cc
 +++ b/python/src/ir.cc
-@@ -38,8 +38,8 @@
+@@ -40,7 +40,9 @@
+ #include "llvm/Support/FileSystem.h"
  #include "llvm/Support/SourceMgr.h"
  
- #include "third_party/proton/dialect/include/Dialect/Proton/IR/Dialect.h"
-+#include "third_party/spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
- 
 -namespace {
++#include "third_party/proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
++#include "third_party/spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
++
  
  namespace py = pybind11;
  using namespace mlir;
-@@ -47,6 +47,12 @@ using namespace triton;
+@@ -48,6 +50,12 @@ using namespace triton;
  namespace tt = triton;
  namespace ttg = triton::gpu;
  namespace ttng = triton::nvidia_gpu;
@@ -27,7 +73,7 @@ index 387f73d1..82dac0d0
  
  llvm::raw_fd_ostream &mlir_dumps() {
    std::error_code EC;
-@@ -190,13 +196,13 @@ py::list getTensorDescMetadata(ModuleOp &mod) {
+@@ -252,13 +260,13 @@ py::list getTensorDescMetadata(ModuleOp &mod) {
    }
    return result;
  }
@@ -43,7 +89,7 @@ index 387f73d1..82dac0d0
  void init_triton_ir(py::module &&m) {
    using ret = py::return_value_policy;
    using namespace pybind11::literals;
-@@ -458,6 +464,7 @@ void init_triton_ir(py::module &&m) {
+@@ -540,6 +548,7 @@ void init_triton_ir(py::module &&m) {
    py::class_<IntegerAttr, Attribute>(m, "integer_attr", py::module_local());
    py::class_<BoolAttr, Attribute>(m, "bool_attr", py::module_local());
    py::class_<UnitAttr, Attribute>(m, "unit_attr", py::module_local());
@@ -51,7 +97,7 @@ index 387f73d1..82dac0d0
  
    // Ops
    py::class_<OpState>(m, "OpState", py::module_local())
-@@ -711,9 +718,13 @@ void init_triton_ir(py::module &&m) {
+@@ -805,9 +814,12 @@ void init_triton_ir(py::module &&m) {
  
    py::class_<OpBuilder::InsertPoint>(m, "InsertPoint", py::module_local());
  
@@ -64,14 +110,13 @@ index 387f73d1..82dac0d0
 +      m, "builder", py::module_local(), py::dynamic_attr());
 +  builderClassPtr = &builderClass;
 +  builderClass.def(py::init<MLIRContext *>())
-+      .def("get_op_builder", &TritonOpBuilder::getBuilder, ret::reference)
+       .def("get_op_builder", &TritonOpBuilder::getBuilder, ret::reference)
        // getters
        .def("create_module",
-            [](TritonOpBuilder &self) -> ModuleOp {
-@@ -1717,6 +1728,11 @@ void init_triton_ir(py::module &&m) {
-       .def("create_proton_record",
-            [](TritonOpBuilder &self, bool isStart, int32_t regionId) -> void {
-              self.create<mlir::triton::proton::RecordOp>(isStart, regionId);
+@@ -1850,6 +1862,11 @@ void init_triton_ir(py::module &&m) {
+              return self.create<MakeTensorDescOp>(base, shape, strides,
+                                                   tensorShape, isSignedInteger,
+                                                   paddingOption);
 +           })
 +      .def("create_smt_bind",
 +           [](TritonOpBuilder &self, Value &dest,
@@ -83,7 +128,7 @@ index 387f73d1..82dac0d0
 diff --git a/python/src/ir.h b/python/src/ir.h
 old mode 100644
 new mode 100755
-index b27c41a7..2e4d3b31
+index 499dd9e8a..9c863e6fa
 --- a/python/src/ir.h
 +++ b/python/src/ir.h
 @@ -2,6 +2,9 @@
@@ -96,9 +141,9 @@ index b27c41a7..2e4d3b31
  
  // A custom op builder that keeps track of the last location
  class TritonOpBuilder {
-@@ -88,3 +91,7 @@ private:
-   bool lineInfoEnabled =
-       !mlir::triton::tools::getBoolEnv("TRITON_DISABLE_LINE_INFO");
+@@ -98,3 +101,7 @@ private:
+     return builder->getUnknownLoc();
+   }
  };
 +
 +namespace ir {
@@ -108,15 +153,17 @@ index b27c41a7..2e4d3b31
 diff --git a/python/triton/compiler/code_generator.py b/python/triton/compiler/code_generator.py
 old mode 100644
 new mode 100755
-index 1dd7b4ed..68e4eb1c
+index 3ffb90457..39b4b0984
 --- a/python/triton/compiler/code_generator.py
 +++ b/python/triton/compiler/code_generator.py
-@@ -1036,8 +1036,12 @@ class CodeGenerator(ast.NodeVisitor):
-         assert isinstance(node.ctx, ast.Store)
-         lhs = self.visit(node.value)
-         slices = self.visit(node.slice)
--        assert isinstance(lhs, language.tuple)
--        lhs.__setitem__(slices, value)
+@@ -1150,7 +1150,15 @@ class CodeGenerator(ast.NodeVisitor):
+         return lhs[slices]
+ 
+     def visit_Subscript_Store(self, node, value):
+-        raise NotImplementedError("__setitem__ is not supported in triton")
++        assert isinstance(node.ctx, ast.Store)
++        lhs = self.visit(node.value)
++        slices = self.visit(node.slice)
 +        if isinstance(lhs, language.tensor):
 +            lhs.__setitem__(slices, value, _semantic=self.semantic)
 +        elif isinstance(lhs, language.tuple):
@@ -126,39 +173,43 @@ index 1dd7b4ed..68e4eb1c
  
      def visit_Subscript(self, node):
          return self.visit_Subscript_Load(node)
-@@ -1063,7 +1067,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1176,8 +1184,8 @@ class CodeGenerator(ast.NodeVisitor):
          disallow_acc_multi_buffer = False
          flatten = False
          warp_specialize = False
+-        disable_licm = False
 -        if IteratorClass is language.range:
 +        bind_sub_block = None
 +        if IteratorClass in [language.range, language.extra.smt.parallel]:
              iterator = IteratorClass(*iter_args, **iter_kwargs)
              # visit iterator arguments
              # note: only `range` iterator is supported now
-@@ -1076,6 +1081,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1190,7 +1198,8 @@ class CodeGenerator(ast.NodeVisitor):
              disallow_acc_multi_buffer = iterator.disallow_acc_multi_buffer
              flatten = iterator.flatten
              warp_specialize = iterator.warp_specialize
+-            disable_licm = iterator.disable_licm
 +            if (IteratorClass is language.extra.smt.parallel):
 +                bind_sub_block = iterator.bind_sub_block
          elif IteratorClass is range:
              # visit iterator arguments
              # note: only `range` iterator is supported now
-@@ -1132,6 +1139,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1253,8 +1262,8 @@ class CodeGenerator(ast.NodeVisitor):
                  for_op.set_attr("tt.flatten", self.builder.get_unit_attr())
              if warp_specialize:
                  for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
+-            if disable_licm:
+-                for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
 +            if (bind_sub_block is not None) and bind_sub_block:
 +                for_op.set_attr("bind_sub_block", self.builder.get_bool_attr(bind_sub_block))
  
              self.scf_stack.append(node)
              for_op_body = for_op.get_body(0)
 diff --git a/python/triton/language/core.py b/python/triton/language/core.py
-index 0f6030c1..cb3bd574 100644
+index bf01d5bc1..27d17df5e 100644
 --- a/python/triton/language/core.py
 +++ b/python/triton/language/core.py
-@@ -1118,6 +1118,12 @@ class tensor(base_value):
+@@ -1111,6 +1111,12 @@ class tensor(base_value):
                  raise ValueError(f"unsupported tensor index: {sl}")
          return ret
  
@@ -172,22 +223,20 @@ index 0f6030c1..cb3bd574 100644
      def T(self):
          """Transposes a 2D tensor."""
 diff --git a/python/triton/language/semantic.py b/python/triton/language/semantic.py
-index 0da22ade..9762df9c 100644
+index bd48990d6..7f734d79a 100644
 --- a/python/triton/language/semantic.py
 +++ b/python/triton/language/semantic.py
-@@ -1884,3 +1884,5 @@ class TritonSemantic(Generic[TensorTy]):
-         handle = self.builder.create_make_tensor_descriptor(base_handle, [s.handle for s in shape],
-                                                             [s.handle for s in strides], block_shape, is_signed_int)
+@@ -1973,3 +1973,5 @@ class TritonSemantic(Generic[TensorTy]):
+                                                             [s.handle for s in strides], block_shape, is_signed_int,
+                                                             padding)
          return tl.tensor_descriptor(handle, shape, strides, type)
 +    def smt_bind(self, dest: tl.tensor, src: tl.tensor):
 +        return self.tensor(self.builder.create_smt_bind(src.handle, dest.handle), dest.type)
 diff --git a/setup.py b/setup.py
-old mode 100644
-new mode 100755
-index 345986fa..2d9da394
+index fccb4ef17..883fb515b 100644
 --- a/setup.py
 +++ b/setup.py
-@@ -55,6 +55,8 @@ class Backend:
+@@ -60,6 +60,8 @@ class Backend:
      tools_dir: Optional[str]
      install_dir: str
      is_external: bool
@@ -196,7 +245,7 @@ index 345986fa..2d9da394
  
  
  class BackendInstaller:
-@@ -88,13 +90,40 @@ class BackendInstaller:
+@@ -94,13 +96,40 @@ class BackendInstaller:
          if not os.path.exists(tools_dir):
              tools_dir = None
  
@@ -238,10 +287,20 @@ index 345986fa..2d9da394
  
      # Copy all in-tree backends under triton/third_party.
      @staticmethod
-@@ -520,6 +549,14 @@ class CMakeBuild(build_ext):
+@@ -446,7 +475,8 @@ class CMakeBuild(build_ext):
+         lit_dir = shutil.which('lit')
+         ninja_dir = shutil.which('ninja')
+         # lit is used by the test suite
+-        thirdparty_cmake_args = get_thirdparty_packages([get_llvm_package_info()])
++        thirdparty_cmake_args = []
++        # thirdparty_cmake_args = get_thirdparty_packages([get_llvm_package_info()])
+         thirdparty_cmake_args += self.get_pybind11_cmake_args()
+         extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.path)))
+         wheeldir = os.path.dirname(extdir)
+@@ -536,9 +566,18 @@ class CMakeBuild(build_ext):
+         update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")
          subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
          subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
- 
 +        for backend in backends:
 +            if backend.name == "spine_triton":
 +                spine_triton_opt_path = os.path.join(cmake_dir, "third_party", "spine_triton", "tools", "spine-triton-opt", "spine-triton-opt")
@@ -251,9 +310,13 @@ index 345986fa..2d9da394
 +                )
 +
  
+ 
  def download_and_copy_dependencies():
-     return
-@@ -643,6 +680,12 @@ def get_packages():
++    return
+     nvidia_version_path = os.path.join(get_base_dir(), "cmake", "nvidia-toolchain-version.json")
+     with open(nvidia_version_path, "r") as nvidia_version_file:
+         # parse this json file to get the version of the nvidia toolchain
+@@ -672,6 +711,12 @@ def get_packages():
              for x in os.listdir(backend.tools_dir):
                  yield f"triton.tools.extra.{x}"
  
@@ -266,21 +329,21 @@ index 345986fa..2d9da394
      if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
          yield "triton.profiler"
  
-@@ -766,7 +809,7 @@ def get_git_version_suffix():
+@@ -808,7 +853,7 @@ def get_triton_version_suffix():
  
  
  # keep it separate for easy substitution
--TRITON_VERSION = "3.3.0" + get_git_version_suffix() + os.environ.get("TRITON_WHEEL_VERSION_SUFFIX", "")
+-TRITON_VERSION = "3.6.0" + get_triton_version_suffix()
 +TRITON_VERSION = "3.3.0" + "+" + os.environ.get("SPINE_TRITON_VERSION_NUMBER", "")
  
  # Dynamically define supported Python versions and classifiers
- MIN_PYTHON = (3, 9)
-@@ -790,7 +833,7 @@ setup(
+ MIN_PYTHON = (3, 10)
+@@ -832,7 +877,7 @@ setup(
      author="Philippe Tillet",
      author_email="phil@openai.com",
      description="A language and compiler for custom Deep Learning operations",
 -    long_description="",
 +    long_description="text/markdown",
      install_requires=[
-         "setuptools>=40.8.0",
          "importlib-metadata; python_version < '3.10'",
+     ],

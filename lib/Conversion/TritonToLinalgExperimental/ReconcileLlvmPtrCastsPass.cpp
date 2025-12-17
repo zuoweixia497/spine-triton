@@ -72,7 +72,7 @@ struct PromoteMemrefToPtrArg : public OpRewritePattern<func::FuncOp> {
 
     Location loc = funcOp.getLoc();
     func::FuncOp newFunc =
-        rewriter.create<func::FuncOp>(loc, funcOp.getName(), newFuncType);
+        func::FuncOp::create(rewriter, loc, funcOp.getName(), newFuncType);
 
     newFunc->setAttrs(funcOp->getAttrs());
 

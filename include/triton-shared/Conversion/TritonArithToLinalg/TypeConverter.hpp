@@ -66,7 +66,7 @@ TritonLinalgTypeConverter::TritonLinalgTypeConverter() {
 
   auto addUnrealizedCast = [](OpBuilder &builder, Type type, ValueRange inputs,
                               Location loc) {
-    auto cast = builder.create<UnrealizedConversionCastOp>(loc, type, inputs);
+    auto cast = UnrealizedConversionCastOp::create(builder, loc, type, inputs);
     return cast.getResult(0);
   };
   addSourceMaterialization(addUnrealizedCast);

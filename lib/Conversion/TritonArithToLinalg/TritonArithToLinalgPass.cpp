@@ -227,7 +227,7 @@ public:
         func.getAllArgAttrs(argAttrs);
         func.getAllResultAttrs(resAttrs);
 
-        auto funcFunc = builder.create<func::FuncOp>(func.getLoc(), name, type);
+        auto funcFunc = func::FuncOp::create(builder, func.getLoc(), name, type);
         funcFunc.setAllArgAttrs(argAttrs);
         funcFunc.setAllResultAttrs(resAttrs);
 
@@ -244,7 +244,7 @@ public:
           // considered terminators.
           if (isa<triton::ReturnOp>(term)) {
             builder.setInsertionPoint(term);
-            builder.create<func::ReturnOp>(func.getLoc(), term->getOperands());
+            func::ReturnOp::create(builder, func.getLoc(), term->getOperands());
             term->erase();
           }
         }
@@ -286,8 +286,7 @@ public:
           if (!modified) return;
 
           builder.setInsertionPoint(genericOp);
-          auto newGenericOp = builder.create<linalg::GenericOp>(
-              genericOp.getLoc(),
+          auto newGenericOp = linalg::GenericOp::create(builder, genericOp.getLoc(),
               resultTypes,
               inputs,
               outputs,
@@ -302,8 +301,7 @@ public:
 
           newGenericOp.getRegion().walk([&](linalg::YieldOp yieldOp) {
               builder.setInsertionPoint(yieldOp);
-              auto newYield = builder.create<linalg::YieldOp>(
-                  yieldOp.getLoc(), yieldOp.getOperands());
+              auto newYield = linalg::YieldOp::create(builder, yieldOp.getLoc(), yieldOp.getOperands());
               yieldOp->replaceAllUsesWith(newYield);
               yieldOp->erase();
           });

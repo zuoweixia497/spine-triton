@@ -232,6 +232,8 @@ class CPUBackend(BaseBackend):
         super().__init__(target)
 
     def parse_options(self, opts) -> Any:
+        if "instrumentation_mode" in opts:
+            opts.pop("instrumentation_mode")
         args = {"arch": self.target.arch}
         args.update(
             {k: opts[k] for k in CPUOptions.__dataclass_fields__.keys() if k in opts}
@@ -272,7 +274,7 @@ class CPUBackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_licm(pm)
         passes.common.add_symbol_dce(pm)
-        pm.run(mod)
+        pm.run(mod, "make_ttir")
         num_threads = metadata['target'].num_threads
         attrs = []
         attrs.append(num_threads)

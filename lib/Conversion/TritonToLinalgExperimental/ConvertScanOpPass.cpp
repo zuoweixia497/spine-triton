@@ -103,12 +103,12 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
       SmallVector<Value> subInputs(inputs.size());
       std::transform(
           inputs.begin(), inputs.end(), subInputs.begin(), [&](auto val) {
-            return rewriter.create<vector::ExtractOp>(loc, val, indices);
+            return vector::ExtractOp::create(rewriter, loc, val, indices);
           });
 
       auto resElems = lower1DInput(subInputs, op, rewriter);
       for (size_t i = 0; i < res.size(); ++i) {
-        res[i] = rewriter.create<vector::InsertOp>(loc, resElems[i], res[i],
+        res[i] = vector::InsertOp::create(rewriter, loc, resElems[i], res[i],
                                                    indices);
       }
     }
@@ -147,12 +147,12 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
       SmallVector<Value> subInputs(inputs.size());
       std::transform(
           inputs.begin(), inputs.end(), subInputs.begin(), [&](auto val) {
-            return rewriter.create<vector::ExtractOp>(loc, val, indices);
+            return vector::ExtractOp::create(rewriter, loc, val, indices);
           });
       auto resVecs = lowerLeadingDimension(subInputs, op, rewriter);
       for (size_t i = 0; i < res.size(); ++i) {
         res[i] =
-            rewriter.create<vector::InsertOp>(loc, resVecs[i], res[i], indices);
+            vector::InsertOp::create(rewriter, loc, resVecs[i], res[i], indices);
       }
     }
 
@@ -221,8 +221,7 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
       if (!res) {
         auto ip = rewriter.saveInsertionPoint();
         rewriter.setInsertionPointAfterValue(val);
-        res = rewriter.create<vector::SplatOp>(
-            val.getLoc(), VectorType::get(shape, val.getType()), val);
+        res = tensor::SplatOp::create(rewriter, val.getLoc(), VectorType::get(shape, val.getType()), val);
         invariantsMap.map(val, res);
         rewriter.restoreInsertionPoint(ip);
       }
@@ -236,8 +235,7 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
     // Initialize results to zero values.
     SmallVector<Value> res;
     for (auto ty : resTypes) {
-      res.push_back(rewriter.create<arith::ConstantOp>(
-          loc, rewriter.getZeroAttr(getTypeConverter()->convertType(ty))));
+      res.push_back(arith::ConstantOp::create(rewriter, loc, rewriter.getZeroAttr(getTypeConverter()->convertType(ty))));
     }
     return res;
   }
@@ -251,8 +249,7 @@ struct ReduceScanOpConversionBase : public OpConversionPattern<OpT> {
     SmallVector<int64_t, 1> dummyShape({1});
     for (auto val : inputs) {
       auto ty = cast<VectorType>(val.getType());
-      shuffleDummies.push_back(rewriter.create<arith::ConstantOp>(
-          loc,
+      shuffleDummies.push_back(arith::ConstantOp::create(rewriter, loc,
           rewriter.getZeroAttr(ty.cloneWith(dummyShape, ty.getElementType()))));
     }
     return shuffleDummies;
@@ -284,7 +281,7 @@ TritonToTritonLinalgTypeConverter::TritonToTritonLinalgTypeConverter() {
   // here for users.
   addSourceMaterialization([&](OpBuilder &builder, Type type, ValueRange inputs,
                                Location loc) ->mlir::Value {
-    return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
+    return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
         .getResult(0);
   });
 
@@ -292,7 +289,7 @@ TritonToTritonLinalgTypeConverter::TritonToTritonLinalgTypeConverter() {
   addTargetMaterialization([&](OpBuilder &builder, Type type, ValueRange inputs,
                                Location loc) -> mlir::Value {
     if (isa<VectorType>(type))
-      return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
           .getResult(0);
     llvm_unreachable("Unexpected target materizalization");
   });
@@ -349,8 +346,7 @@ struct ScanOpConversion
       }
       SmallVector<Value> shuffledInput;
       for (auto [val, dummy] : llvm::zip(res, dummies)) {
-        shuffledInput.push_back(rewriter.create<vector::ShuffleOp>(
-            loc, val, dummy, shuffleIndices));
+        shuffledInput.push_back(vector::ShuffleOp::create(rewriter, loc, val, dummy, shuffleIndices));
       }
 
       auto newRes = accumulate(res, shuffledInput, combineOp, rewriter);
@@ -363,8 +359,7 @@ struct ScanOpConversion
       } else {
         std::fill(maskVals.begin(), maskVals.begin() + stride, false);
       }
-      Value mask = rewriter.create<arith::ConstantOp>(
-          loc, maskTy, rewriter.getBoolVectorAttr(maskVals));
+      Value mask = arith::ConstantOp::create(rewriter, loc, maskTy, rewriter.getBoolVectorAttr(maskVals));
       for (size_t i = 0; i < res.size(); ++i) {
         res[i] = vector::selectPassthru(rewriter, mask, newRes[i], res[i]);
       }
@@ -394,13 +389,13 @@ struct ScanOpConversion
       SmallVector<Value> subInputs(inputs.size());
       std::transform(inputs.begin(), inputs.end(), subInputs.begin(),
                      [&](auto val) {
-                       return rewriter.create<vector::ExtractOp>(loc, val, idx);
+                       return vector::ExtractOp::create(rewriter, loc, val, idx);
                      });
 
       acc = accumulate(subInputs, acc, combineOp, rewriter);
 
       for (size_t i = 0; i < res.size(); ++i) {
-        res[i] = rewriter.create<vector::InsertOp>(loc, acc[i], res[i], idx);
+        res[i] = vector::InsertOp::create(rewriter, loc, acc[i], res[i], idx);
       }
     }
     return res;
@@ -435,8 +430,7 @@ public:
           tensorType.getShape(),
           tensorType.getElementType()
       );
-      memref = rewriter.create<bufferization::ToBufferOp>(
-          loc, memrefType, input);
+      memref = bufferization::ToBufferOp::create(rewriter, loc, memrefType, input);
     }
 
     SmallVector<Value> indices;
@@ -444,12 +438,11 @@ public:
     indices.reserve(shape.size());
     for (int64_t dim : shape) {
       (void)dim;
-      indices.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
+      indices.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
     }
 
     Attribute zeroAttr = rewriter.getZeroAttr(tensorType.getElementType());
-    Value padding = rewriter.create<arith::ConstantOp>(
-        loc,
+    Value padding = arith::ConstantOp::create(rewriter, loc,
         tensorType.getElementType(),
         cast<TypedAttr>(zeroAttr)
     );
@@ -485,22 +478,18 @@ public:
     Location loc = op.getLoc();
     MemRefType memRefType = MemRefType::get(vectorType.getShape(),
                                             vectorType.getElementType());
-    Value alloc = rewriter.create<memref::AllocOp>(loc, memRefType);
+    Value alloc = memref::AllocOp::create(rewriter, loc, memRefType);
 
     SmallVector<Value> indices;
     for (int64_t dim : vectorType.getShape()) {
       (void)dim;
-      indices.push_back(rewriter.create<arith::ConstantIndexOp>(loc, 0));
+      indices.push_back(arith::ConstantIndexOp::create(rewriter, loc, 0));
     }
 
-    rewriter.create<vector::TransferWriteOp>(
-        loc, input, alloc, ValueRange{indices}
-    );
+    vector::TransferWriteOp::create(rewriter, loc, input, alloc, ValueRange{indices});
 
-    auto toTensor = rewriter.create<bufferization::ToTensorOp>(
-        loc, tensorType, alloc,
-        /*restrict=*/true, /*writable=*/true
-    );
+    auto toTensor = bufferization::ToTensorOp::create(rewriter, loc, tensorType, alloc,
+        /*restrict=*/true, /*writable=*/true);
 
     rewriter.replaceOp(op, toTensor.getResult());
     return success();

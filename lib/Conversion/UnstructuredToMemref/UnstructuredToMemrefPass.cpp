@@ -53,7 +53,7 @@ public:
     addTargetMaterialization([&](OpBuilder &builder,
                                  UnrankedMemRefType resultType,
                                  ValueRange inputs, Location loc) -> Value {
-      return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
           .getResult(0);
     });
   }
@@ -89,11 +89,9 @@ struct ScalarLoadConverter : public OpConversionPattern<tts::GatherOp> {
     auto basePtr = adaptor.getPtr();
     auto offset = adaptor.getOffset();
 
-    Value loadIndex = rewriter.create<arith::IndexCastOp>(
-        loc, rewriter.getIndexType(), offset);
+    Value loadIndex = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), offset);
 
-    auto memref = rewriter.create<memref::ReinterpretCastOp>(
-        loc,
+    auto memref = memref::ReinterpretCastOp::create(rewriter, loc,
         getMemrefTypeForScalarPtr(
             cast<triton::PointerType>(gatherOp.getPtr().getType()),
             rewriter.getContext()),
@@ -103,8 +101,7 @@ struct ScalarLoadConverter : public OpConversionPattern<tts::GatherOp> {
 
     auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
 
-    auto scalarLoadOp = rewriter.create<affine::AffineLoadOp>(
-        loc, memref, zeroMap, std::nullopt);
+    auto scalarLoadOp = affine::AffineLoadOp::create(rewriter, loc, memref, zeroMap, ValueRange{});
 
     rewriter.replaceOp(gatherOp, scalarLoadOp.getResult());
 
@@ -134,11 +131,9 @@ struct ScalarStoreConverter : public OpConversionPattern<tts::ScatterOp> {
     auto basePtr = adaptor.getPtr();
     auto offset = adaptor.getOffset();
 
-    Value storeIndex = rewriter.create<arith::IndexCastOp>(
-        loc, rewriter.getIndexType(), offset);
+    Value storeIndex = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), offset);
 
-    auto memref = rewriter.create<memref::ReinterpretCastOp>(
-        loc,
+    auto memref = memref::ReinterpretCastOp::create(rewriter, loc,
         getMemrefTypeForScalarPtr(
             cast<triton::PointerType>(scatterOp.getPtr().getType()),
             rewriter.getContext()),
@@ -149,8 +144,8 @@ struct ScalarStoreConverter : public OpConversionPattern<tts::ScatterOp> {
     auto storeVal = scatterOp.getValue();
     auto zeroMap = AffineMap::getConstantMap(0, rewriter.getContext());
 
-    rewriter.create<affine::AffineStoreOp>(loc, storeVal, memref, zeroMap,
-                                           std::nullopt);
+    affine::AffineStoreOp::create(rewriter, loc, storeVal, memref, zeroMap,
+                                           ValueRange{});
     rewriter.eraseOp(scatterOp);
 
     return success();
@@ -186,17 +181,14 @@ struct GatherConverter : public OpConversionPattern<tts::GatherOp> {
 
     // Treat the base pointer (memref) as 1D because the offsets are all
     // relative to a single base pointer (already collapsed).
-    auto baseMemref = rewriter
-                          .create<memref::CastOp>(
+    auto baseMemref = memref::CastOp::create(rewriter,
                               loc,
                               MemRefType::get({ShapedType::kDynamic},
                                               resultType.getElementType()),
                               ptr)
                           .getResult();
 
-    auto baseTensor =
-        rewriter
-            .create<bufferization::ToTensorOp>(
+    auto baseTensor = bufferization::ToTensorOp::create(rewriter,
                 loc,
                 RankedTensorType::get(
                     SmallVector<int64_t>(1, ShapedType::kDynamic),
@@ -213,8 +205,7 @@ struct GatherConverter : public OpConversionPattern<tts::GatherOp> {
       inputs.push_back(gatherOp.getMask());
     }
 
-    auto emptyTensor = rewriter
-                           .create<tensor::EmptyOp>(loc, resultType.getShape(),
+    auto emptyTensor = tensor::EmptyOp::create(rewriter, loc, resultType.getShape(),
                                                     resultType.getElementType())
                            .getResult();
 
@@ -227,15 +218,14 @@ struct GatherConverter : public OpConversionPattern<tts::GatherOp> {
     SmallVector<utils::IteratorType> iteratorTypes(
         resultType.getRank(), utils::IteratorType::parallel);
 
-    auto genericOp = rewriter.create<linalg::GenericOp>(
-        loc, TypeRange{resultType}, inputs, ValueRange{emptyTensor}, affineMaps,
+    auto genericOp = linalg::GenericOp::create(rewriter, loc, TypeRange{resultType}, inputs, ValueRange{emptyTensor}, affineMaps,
         iteratorTypes, [&](OpBuilder &b, Location loc, ValueRange args) {
           auto getValueAtIndex = [baseTensor](OpBuilder &b, Location loc,
                                               Value index) -> Value {
             Value index0 =
-                b.create<arith::IndexCastOp>(loc, b.getIndexType(), index);
+                arith::IndexCastOp::create(b, loc, b.getIndexType(), index);
 
-            return b.create<tensor::ExtractOp>(loc, baseTensor,
+            return tensor::ExtractOp::create(b, loc, baseTensor,
                                                ValueRange{index0});
           };
 
@@ -245,34 +235,33 @@ struct GatherConverter : public OpConversionPattern<tts::GatherOp> {
             // If there is no mask, simply extract the current element from the
             // base tensor and use it as the yield value.
             auto loadValue = getValueAtIndex(b, loc, offset);
-            b.create<linalg::YieldOp>(loc, loadValue);
+            linalg::YieldOp::create(b, loc, loadValue);
           } else {
             // If the mask value is truthy, the current element is loaded from
             // the base tensor using its offset. Otherwise, if `other` is
             // present, yield `other`. If `other` is not present, a default
             // value of 0 is used.
             auto mask = args[1];
-            auto ifOp = b.create<scf::IfOp>(
-                loc, mask,
+            auto ifOp = scf::IfOp::create(b, loc, mask,
                 [&](OpBuilder &b, Location loc) {
                   // Truthy case, load from the index.
                   auto value = getValueAtIndex(b, loc, offset);
-                  b.create<scf::YieldOp>(loc, value);
+                  scf::YieldOp::create(b, loc, value);
                 },
                 [&](OpBuilder &b, Location loc) {
                   // Falsy case, yield `other` or 0 as the default value.
                   if (gatherOp.getOther()) {
-                    b.create<scf::YieldOp>(loc, gatherOp.getOther());
+                    scf::YieldOp::create(b, loc, gatherOp.getOther());
                   } else {
                     auto elemType = resultType.getElementType();
                     auto zeroAttr = b.getZeroAttr(elemType);
                     assert(zeroAttr && "unexpected element type");
-                    Value extract = b.create<arith::ConstantOp>(loc, zeroAttr);
-                    b.create<scf::YieldOp>(loc, extract);
+                    Value extract = arith::ConstantOp::create(b, loc, zeroAttr);
+                    scf::YieldOp::create(b, loc, extract);
                   }
                 });
 
-            b.create<linalg::YieldOp>(loc, ifOp->getResult(0));
+            linalg::YieldOp::create(b, loc, ifOp->getResult(0));
           }
         });
 
@@ -311,9 +300,7 @@ struct ScatterConverter : public OpConversionPattern<tts::ScatterOp> {
 
     // Treat the base pointer (memref) as 1D because the offsets are all
     // relative to a single base pointer (already collapsed).
-    auto baseMemref =
-        rewriter
-            .create<memref::CastOp>(loc,
+    auto baseMemref = memref::CastOp::create(rewriter, loc,
                                     MemRefType::get({ShapedType::kDynamic},
                                                     valueType.getElementType()),
                                     ptr)
@@ -339,15 +326,14 @@ struct ScatterConverter : public OpConversionPattern<tts::ScatterOp> {
 
     rewriter.setInsertionPoint(scatterOp);
 
-    auto genericOp = rewriter.create<linalg::GenericOp>(
-        loc, TypeRange{}, inputs, ValueRange{}, affineMaps, iteratorTypes,
+    auto genericOp = linalg::GenericOp::create(rewriter, loc, TypeRange{}, inputs, ValueRange{}, affineMaps, iteratorTypes,
         [&](OpBuilder &b, Location loc, ValueRange args) {
           auto storeValueAtIndex = [baseMemref](OpBuilder &b, Location loc,
                                                 Value index, Value value) {
             Value index0 =
-                b.create<arith::IndexCastOp>(loc, b.getIndexType(), index);
+                arith::IndexCastOp::create(b, loc, b.getIndexType(), index);
 
-            b.create<memref::StoreOp>(loc, value, baseMemref,
+            memref::StoreOp::create(b, loc, value, baseMemref,
                                       ValueRange{index0});
           };
 
@@ -363,13 +349,13 @@ struct ScatterConverter : public OpConversionPattern<tts::ScatterOp> {
             // the base memref using its offset. Otherwise, noop.
             auto mask = args[2];
             auto ifOp =
-                b.create<scf::IfOp>(loc, mask, [&](OpBuilder &b, Location loc) {
+                scf::IfOp::create(b, loc, mask, [&](OpBuilder &b, Location loc) {
                   storeValueAtIndex(b, loc, offset, value);
-                  b.create<scf::YieldOp>(loc);
+                  scf::YieldOp::create(b, loc);
                 });
           }
 
-          b.create<linalg::YieldOp>(loc);
+          linalg::YieldOp::create(b, loc);
         });
 
     rewriter.eraseOp(scatterOp);

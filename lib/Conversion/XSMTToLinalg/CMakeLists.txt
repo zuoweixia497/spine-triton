@@ -18,8 +18,9 @@ add_triton_library(XSMTToLinalg
   LINK_LIBS PUBLIC
   MLIRLinalgTransforms
   MLIRArithDialect
-  MLIRDialectUtils
+  MLIRXSMTAsyncDialect
   MLIRIR
+  MLIRDialectUtils
   MLIRMathDialect
   MLIRPass
   MLIRTensorDialect
@@ -30,5 +31,4 @@ add_triton_library(XSMTToLinalg
   TritonTilingExtIR
   TritonStructuredIR
   TritonSharedUtils
-  MLIRXSMTAsyncDialect
 )

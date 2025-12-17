@@ -55,27 +55,20 @@ Value ensureIndexType(Location loc, Value value, PatternRewriter &rewriter) {
     if (value.getType() == indexType) {
       return value;
     }
-    return rewriter.create<arith::IndexCastOp>(loc, indexType, value);
+    return arith::IndexCastOp::create(rewriter, loc, indexType, value);
   }
 
 Value createZeroConstant(PatternRewriter &rewriter, Location loc, Type elementType) {
     if (elementType.isF32()) {
-      return rewriter.create<arith::ConstantFloatOp>(
-          loc, APFloat(0.0f), rewriter.getF32Type());
+      return arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.0f));
     } else if (elementType.isF64()) {
-      return rewriter.create<arith::ConstantFloatOp>(
-          loc, APFloat(0.0), rewriter.getF64Type());
+      return arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF64Type(), APFloat(0.0));
     } else if (elementType.isF16()) {
-      return rewriter.create<arith::ConstantFloatOp>(
-          loc, APFloat::getZero(rewriter.getF16Type().getFloatSemantics()),
-          rewriter.getF16Type());
+      return arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF16Type(), APFloat::getZero(rewriter.getF16Type().getFloatSemantics()));
     } else if (elementType.isBF16()) {
-      return rewriter.create<arith::ConstantFloatOp>(
-          loc, APFloat::getZero(rewriter.getBF16Type().getFloatSemantics()),
-          rewriter.getBF16Type());
+      return arith::ConstantFloatOp::create(rewriter, loc, rewriter.getBF16Type(), APFloat::getZero(rewriter.getBF16Type().getFloatSemantics()));
     } else if (auto intType = dyn_cast<IntegerType>(elementType)) {
-      return rewriter.create<arith::ConstantIntOp>(
-          loc, 0, intType.getWidth());
+      return arith::ConstantIntOp::create(rewriter, loc, 0, intType.getWidth());
     }
     return nullptr;
   }
@@ -85,10 +78,10 @@ Value createCeilDivUI(PatternRewriter &rewriter, Location loc, Value dividend, V
   Value dividendIndex = ensureIndexType(loc, dividend, rewriter);
   Value divisorIndex = ensureIndexType(loc, divisor, rewriter);
 
-  auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-  auto sum = rewriter.create<arith::AddIOp>(loc, dividendIndex, divisorIndex);
-  auto numerator = rewriter.create<arith::SubIOp>(loc, sum, one);
-  return rewriter.create<arith::DivUIOp>(loc, numerator, divisorIndex);
+  auto one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  auto sum = arith::AddIOp::create(rewriter, loc, dividendIndex, divisorIndex);
+  auto numerator = arith::SubIOp::create(rewriter, loc, sum, one);
+  return arith::DivUIOp::create(rewriter, loc, numerator, divisorIndex);
 }
 
 inline bool isInsideLoop(mlir::Operation *op) {
@@ -158,8 +151,7 @@ public:
     SmallVector<int32_t> newShapeVec = {oldShapeAttr[1], oldShapeAttr[0]};
     SmallVector<int32_t> newMicroSizeVec = {oldMicroSizeAttr[1], oldMicroSizeAttr[0]};
 
-    auto newAlloc = rewriter.create<xsmt::AllocOp>(
-        allocOp.getLoc(), newAllocType,
+    auto newAlloc = xsmt::AllocOp::create(rewriter, allocOp.getLoc(), newAllocType,
         rewriter.getDenseI32ArrayAttr(newShapeVec),
         rewriter.getDenseI32ArrayAttr(newMicroSizeVec));
 
@@ -184,15 +176,13 @@ public:
 
     auto newViewType = RankedTensorType::get(newViewShape, oldViewType.getElementType());
 
-    auto newView = rewriter.create<xsmt::ViewOp>(
-        viewOp.getLoc(), newViewType, newAlloc, newOffsets,
+    auto newView = xsmt::ViewOp::create(rewriter, viewOp.getLoc(), newViewType, newAlloc, newOffsets,
         rewriter.getDenseI32ArrayAttr(newShapeViewVec),
         rewriter.getDenseI32ArrayAttr(newMicroSizeViewVec));
 
     rewriter.setInsertionPoint(descriptorLoadViewOp);
 
-    auto newDescriptorLoad = rewriter.create<xsmt::DescriptorLoadViewOp>(
-        descriptorLoadViewOp.getLoc(), newViewType,
+    auto newDescriptorLoad = xsmt::DescriptorLoadViewOp::create(rewriter, descriptorLoadViewOp.getLoc(), newViewType,
         descriptorLoadViewOp.getBase(), newOffsets, newShapeViewVec, newMicroSizeViewVec, newView);
     newDescriptorLoad->setAttr("transpose", rewriter.getBoolAttr(true));
     rewriter.replaceAllUsesWith(transposeOp.getResult(), newView.getResult());
@@ -238,8 +228,7 @@ struct MMT4DBindFusionPattern : public OpRewritePattern<xsmt::BindOp> {
 
     rewriter.setInsertionPoint(bindOp);
 
-    auto newMMT4DOp = rewriter.create<xsmt::MMT4DOp>(
-        bindOp.getLoc(),
+    auto newMMT4DOp = xsmt::MMT4DOp::create(rewriter, bindOp.getLoc(),
         bindOp.getResult().getType(),
         mmt4dOp.getA(),
         mmt4dOp.getB(),
@@ -349,9 +338,9 @@ struct DescriptorLoadPattern : public OpRewritePattern<DescriptorLoadOp> {
     int32_t tile1 = microSizeAttr[1];
 
     Location loc = descriptorLoadOp.getLoc();
-    Value c1 = rewriter.create<ConstantIndexOp>(loc, 1);
-    Value tile0Value = rewriter.create<ConstantIndexOp>(loc, tile0);
-    Value tile1Value = rewriter.create<ConstantIndexOp>(loc, tile1);
+    Value c1 = ConstantIndexOp::create(rewriter, loc, 1);
+    Value tile0Value = ConstantIndexOp::create(rewriter, loc, tile0);
+    Value tile1Value = ConstantIndexOp::create(rewriter, loc, tile1);
 
     auto offsets = descriptorLoadOp.getOffsets();
     Value offset0 = offsets[0];
@@ -364,25 +353,23 @@ struct DescriptorLoadPattern : public OpRewritePattern<DescriptorLoadOp> {
     Value indexDim1Value = ensureIndexType(loc, dim1Value, rewriter);
 
     auto shapes = descriptorLoadOp.getShape();
-    Value size_m1 = rewriter.create<SubIOp>(loc, indexDim0Value, indexOffset0);
-    Value shape0 = rewriter.create<ConstantIndexOp>(loc, shapes[0]);
-    Value size_m2 = rewriter.create<MinSIOp>(loc, size_m1, shape0);
+    Value size_m1 = SubIOp::create(rewriter, loc, indexDim0Value, indexOffset0);
+    Value shape0 = ConstantIndexOp::create(rewriter, loc, shapes[0]);
+    Value size_m2 = MinSIOp::create(rewriter, loc, size_m1, shape0);
 
-    Value size_k1 = rewriter.create<SubIOp>(loc, indexDim1Value, indexOffset1);
-    Value shape1 = rewriter.create<ConstantIndexOp>(loc, shapes[1]);
-    Value size_k2 = rewriter.create<MinSIOp>(loc, size_k1, shape1);
+    Value size_k1 = SubIOp::create(rewriter, loc, indexDim1Value, indexOffset1);
+    Value shape1 = ConstantIndexOp::create(rewriter, loc, shapes[1]);
+    Value size_k2 = MinSIOp::create(rewriter, loc, size_k1, shape1);
 
-    Value subview = rewriter.create<SubViewOp>(
-        loc,
+    Value subview = SubViewOp::create(rewriter, loc,
         rankedMemRef,
         ArrayRef<OpFoldResult>{indexOffset0, indexOffset1},
         ArrayRef<OpFoldResult>{size_m2, size_k2},
-        ArrayRef<OpFoldResult>{c1, c1}
-    );
+        ArrayRef<OpFoldResult>{c1, c1});
 
     auto subviewType = cast<MemRefType>(subview.getType());
     auto tensorType = RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
-    Value tensor = rewriter.create<ToTensorOp>(loc, tensorType, subview,
+    Value tensor = ToTensorOp::create(rewriter, loc, tensorType, subview,
                                               /*restrict=*/rewriter.getUnitAttr());
 
     if (!hasTranspose) {
@@ -406,8 +393,8 @@ private:
                                         int32_t tile0, int32_t tile1,
                                         PatternRewriter &rewriter) const {
     Location loc = descriptorLoadOp.getLoc();
-    Value tile0Value = rewriter.create<ConstantIndexOp>(loc, tile0);
-    Value tile1Value = rewriter.create<ConstantIndexOp>(loc, tile1);
+    Value tile0Value = ConstantIndexOp::create(rewriter, loc, tile0);
+    Value tile1Value = ConstantIndexOp::create(rewriter, loc, tile1);
     Value packedRows = createCeilDivUI(rewriter, loc, dim0, tile0Value);
     Value packedCols = createCeilDivUI(rewriter, loc, dim1, tile1Value);
 
@@ -422,12 +409,10 @@ private:
 
     auto emptyType = RankedTensorType::get(shapeDims, elementType);
 
-    Value emptyTensor = rewriter.create<EmptyOp>(
-        loc, emptyType, ValueRange{packedRows, packedCols});
+    Value emptyTensor = EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
     Value paddingValue = createZeroConstant(rewriter, loc, elementType);
 
-    Value packedResult = rewriter.create<PackOp>(
-        loc,
+    Value packedResult = PackOp::create(rewriter, loc,
         tensor,
         emptyTensor,
         ArrayRef<int64_t>{0, 1},
@@ -437,7 +422,7 @@ private:
     );
 
     auto originalResultType = cast<RankedTensorType>(descriptorLoadOp.getResult().getType());
-    Value castResult = rewriter.create<tensor::CastOp>(loc, originalResultType, packedResult);
+    Value castResult = tensor::CastOp::create(rewriter, loc, originalResultType, packedResult);
 
     rewriter.replaceOp(descriptorLoadOp, castResult);
     cleanupUnusedOps(descriptorLoadOp, rewriter);
@@ -452,8 +437,8 @@ private:
                                      int32_t tile0, int32_t tile1,
                                      PatternRewriter &rewriter) const {
     Location loc = descriptorLoadOp.getLoc();
-    Value tile0Value = rewriter.create<ConstantIndexOp>(loc, tile0);
-    Value tile1Value = rewriter.create<ConstantIndexOp>(loc, tile1);
+    Value tile0Value = ConstantIndexOp::create(rewriter, loc, tile0);
+    Value tile1Value = ConstantIndexOp::create(rewriter, loc, tile1);
     Value packedRows = createCeilDivUI(rewriter, loc, dim1, tile1Value);
     Value packedCols = createCeilDivUI(rewriter, loc, dim0, tile0Value);
 
@@ -468,13 +453,11 @@ private:
 
     auto emptyType = RankedTensorType::get(shapeDims, elementType);
 
-    Value emptyTensor = rewriter.create<EmptyOp>(
-        loc, emptyType, ValueRange{packedRows, packedCols});
+    Value emptyTensor = EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
 
     Value paddingValue = createZeroConstant(rewriter, loc, elementType);
 
-    Value packedResult = rewriter.create<PackOp>(
-        loc,
+    Value packedResult = PackOp::create(rewriter, loc,
         tensor,
         emptyTensor,
         ArrayRef<int64_t>{1, 0},
@@ -484,7 +467,7 @@ private:
     );
 
     auto transposeResultType = cast<RankedTensorType>(transposeOp->getResult(0).getType());
-    Value castResult = rewriter.create<tensor::CastOp>(loc, transposeResultType , packedResult);
+    Value castResult = tensor::CastOp::create(rewriter, loc, transposeResultType , packedResult);
 
     rewriter.replaceOp(transposeOp, castResult);
     rewriter.eraseOp(descriptorLoadOp);
@@ -550,9 +533,9 @@ public:
     int32_t tile1 = microSizeAttr[1];
 
     Location loc = DescriptorLoadViewOp.getLoc();
-    Value c1 = rewriter.create<ConstantIndexOp>(loc, 1);
-    Value tile0Value = rewriter.create<ConstantIndexOp>(loc, tile0);
-    Value tile1Value = rewriter.create<ConstantIndexOp>(loc, tile1);
+    Value c1 = ConstantIndexOp::create(rewriter, loc, 1);
+    Value tile0Value = ConstantIndexOp::create(rewriter, loc, tile0);
+    Value tile1Value = ConstantIndexOp::create(rewriter, loc, tile1);
 
     Value offset0 = offsets[0];
     Value offset1 = offsets[1];
@@ -563,25 +546,23 @@ public:
     Value indexDim0Value = ensureIndexType(loc, dim0Value, rewriter);
     Value indexDim1Value = ensureIndexType(loc, dim1Value, rewriter);
 
-    Value size_m1 = rewriter.create<SubIOp>(loc, indexDim0Value, indexOffset0);
-    Value shape0 = rewriter.create<ConstantIndexOp>(loc, shapes[0]);
-    Value dim0 = rewriter.create<MinSIOp>(loc, size_m1, shape0);
+    Value size_m1 = SubIOp::create(rewriter, loc, indexDim0Value, indexOffset0);
+    Value shape0 = ConstantIndexOp::create(rewriter, loc, shapes[0]);
+    Value dim0 = MinSIOp::create(rewriter, loc, size_m1, shape0);
 
-    Value size_k1 = rewriter.create<SubIOp>(loc, indexDim1Value, indexOffset1);
-    Value shape1 = rewriter.create<ConstantIndexOp>(loc, shapes[1]);
-    Value dim1 = rewriter.create<MinSIOp>(loc, size_k1, shape1);
+    Value size_k1 = SubIOp::create(rewriter, loc, indexDim1Value, indexOffset1);
+    Value shape1 = ConstantIndexOp::create(rewriter, loc, shapes[1]);
+    Value dim1 = MinSIOp::create(rewriter, loc, size_k1, shape1);
 
-    Value subview = rewriter.create<SubViewOp>(
-        loc,
+    Value subview = SubViewOp::create(rewriter, loc,
         rankedMemRef,
         ArrayRef<OpFoldResult>{indexOffset1, indexOffset0},
         ArrayRef<OpFoldResult>{dim1, dim0},
-        ArrayRef<OpFoldResult>{c1, c1}
-    );
+        ArrayRef<OpFoldResult>{c1, c1});
 
     auto subviewType = cast<MemRefType>(subview.getType());
     auto tensorType = RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
-    Value tensor = rewriter.create<ToTensorOp>(loc, tensorType, subview,
+    Value tensor = ToTensorOp::create(rewriter, loc, tensorType, subview,
                                               /*restrict=*/rewriter.getUnitAttr());
     Value packedRows = createCeilDivUI(rewriter, loc, dim0, tile0Value);
     Value packedCols = createCeilDivUI(rewriter, loc, dim1, tile1Value);
@@ -595,12 +576,10 @@ public:
 
     auto emptyType = RankedTensorType::get(shapeDims, elementType);
 
-    Value emptyTensor = rewriter.create<EmptyOp>(
-        loc, emptyType, ValueRange{packedRows, packedCols});
+    Value emptyTensor = EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
     Value paddingValue = createZeroConstant(rewriter, loc, elementType);
 
-    auto packOp = rewriter.create<PackOp>(
-          loc,
+    auto packOp = PackOp::create(rewriter, loc,
           tensor,
           emptyTensor,
           ArrayRef<int64_t>{1, 0},
@@ -616,25 +595,22 @@ public:
       return failure();
     }
 
-    Value c0 = rewriter.create<ConstantIndexOp>(loc, 0);
-    Value c16 = rewriter.create<ConstantIndexOp>(loc, 16);
-    Value c8 = rewriter.create<ConstantIndexOp>(loc, 8);
+    Value c0 = ConstantIndexOp::create(rewriter, loc, 0);
+    Value c16 = ConstantIndexOp::create(rewriter, loc, 16);
+    Value c8 = ConstantIndexOp::create(rewriter, loc, 8);
 
     auto destMemRefType = dyn_cast<MemRefType>(desSubview.getType());
     if (!destMemRefType || destMemRefType.getRank() < 4) {
       return rewriter.notifyMatchFailure(DescriptorLoadViewOp, "Destination memref must be at least 4D");
     }
 
-    Value destSubview = rewriter.create<SubViewOp>(
-        loc,
+    Value destSubview = SubViewOp::create(rewriter, loc,
         desSubview,
         ArrayRef<OpFoldResult>{c0, c0, c0, c0},
         ArrayRef<OpFoldResult>{packedRows, packedCols, c16, c8},
-        ArrayRef<OpFoldResult>{c1, c1, c1, c1}
-    );
+        ArrayRef<OpFoldResult>{c1, c1, c1, c1});
 
-    auto materializeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
-        packOp.getLoc(), packOp.getResult(), destSubview);
+    auto materializeOp = bufferization::MaterializeInDestinationOp::create(rewriter, packOp.getLoc(), packOp.getResult(), destSubview);
     materializeOp.setWritable(true);
     rewriter.eraseOp(DescriptorLoadViewOp);
 
@@ -675,20 +651,19 @@ public:
     SmallVector<int64_t> shape(outputType.getShape().begin(),
                               outputType.getShape().end());
 
-    auto allocOp = rewriter.create<memref::AllocOp>(
-        loc, MemRefType::get(shape, outputType.getElementType()));
+    auto allocOp = memref::AllocOp::create(rewriter, loc, MemRefType::get(shape, outputType.getElementType()));
     PatternRewriter::InsertionGuard guard(rewriter);
 
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
     SmallVector<Value> ivs;
 
     scf::ForOp outermostLoop;
 
     for (size_t i = 0; i < shape.size(); ++i) {
-      Value dimLimit = rewriter.create<arith::ConstantIndexOp>(loc, shape[i]);
-      auto loop = rewriter.create<scf::ForOp>(loc, c0, dimLimit, c1);
+      Value dimLimit = arith::ConstantIndexOp::create(rewriter, loc, shape[i]);
+      auto loop = scf::ForOp::create(rewriter, loc, c0, dimLimit, c1);
 
       if (i == 0) {
         outermostLoop = loop;
@@ -698,13 +673,12 @@ public:
       rewriter.setInsertionPointToStart(loop.getBody());
     }
 
-    rewriter.create<memref::StoreOp>(loc, fillValue, allocOp, ivs);
+    memref::StoreOp::create(rewriter, loc, fillValue, allocOp, ivs);
     if (outermostLoop) {
       rewriter.setInsertionPointAfter(outermostLoop);
     }
 
-    auto toTensorOp = rewriter.create<bufferization::ToTensorOp>(
-        loc, outputType, allocOp, /*restrict=*/true);
+    auto toTensorOp = bufferization::ToTensorOp::create(rewriter, loc, outputType, allocOp, /*restrict=*/true);
 
     rewriter.replaceOp(fillOp, toTensorOp.getResult());
     return success();
@@ -726,10 +700,9 @@ public:
         resultType.getElementType()
     );
 
-    Value memref = rewriter.create<memref::AllocOp>(loc, memrefType);
+    Value memref = memref::AllocOp::create(rewriter, loc, memrefType);
 
-    Value newTensor = rewriter.create<bufferization::ToTensorOp>(
-        loc, resultType, memref);
+    Value newTensor = bufferization::ToTensorOp::create(rewriter, loc, resultType, memref);
 
     rewriter.replaceOp(allocOp, newTensor);
 
@@ -767,9 +740,9 @@ public:
       return rewriter.notifyMatchFailure(viewOp, "Base is not a tensor type");
     }
     auto memrefType = MemRefType::get(baseType.getShape(), baseType.getElementType());
-    Value memref = rewriter.create<memref::AllocOp>(loc, memrefType);
+    Value memref = memref::AllocOp::create(rewriter, loc, memrefType);
 
-    auto materialize = rewriter.create<bufferization::MaterializeInDestinationOp>(loc, base, memref);
+    auto materialize = bufferization::MaterializeInDestinationOp::create(rewriter, loc, base, memref);
     materialize.setWritable(true);
 
     bool hasMicroSize = false;
@@ -852,32 +825,30 @@ private:
       offsetValues.push_back(ensureIndexType(loc, offset, rewriter));
     }
 
-    Value c1 = rewriter.create<ConstantIndexOp>(loc, 1);
+    Value c1 = ConstantIndexOp::create(rewriter, loc, 1);
     auto size_m1 = subOFRs(sizes[0], offsetValues[0], loc, rewriter);
     Value size_m2 = ofrToIndexValue(size_m1, loc, rewriter);
-    Value shape0 = rewriter.create<ConstantIndexOp>(loc, shape[0]);
-    Value size_m3 = rewriter.create<MinSIOp>(loc, size_m2, shape0);
+    Value shape0 = ConstantIndexOp::create(rewriter, loc, shape[0]);
+    Value size_m3 = MinSIOp::create(rewriter, loc, size_m2, shape0);
 
     auto size_n1 = subOFRs(sizes[1], offsetValues[1], loc, rewriter);
     Value size_n2 = ofrToIndexValue(size_n1, loc, rewriter);
-    Value shape1 = rewriter.create<ConstantIndexOp>(loc, shape[1]);
-    Value size_n3 = rewriter.create<MinSIOp>(loc, size_n2, shape1);
+    Value shape1 = ConstantIndexOp::create(rewriter, loc, shape[1]);
+    Value size_n3 = MinSIOp::create(rewriter, loc, size_n2, shape1);
 
-    auto subview = rewriter.create<memref::SubViewOp>(
-        loc,
+    auto subview = memref::SubViewOp::create(rewriter, loc,
         memrefBaseValue,
         offsetValues,
         ArrayRef<OpFoldResult>{size_m3, size_n3},
-        ArrayRef<OpFoldResult>{c1, c1}
-    );
+        ArrayRef<OpFoldResult>{c1, c1});
 
     auto subviewType = cast<MemRefType>(subview.getType());
     auto tensorType = RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
-    Value toTensorOp2 = rewriter.create<bufferization::ToTensorOp>(loc, tensorType, subview,
+    Value toTensorOp2 = bufferization::ToTensorOp::create(rewriter, loc, tensorType, subview,
                                               /*restrict=*/rewriter.getUnitAttr());
 
-    Value tile0Value = rewriter.create<ConstantIndexOp>(loc, microSize[0]);
-    Value tile1Value = rewriter.create<ConstantIndexOp>(loc, microSize[1]);
+    Value tile0Value = ConstantIndexOp::create(rewriter, loc, microSize[0]);
+    Value tile1Value = ConstantIndexOp::create(rewriter, loc, microSize[1]);
     Value packedRows = createCeilDivUI(rewriter, loc, size_m3, tile0Value);
     Value packedCols = createCeilDivUI(rewriter, loc, size_n3, tile1Value);
 
@@ -887,16 +858,14 @@ private:
     shapeDims.push_back(microSize[0]);
     shapeDims.push_back(microSize[1]);
     auto emptyType = RankedTensorType::get(shapeDims, tensorType.getElementType());
-    Value emptyTensor = rewriter.create<EmptyOp>(
-        loc, emptyType, ValueRange{packedRows, packedCols});
+    Value emptyTensor = EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
 
     Value paddingValue = createZeroConstant(rewriter, loc, elementType);
     if (!paddingValue) {
       return rewriter.notifyMatchFailure(viewOp, "Unsupported element type for padding");
     }
 
-    Value packedResult = rewriter.create<linalg::PackOp>(
-        loc,
+    Value packedResult = linalg::PackOp::create(rewriter, loc,
         toTensorOp2,
         emptyTensor,
         ArrayRef<int64_t>{0, 1},
@@ -908,7 +877,7 @@ private:
         ArrayRef<int64_t>{0, 1});
 
     auto originalResultType = cast<RankedTensorType>(viewOp.getResult().getType());
-    Value castResult = rewriter.create<tensor::CastOp>(loc, originalResultType, packedResult);
+    Value castResult = tensor::CastOp::create(rewriter, loc, originalResultType, packedResult);
     rewriter.replaceOp(viewOp, castResult);
     return success();
   }
@@ -930,34 +899,32 @@ private:
       offsetValues.push_back(ensureIndexType(loc, offset, rewriter));
     }
 
-    Value c1 = rewriter.create<ConstantIndexOp>(loc, 1);
+    Value c1 = ConstantIndexOp::create(rewriter, loc, 1);
     auto size_m1 = subOFRs(sizes[0], offsetValues[0], loc, rewriter);
     Value size_m2 = ofrToIndexValue(size_m1, loc, rewriter);
-    Value shape0 = rewriter.create<ConstantIndexOp>(loc, shape[0]);
-    Value size_m3 = rewriter.create<MinSIOp>(loc, size_m2, shape0);
+    Value shape0 = ConstantIndexOp::create(rewriter, loc, shape[0]);
+    Value size_m3 = MinSIOp::create(rewriter, loc, size_m2, shape0);
 
     auto size_n1 = subOFRs(sizes[1], offsetValues[1], loc, rewriter);
     Value size_n2 = ofrToIndexValue(size_n1, loc, rewriter);
-    Value shape1 = rewriter.create<ConstantIndexOp>(loc, shape[1]);
-    Value size_n3 = rewriter.create<MinSIOp>(loc, size_n2, shape1);
+    Value shape1 = ConstantIndexOp::create(rewriter, loc, shape[1]);
+    Value size_n3 = MinSIOp::create(rewriter, loc, size_n2, shape1);
 
-    Value tile0Value = rewriter.create<ConstantIndexOp>(loc, microSize[0]);
-    Value tile1Value = rewriter.create<ConstantIndexOp>(loc, microSize[1]);
+    Value tile0Value = ConstantIndexOp::create(rewriter, loc, microSize[0]);
+    Value tile1Value = ConstantIndexOp::create(rewriter, loc, microSize[1]);
     Value size0 = createCeilDivUI(rewriter, loc, size_m3, tile0Value);
     Value size1 = createCeilDivUI(rewriter, loc, size_n3, tile1Value);
 
     Value offset0 = createCeilDivUI(rewriter, loc, offsets[0], tile0Value);
     Value offset1 = createCeilDivUI(rewriter, loc, offsets[1], tile1Value);
 
-    Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
 
-    auto subview = rewriter.create<memref::SubViewOp>(
-        loc,
+    auto subview = memref::SubViewOp::create(rewriter, loc,
         memrefBaseValue,
         ArrayRef<OpFoldResult>{offset0, offset1, c0, c0},
         ArrayRef<OpFoldResult>{size0, size1, tile0Value, tile1Value},
-        ArrayRef<OpFoldResult>{c1, c1, c1, c1}
-    );
+        ArrayRef<OpFoldResult>{c1, c1, c1, c1});
 
     auto subviewMemRefType = subview.getType();
     auto subviewTensorType = RankedTensorType::get(
@@ -965,14 +932,13 @@ private:
         subviewMemRefType.getElementType()
     );
 
-    Value newTensor = rewriter.create<bufferization::ToTensorOp>(
-        loc,
+    Value newTensor = bufferization::ToTensorOp::create(rewriter, loc,
         subviewTensorType,
         subview.getResult(),
         /*restrict=*/rewriter.getUnitAttr()
     );
 
-    Value castResult = rewriter.create<tensor::CastOp>(loc, resultType, newTensor);
+    Value castResult = tensor::CastOp::create(rewriter, loc, resultType, newTensor);
     rewriter.replaceOp(viewOp, castResult);
 
     return success();
@@ -1007,43 +973,40 @@ private:
     ShapedType shapedTy = cast<ShapedType>(memrefBaseValue.getType());
     if (!isa<RankedTensorType>(memrefBaseValue.getType())) {
       auto tensorTy = RankedTensorType::get(shapedTy.getShape(), shapedTy.getElementType());
-      packedTensor = rewriter.create<bufferization::ToTensorOp>(
-          loc, tensorTy, memrefBaseValue, rewriter.getUnitAttr());  // restrict=true
+      packedTensor = bufferization::ToTensorOp::create(rewriter, loc, tensorTy, memrefBaseValue, rewriter.getUnitAttr());  // restrict=true
     }
 
 
     if (microSize[0] == 1 && microSize[1] == 1) {
       Value flatTensor = packedTensor;
 
-      Value dim0 = rewriter.create<tensor::DimOp>(loc, packedTensor, 0);
-      Value dim1 = rewriter.create<tensor::DimOp>(loc, packedTensor, 1);
+      Value dim0 = tensor::DimOp::create(rewriter, loc, packedTensor, 0);
+      Value dim1 = tensor::DimOp::create(rewriter, loc, packedTensor, 1);
 
       int64_t dim2 = shapedTy.getDimSize(2);
       int64_t dim3 = shapedTy.getDimSize(3);
 
       if(other){
-        Value flatRows = rewriter.create<arith::MulIOp>(loc, dim0, rewriter.create<arith::ConstantIndexOp>(loc, dim2));
-        Value flatCols = rewriter.create<arith::MulIOp>(loc, dim1, rewriter.create<arith::ConstantIndexOp>(loc, dim3));
+        Value flatRows = arith::MulIOp::create(rewriter, loc, dim0, arith::ConstantIndexOp::create(rewriter, loc, dim2));
+        Value flatCols = arith::MulIOp::create(rewriter, loc, dim1, arith::ConstantIndexOp::create(rewriter, loc, dim3));
 
         auto flatTy = RankedTensorType::get({ShapedType::kDynamic, ShapedType::kDynamic}, elementType);
-        Value empty = rewriter.create<tensor::EmptyOp>(loc, flatTy, ValueRange{flatRows, flatCols});
+        Value empty = tensor::EmptyOp::create(rewriter, loc, flatTy, ValueRange{flatRows, flatCols});
 
-        flatTensor = rewriter.create<linalg::UnPackOp>(
-            loc, packedTensor, empty,
+        flatTensor = linalg::UnPackOp::create(rewriter, loc, packedTensor, empty,
             ArrayRef<int64_t>{0, 1},
             ArrayRef<OpFoldResult>{
                 rewriter.getIndexAttr(dim2),
                 rewriter.getIndexAttr(dim3)
             });
       }else{
-        Value flatRows = rewriter.create<arith::MulIOp>(loc, dim0, rewriter.create<arith::ConstantIndexOp>(loc, preMicroSize[0]));
-        Value flatCols = rewriter.create<arith::MulIOp>(loc, dim1, rewriter.create<arith::ConstantIndexOp>(loc, preMicroSize[1]));
+        Value flatRows = arith::MulIOp::create(rewriter, loc, dim0, arith::ConstantIndexOp::create(rewriter, loc, preMicroSize[0]));
+        Value flatCols = arith::MulIOp::create(rewriter, loc, dim1, arith::ConstantIndexOp::create(rewriter, loc, preMicroSize[1]));
 
         auto flatTy = RankedTensorType::get({ShapedType::kDynamic, ShapedType::kDynamic}, elementType);
-        Value empty = rewriter.create<tensor::EmptyOp>(loc, flatTy, ValueRange{flatRows, flatCols});
+        Value empty = tensor::EmptyOp::create(rewriter, loc, flatTy, ValueRange{flatRows, flatCols});
 
-        flatTensor = rewriter.create<linalg::UnPackOp>(
-            loc, packedTensor, empty,
+        flatTensor = linalg::UnPackOp::create(rewriter, loc, packedTensor, empty,
             ArrayRef<int64_t>{0, 1},
             ArrayRef<OpFoldResult>{
                 rewriter.getIndexAttr(preMicroSize[0]),
@@ -1053,44 +1016,40 @@ private:
 
       Value off0 = ensureIndexType(loc, offsets[0], rewriter);
       Value off1 = ensureIndexType(loc, offsets[1], rewriter);
-      Value reqRows = rewriter.create<arith::ConstantIndexOp>(loc, shape[0]);
-      Value reqCols = rewriter.create<arith::ConstantIndexOp>(loc, shape[1]);
+      Value reqRows = arith::ConstantIndexOp::create(rewriter, loc, shape[0]);
+      Value reqCols = arith::ConstantIndexOp::create(rewriter, loc, shape[1]);
 
-      Value flatRows = rewriter.create<tensor::DimOp>(loc, flatTensor, 0);
-      Value flatCols = rewriter.create<tensor::DimOp>(loc, flatTensor, 1);
-      Value availRows = rewriter.create<arith::SubIOp>(loc, flatRows, off0);
-      Value availCols = rewriter.create<arith::SubIOp>(loc, flatCols, off1);
-      Value actualRows = rewriter.create<arith::MinUIOp>(loc, reqRows, availRows);
-      Value actualCols = rewriter.create<arith::MinUIOp>(loc, reqCols, availCols);
+      Value flatRows = tensor::DimOp::create(rewriter, loc, flatTensor, 0);
+      Value flatCols = tensor::DimOp::create(rewriter, loc, flatTensor, 1);
+      Value availRows = arith::SubIOp::create(rewriter, loc, flatRows, off0);
+      Value availCols = arith::SubIOp::create(rewriter, loc, flatCols, off1);
+      Value actualRows = arith::MinUIOp::create(rewriter, loc, reqRows, availRows);
+      Value actualCols = arith::MinUIOp::create(rewriter, loc, reqCols, availCols);
 
-      Value slice = rewriter.create<tensor::ExtractSliceOp>(
-          loc, flatTensor,
+      Value slice = tensor::ExtractSliceOp::create(rewriter, loc, flatTensor,
           ArrayRef<Value>{off0, off1},
           ArrayRef<Value>{actualRows, actualCols},
-          ArrayRef<Value>{rewriter.create<arith::ConstantIndexOp>(loc, 1),
-                          rewriter.create<arith::ConstantIndexOp>(loc, 1)});
+          ArrayRef<Value>{arith::ConstantIndexOp::create(rewriter, loc, 1),
+                          arith::ConstantIndexOp::create(rewriter, loc, 1)});
 
-      Value result = rewriter.create<tensor::CastOp>(loc, resultType, slice);
+      Value result = tensor::CastOp::create(rewriter, loc, resultType, slice);
       rewriter.replaceOp(viewOp, result);
       return success();
     }
 
-    Value dim0 = rewriter.create<tensor::DimOp>(loc, packedTensor, 0);
-    Value dim1 = rewriter.create<tensor::DimOp>(loc, packedTensor, 1);
+    Value dim0 = tensor::DimOp::create(rewriter, loc, packedTensor, 0);
+    Value dim1 = tensor::DimOp::create(rewriter, loc, packedTensor, 1);
 
     int64_t dim2 = shapedTy.getDimSize(2);
     int64_t dim3 = shapedTy.getDimSize(3);
 
-    Value flatRows = rewriter.create<arith::MulIOp>(
-        loc, dim0, rewriter.create<arith::ConstantIndexOp>(loc, dim2));
-    Value flatCols = rewriter.create<arith::MulIOp>(
-        loc, dim1, rewriter.create<arith::ConstantIndexOp>(loc, dim3));
+    Value flatRows = arith::MulIOp::create(rewriter, loc, dim0, arith::ConstantIndexOp::create(rewriter, loc, dim2));
+    Value flatCols = arith::MulIOp::create(rewriter, loc, dim1, arith::ConstantIndexOp::create(rewriter, loc, dim3));
 
     auto flatTy = RankedTensorType::get({ShapedType::kDynamic, ShapedType::kDynamic}, elementType);
-    Value flatEmpty = rewriter.create<tensor::EmptyOp>(loc, flatTy, ValueRange{flatRows, flatCols});
+    Value flatEmpty = tensor::EmptyOp::create(rewriter, loc, flatTy, ValueRange{flatRows, flatCols});
 
-    Value flatTensor = rewriter.create<linalg::UnPackOp>(
-        loc, packedTensor, flatEmpty,
+    Value flatTensor = linalg::UnPackOp::create(rewriter, loc, packedTensor, flatEmpty,
         ArrayRef<int64_t>{0, 1},
         ArrayRef<OpFoldResult>{
             rewriter.getIndexAttr(dim2),
@@ -1099,47 +1058,44 @@ private:
 
     Value off0 = ensureIndexType(loc, offsets[0], rewriter);
     Value off1 = ensureIndexType(loc, offsets[1], rewriter);
-    Value reqRows = rewriter.create<arith::ConstantIndexOp>(loc, shape[0]);
-    Value reqCols = rewriter.create<arith::ConstantIndexOp>(loc, shape[1]);
+    Value reqRows = arith::ConstantIndexOp::create(rewriter, loc, shape[0]);
+    Value reqCols = arith::ConstantIndexOp::create(rewriter, loc, shape[1]);
 
-    Value availRows = rewriter.create<arith::SubIOp>(loc,
-        rewriter.create<tensor::DimOp>(loc, flatTensor, 0), off0);
-    Value availCols = rewriter.create<arith::SubIOp>(loc,
-        rewriter.create<tensor::DimOp>(loc, flatTensor, 1), off1);
-    Value actualRows = rewriter.create<arith::MinUIOp>(loc, reqRows, availRows);
-    Value actualCols = rewriter.create<arith::MinUIOp>(loc, reqCols, availCols);
+    Value availRows = arith::SubIOp::create(rewriter, loc,
+        tensor::DimOp::create(rewriter, loc, flatTensor, 0), off0);
+    Value availCols = arith::SubIOp::create(rewriter, loc,
+        tensor::DimOp::create(rewriter, loc, flatTensor, 1), off1);
+    Value actualRows = arith::MinUIOp::create(rewriter, loc, reqRows, availRows);
+    Value actualCols = arith::MinUIOp::create(rewriter, loc, reqCols, availCols);
 
-    Value slice = rewriter.create<tensor::ExtractSliceOp>(
-        loc, flatTensor,
+    Value slice = tensor::ExtractSliceOp::create(rewriter, loc, flatTensor,
         ArrayRef<Value>{off0, off1},
         ArrayRef<Value>{actualRows, actualCols},
-        ArrayRef<Value>{rewriter.create<arith::ConstantIndexOp>(loc, 1),
-                        rewriter.create<arith::ConstantIndexOp>(loc, 1)});
+        ArrayRef<Value>{arith::ConstantIndexOp::create(rewriter, loc, 1),
+                        arith::ConstantIndexOp::create(rewriter, loc, 1)});
 
-    Value tile0 = rewriter.create<arith::ConstantIndexOp>(loc, microSize[0]);
-    Value tile1 = rewriter.create<arith::ConstantIndexOp>(loc, microSize[1]);
+    Value tile0 = arith::ConstantIndexOp::create(rewriter, loc, microSize[0]);
+    Value tile1 = arith::ConstantIndexOp::create(rewriter, loc, microSize[1]);
     Value outerRows = createCeilDivUI(rewriter, loc, actualRows, tile0);
     Value outerCols = createCeilDivUI(rewriter, loc, actualCols, tile1);
 
     SmallVector<int64_t> packedShape = {ShapedType::kDynamic, ShapedType::kDynamic,
                                         microSize[0], microSize[1]};
     auto packedTy = RankedTensorType::get(packedShape, elementType);
-    Value packedEmpty = rewriter.create<tensor::EmptyOp>(
-        loc, packedTy, ValueRange{outerRows, outerCols});
+    Value packedEmpty = tensor::EmptyOp::create(rewriter, loc, packedTy, ValueRange{outerRows, outerCols});
 
     Value padding = createZeroConstant(rewriter, loc, elementType);
     if (!padding)
       return rewriter.notifyMatchFailure(viewOp, "Cannot create padding value");
 
-    Value packed = rewriter.create<linalg::PackOp>(
-        loc, slice, packedEmpty,
+    Value packed = linalg::PackOp::create(rewriter, loc, slice, packedEmpty,
         ArrayRef<int64_t>{0, 1},
         ArrayRef<OpFoldResult>{
             rewriter.getIndexAttr(microSize[0]),
             rewriter.getIndexAttr(microSize[1])},
         padding);
 
-    Value result = rewriter.create<tensor::CastOp>(loc, resultType, packed);
+    Value result = tensor::CastOp::create(rewriter, loc, resultType, packed);
     rewriter.replaceOp(viewOp, result);
     return success();
   }
@@ -1182,23 +1138,20 @@ struct LowerXSMTMMT4D : public OpRewritePattern<xsmt::MMT4DOp> {
 
         auto cType = dyn_cast<RankedTensorType>(c.getType());
         auto zeroAttr = FloatAttr::get(cType.getElementType(), 0.0);
-        auto zero = rewriter.create<arith::ConstantOp>(loc, zeroAttr);
+        auto zero = arith::ConstantOp::create(rewriter, loc, zeroAttr);
 
-        auto fillOp = rewriter.create<linalg::FillOp>(
-            loc, TypeRange{c.getType()},
+        auto fillOp = linalg::FillOp::create(rewriter, loc, TypeRange{c.getType()},
             ValueRange{zero},
             ValueRange{c}
         );
 
-        auto mmt4dOp = rewriter.create<linalg::Mmt4DOp>(
-            loc, ValueRange{a, b}, ValueRange{fillOp.getResult(0)});
+        auto mmt4dOp = linalg::Mmt4DOp::create(rewriter, loc, ValueRange{a, b}, ValueRange{fillOp.getResult(0)});
 
         RankedTensorType unpackedType = cast<RankedTensorType>(packInput.getType());
 
         SmallVector<OpFoldResult> mixedSizes =
             tensor::getMixedSizes(rewriter, loc, packInput);
-        Value emptyUnpack = rewriter.create<tensor::EmptyOp>(
-            loc, mixedSizes, unpackedType.getElementType());
+        Value emptyUnpack = tensor::EmptyOp::create(rewriter, loc, mixedSizes, unpackedType.getElementType());
         ArrayRef<int64_t> staticInnerTiles = cPackOp.getStaticInnerTiles();
         if (staticInnerTiles.empty()) {
           return rewriter.notifyMatchFailure(op, "static_inner_tiles is empty");
@@ -1208,8 +1161,7 @@ struct LowerXSMTMMT4D : public OpRewritePattern<xsmt::MMT4DOp> {
         for (int64_t tile : staticInnerTiles) {
           innerTiles.push_back(rewriter.getIndexAttr(tile));
         }
-        auto unpackOp = rewriter.create<linalg::UnPackOp>(
-            loc,
+        auto unpackOp = linalg::UnPackOp::create(rewriter, loc,
             mmt4dOp.getResult(0),
             emptyUnpack,
             cPackOp.getInnerDimsPos(),
@@ -1218,8 +1170,7 @@ struct LowerXSMTMMT4D : public OpRewritePattern<xsmt::MMT4DOp> {
 
         Value destination = traceDestinationFromOutput(c);
 
-        auto materializeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
-            unpackOp.getLoc(), unpackOp.getResult(), destination);
+        auto materializeOp = bufferization::MaterializeInDestinationOp::create(rewriter, unpackOp.getLoc(), unpackOp.getResult(), destination);
         materializeOp.setWritable(true);
 
         rewriter.replaceOp(op, unpackOp.getResult());
@@ -1235,36 +1186,29 @@ struct LowerXSMTMMT4D : public OpRewritePattern<xsmt::MMT4DOp> {
 
       auto cType = dyn_cast<RankedTensorType>(c.getType());
       auto zeroAttr = FloatAttr::get(cType.getElementType(), 0.0);
-      auto zero = rewriter.create<arith::ConstantOp>(loc, zeroAttr);
+      auto zero = arith::ConstantOp::create(rewriter, loc, zeroAttr);
 
-      auto fillOp = rewriter.create<linalg::FillOp>(
-          loc, TypeRange{c.getType()},
+      auto fillOp = linalg::FillOp::create(rewriter, loc, TypeRange{c.getType()},
           ValueRange{zero},
           ValueRange{c}
       );
 
-      auto mmt4dOp = rewriter.create<linalg::Mmt4DOp>(
-          loc, ValueRange{a, b}, ValueRange{fillOp.getResult(0)});
+      auto mmt4dOp = linalg::Mmt4DOp::create(rewriter, loc, ValueRange{a, b}, ValueRange{fillOp.getResult(0)});
 
-      auto materializeOp = rewriter.create<bufferization::MaterializeInDestinationOp>(
-            mmt4dOp.getLoc(), mmt4dOp.getResult(0), subview);
+      auto materializeOp = bufferization::MaterializeInDestinationOp::create(rewriter, mmt4dOp.getLoc(), mmt4dOp.getResult(0), subview);
         materializeOp.setWritable(true);
       rewriter.replaceOp(op, mmt4dOp.getResult(0));
       return success();
       }
     }else{
       auto resultType = dyn_cast<RankedTensorType>(op.getResult().getType());
-      Value initTensor = rewriter.create<tensor::EmptyOp>(
-          loc, resultType.getShape(), resultType.getElementType());
+      Value initTensor = tensor::EmptyOp::create(rewriter, loc, resultType.getShape(), resultType.getElementType());
       auto zeroAttr = FloatAttr::get(resultType.getElementType(), 0.0);
-      auto zero = rewriter.create<arith::ConstantOp>(loc, zeroAttr);
+      auto zero = arith::ConstantOp::create(rewriter, loc, zeroAttr);
 
-      auto fillOp = rewriter.create<linalg::FillOp>(
-          loc, ValueRange{zero}, ValueRange{initTensor}
-      );
+      auto fillOp = linalg::FillOp::create(rewriter, loc, ValueRange{zero}, ValueRange{initTensor});
 
-      auto mmt4dOp = rewriter.create<linalg::Mmt4DOp>(
-          loc, ValueRange{a, b}, ValueRange{fillOp.getResult(0)});
+      auto mmt4dOp = linalg::Mmt4DOp::create(rewriter, loc, ValueRange{a, b}, ValueRange{fillOp.getResult(0)});
       rewriter.replaceOp(op, mmt4dOp.getResult(0));
       return success();
     }
@@ -1355,8 +1299,8 @@ struct ConvertMMT4DAddPattern : public OpRewritePattern<linalg::GenericOp> {
     SmallVector<OpFoldResult> strides(4, rewriter.getIndexAttr(1));
     SmallVector<OpFoldResult> sizes;
 
-    Value dim0 = rewriter.create<tensor::DimOp>(loc, a, 0);
-    Value dim1 = rewriter.create<tensor::DimOp>(loc, b, 0);
+    Value dim0 = tensor::DimOp::create(rewriter, loc, a, 0);
+    Value dim1 = tensor::DimOp::create(rewriter, loc, b, 0);
     sizes.push_back(dim0);
     sizes.push_back(dim1);
     sizes.push_back(rewriter.getIndexAttr(shape[2]));
@@ -1368,19 +1312,15 @@ struct ConvertMMT4DAddPattern : public OpRewritePattern<linalg::GenericOp> {
     };
     auto sliceType = RankedTensorType::get(sliceShape, resType.getElementType());
 
-    auto extractOp = rewriter.create<tensor::ExtractSliceOp>(
-        loc, sliceType, accTensor, offsets, sizes, strides
-    );
+    auto extractOp = tensor::ExtractSliceOp::create(rewriter, loc, sliceType, accTensor, offsets, sizes, strides);
 
     auto mmt4dResType = RankedTensorType::get(sliceShape, resType.getElementType());
-    auto newMmt4dOp = rewriter.create<linalg::Mmt4DOp>(
-        loc, mmt4dResType,
+    auto newMmt4dOp = linalg::Mmt4DOp::create(rewriter, loc, mmt4dResType,
         ValueRange{a, b},
         ValueRange{extractOp.getResult()}
     );
 
-    auto insertOp = rewriter.create<tensor::InsertSliceOp>(
-        loc, newMmt4dOp.getResult(0), accTensor,
+    auto insertOp = tensor::InsertSliceOp::create(rewriter, loc, newMmt4dOp.getResult(0), accTensor,
         offsets, sizes, strides
     );
 
@@ -1409,8 +1349,7 @@ public:
     Value indVar = forOp.getInductionVar();
     auto convertToIndex = [&](Value val) -> Value {
       if (val.getType().isIndex()) return val;
-      return rewriter.create<arith::IndexCastOp>(
-          forOp.getLoc(), rewriter.getIndexType(), val);
+      return arith::IndexCastOp::create(rewriter, forOp.getLoc(), rewriter.getIndexType(), val);
     };
 
     SmallVector<OpFoldResult> lbs = {convertToIndex(lb)};
@@ -1422,8 +1361,7 @@ public:
       outputs.push_back(initArg);
     }
 
-    auto forallOp = rewriter.create<scf::ForallOp>(
-        forOp.getLoc(), lbs, ubs, steps, outputs, std::nullopt);
+    auto forallOp = scf::ForallOp::create(rewriter, forOp.getLoc(), lbs, ubs, steps, outputs, std::nullopt);
 
     Block &forallBlock = forallOp.getRegion().front();
     Block &forBody = *forOp.getBody();
@@ -1432,8 +1370,7 @@ public:
     IRMapping mapping;
 
     Value forallIndVar = forallBlock.getArgument(0);
-    auto castIndVar = rewriter.create<arith::IndexCastOp>(
-        forOp.getLoc(), indVar.getType(), forallIndVar);
+    auto castIndVar = arith::IndexCastOp::create(rewriter, forOp.getLoc(), indVar.getType(), forallIndVar);
     mapping.map(indVar, castIndVar);
 
     unsigned numInitArgs = initArgs.size();
@@ -1512,9 +1449,8 @@ struct ReplaceRedundantMaterializePattern2
       return failure();
 
     rewriter.setInsertionPoint(loop);
-    auto hoistedAlloc = rewriter.create<memref::AllocOp>(loop.getLoc(), memrefType);
-    auto hoistMat = rewriter.create<bufferization::MaterializeInDestinationOp>(
-        loop.getLoc(), sourceTensor, hoistedAlloc.getResult());
+    auto hoistedAlloc = memref::AllocOp::create(rewriter, loop.getLoc(), memrefType);
+    auto hoistMat = bufferization::MaterializeInDestinationOp::create(rewriter, loop.getLoc(), sourceTensor, hoistedAlloc.getResult());
     hoistMat->setAttr("writable", rewriter.getUnitAttr());
 
     Value hoistedBuffer = hoistedAlloc.getResult();
@@ -1661,16 +1597,14 @@ struct GetThreadOpToLLVMCallPattern : public OpRewritePattern<xsmt::GetThreadOp>
 
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
-      llvmFuncOp = rewriter.create<LLVM::LLVMFuncOp>(loc, funcName, funcType);
+      llvmFuncOp = LLVM::LLVMFuncOp::create(rewriter, loc, funcName, funcType);
       llvmFuncOp.setLinkage(LLVM::Linkage::External);
     }
 
-    auto callOp = rewriter.create<LLVM::CallOp>(
-        loc,
+    auto callOp = LLVM::CallOp::create(rewriter, loc,
         resultType,
         funcName,
-        ValueRange{}
-    );
+        ValueRange{});
 
     rewriter.replaceOp(getThreadOp, callOp.getResults());
 
@@ -1714,7 +1648,7 @@ struct InsertMBarrierReleasePattern : public mlir::OpRewritePattern<xsmt_async::
     }
 
     rewriter.setInsertionPointAfter(lastUser);
-    rewriter.create<xsmt_async::MBarrierReleaseOp>(op.getLoc(), barrier);
+    xsmt_async::MBarrierReleaseOp::create(rewriter, op.getLoc(), barrier);
     return mlir::success();
   }
 };

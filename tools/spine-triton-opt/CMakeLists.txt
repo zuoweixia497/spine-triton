@@ -22,11 +22,14 @@ target_link_libraries(spine-triton-opt PRIVATE
   ${dialect_libs}
   ${conversion_libs}
   ${triton_libs}
+  MLIRXSMTAsyncDialect
   # MLIR core
+  MLIRIR
   MLIROptLib
   MLIRPass
   MLIRTransforms
-  MLIRXSMTAsyncDialect
+  MLIRRegisterAllDialects
+  MLIRRegisterAllPasses
 )
 
 mlir_check_all_link_libraries(spine-triton-opt)

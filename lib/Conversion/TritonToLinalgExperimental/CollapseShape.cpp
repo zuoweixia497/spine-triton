@@ -83,8 +83,7 @@ struct CollapseFill : public OpRewritePattern<linalg::FillOp> {
     }
     auto elementType = resultType.getElementType();
 
-    auto output = rewriter.create<memref::CollapseShapeOp>(
-        loc,
+    auto output = memref::CollapseShapeOp::create(rewriter, loc,
         MemRefType::get(llvm::ArrayRef<int64_t>{resultType.getNumElements()},
                         elementType),
         result, reassociationMap);
@@ -112,14 +111,12 @@ struct CollapseFill : public OpRewritePattern<linalg::FillOp> {
       reassociationMap[0].push_back(rewriter.getAffineDimExpr(i));
     }
 
-    auto init = rewriter.create<tensor::CollapseShapeOp>(
-        loc, RankedTensorType::get({resultType.getNumElements()}, elementType),
+    auto init = tensor::CollapseShapeOp::create(rewriter, loc, RankedTensorType::get({resultType.getNumElements()}, elementType),
         op.getOutputs()[0], reassociationMap);
     auto fillOp =
-        rewriter.create<linalg::FillOp>(loc, op.getInputs(), ValueRange{init});
+        linalg::FillOp::create(rewriter, loc, op.getInputs(), ValueRange{init});
 
-    auto expandOp = rewriter.create<tensor::ExpandShapeOp>(
-        loc, result.getType(), fillOp.getResult(0), reassociationMap);
+    auto expandOp = tensor::ExpandShapeOp::create(rewriter, loc, result.getType(), fillOp.getResult(0), reassociationMap);
 
     rewriter.replaceOp(op, expandOp.getResult());
     return success();
@@ -224,7 +221,7 @@ struct CollapseTranspose : public OpRewritePattern<linalg::TransposeOp> {
 
     auto loc = op.getLoc();
     sourceType = RankedTensorType::get(collapseShapeInput, elementType);
-    source = rewriter.create<tensor::CollapseShapeOp>(loc, sourceType, source,
+    source = tensor::CollapseShapeOp::create(rewriter, loc, sourceType, source,
                                                       reassociationMap);
 
     SmallVector<ReassociationExprs> reassociationMapRe(reassociationMap.size());
@@ -235,12 +232,11 @@ struct CollapseTranspose : public OpRewritePattern<linalg::TransposeOp> {
       }
     }
 
-    Value transposeInit = rewriter.create<tensor::CollapseShapeOp>(
-        loc, RankedTensorType::get(transposedShape, elementType), op.getInit(),
+    Value transposeInit = tensor::CollapseShapeOp::create(rewriter, loc, RankedTensorType::get(transposedShape, elementType), op.getInit(),
         reassociationMapRe);
 
     Value transpose =
-        rewriter.create<linalg::TransposeOp>(loc, source, transposeInit, perm)
+        linalg::TransposeOp::create(rewriter, loc, source, transposeInit, perm)
             .getResults()[0];
 
     rewriter.replaceOpWithNewOp<tensor::ExpandShapeOp>(
@@ -337,7 +333,7 @@ struct CollapseBroadCast : public OpRewritePattern<linalg::GenericOp> {
 
     auto loc = op.getLoc();
     sourceType = RankedTensorType::get(collapseShapeInput, elementType);
-    input = rewriter.create<tensor::CollapseShapeOp>(loc, sourceType, input,
+    input = tensor::CollapseShapeOp::create(rewriter, loc, sourceType, input,
                                                      reassociationMap);
     resultType = RankedTensorType::get(collapseShapeOutput, elementType);
     size_t resultRank = resultType.getRank();
@@ -351,12 +347,10 @@ struct CollapseBroadCast : public OpRewritePattern<linalg::GenericOp> {
 
     assert(op->getNumResults() == 1 && "code assumes single result!");
 
-    auto init = rewriter.create<tensor::CollapseShapeOp>(
-        loc, RankedTensorType::get(resultType.getShape(), elementType),
+    auto init = tensor::CollapseShapeOp::create(rewriter, loc, RankedTensorType::get(resultType.getShape(), elementType),
         op.getOutputs()[0], reassociationMap);
 
-    auto linalgOp = rewriter.create<linalg::GenericOp>(
-        loc, init->getResultTypes(), ValueRange{input}, ValueRange{init},
+    auto linalgOp = linalg::GenericOp::create(rewriter, loc, init->getResultTypes(), ValueRange{input}, ValueRange{init},
         indexingMaps, getNParallelLoopsAttrs(resultRank));
     rewriter.cloneRegionBefore(op.getRegion(), linalgOp.getRegion(),
                                linalgOp.getRegion().begin());
@@ -453,7 +447,7 @@ struct CollapseReduce : public OpRewritePattern<linalg::ReduceOp> {
     auto elementType = inputType.getElementType();
     auto loc = op.getLoc();
     auto newInputType = RankedTensorType::get(collapseShapeInput, elementType);
-    input = rewriter.create<tensor::CollapseShapeOp>(loc, newInputType, input,
+    input = tensor::CollapseShapeOp::create(rewriter, loc, newInputType, input,
                                                      reassociationMap);
 
     SmallVector<ReassociationExprs> reassociationMapOutput;
@@ -469,11 +463,9 @@ struct CollapseReduce : public OpRewritePattern<linalg::ReduceOp> {
             rewriter.getAffineDimExpr(idx++));
       }
     }
-    auto init = rewriter.create<tensor::CollapseShapeOp>(
-        loc, RankedTensorType::get(collapseShapeOutput, elementType),
+    auto init = tensor::CollapseShapeOp::create(rewriter, loc, RankedTensorType::get(collapseShapeOutput, elementType),
         op.getInits()[0], reassociationMapOutput);
-    auto newReduce = rewriter.create<linalg::ReduceOp>(
-        loc, init->getResultTypes(), ValueRange{input}, ValueRange{init},
+    auto newReduce = linalg::ReduceOp::create(rewriter, loc, init->getResultTypes(), ValueRange{input}, ValueRange{init},
         newDims);
     rewriter.cloneRegionBefore(op.getRegion(), newReduce.getRegion(),
                                newReduce.getRegion().begin());

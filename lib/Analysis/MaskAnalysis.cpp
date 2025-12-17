@@ -63,10 +63,7 @@ tensor::ExtractSliceOp MaskState::getExtractSlice(Value source,
   SmallVector<OpFoldResult> offsets(getRank(), builder.getIndexAttr(0));
   SmallVector<OpFoldResult> strides(getRank(), builder.getIndexAttr(1));
 
-  auto dstType = tensor::ExtractSliceOp::inferResultType(sourceType, offsets,
-                                                         dims, strides);
-
-  return builder.create<tensor::ExtractSliceOp>(loc, dstType, source, offsets,
+  return tensor::ExtractSliceOp::create(builder, loc, source, offsets,
                                                 dims, strides);
 }
 
@@ -78,7 +75,7 @@ memref::SubViewOp MaskState::getSubview(Value source, const Location loc,
   auto dstType =
       memref::SubViewOp::inferResultType(sourceType, offsets, dims, strides);
 
-  return builder.create<memref::SubViewOp>(loc, cast<MemRefType>(dstType),
+  return memref::SubViewOp::create(builder, loc, cast<MemRefType>(dstType),
                                            source, offsets, dims, strides);
 }
 
@@ -89,7 +86,7 @@ static memref::SubViewOp createSubview(Value src, Location loc, OpBuilder &b,
   auto srcType = cast<MemRefType>(src.getType());
   auto dstType =
       memref::SubViewOp::inferResultType(srcType, offsets, sizes, strides);
-  return b.create<memref::SubViewOp>(loc, cast<MemRefType>(dstType), src,
+  return memref::SubViewOp::create(b, loc, cast<MemRefType>(dstType), src,
                                      offsets, sizes, strides);
 }
 
@@ -153,7 +150,7 @@ MaskState::getSideBySideSubviews(Value block1, Value block2, const Location loc,
                                  OpBuilder &builder) const {
   OpFoldResult subviewRowFull = dims[0];
   OpFoldResult subviewColFull = dims[1];
-  OpFoldResult col1 = builder.create<memref::DimOp>(loc, block1, 1).getResult();
+  OpFoldResult col1 = memref::DimOp::create(builder, loc, block1, 1).getResult();
   OpFoldResult subviewCol1 = minOFRs(col1, subviewColFull, loc, builder);
   OpFoldResult subviewCol2 = subOFRs(subviewColFull, subviewCol1, loc, builder);
 
@@ -172,7 +169,7 @@ MaskState::getStackedSubviews(Value block1, Value block2, const Location loc,
                               OpBuilder &builder) const {
   OpFoldResult subviewRowFull = dims[0];
   OpFoldResult subviewColFull = dims[1];
-  OpFoldResult row1 = builder.create<memref::DimOp>(loc, block1, 0).getResult();
+  OpFoldResult row1 = memref::DimOp::create(builder, loc, block1, 0).getResult();
   OpFoldResult subviewRow1 = minOFRs(row1, subviewRowFull, loc, builder);
   OpFoldResult subviewRow2 = subOFRs(subviewRowFull, subviewRow1, loc, builder);
 
@@ -287,7 +284,7 @@ LogicalResult MaskState::parseIntScalar(Value scalar, const Location loc,
                                         OpBuilder &builder) {
   assert(this->isEmpty());
   auto castOp =
-      builder.create<arith::IndexCastOp>(loc, builder.getIndexType(), scalar);
+      arith::IndexCastOp::create(builder, loc, builder.getIndexType(), scalar);
   this->scalar = castOp.getResult();
   return success();
 }

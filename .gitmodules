@@ -1,4 +1,4 @@
 [submodule "triton"]
 	path = triton
-	url = https://github.com/spacemit-com/spine-triton-src.git
-	branch = jdsk-dev-main
+	url = https://github.com/triton-lang/triton.git
+	branch = 91822318570f76e8952b9a49934df97e8871492e
