@@ -3,15 +3,6 @@
 # Copyright (c) Triton Project Contributors.
 #
 #===------------------------------------------------------------------------===#
-get_filename_component(PROJECT_REPO_ROOT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
-
-message(STATUS "Looking for backend lib in: ${PROJECT_REPO_ROOT}/backend/lib")
-
-add_library(MLIRXSMTAsyncDialect STATIC IMPORTED)
-
-set_target_properties(MLIRXSMTAsyncDialect PROPERTIES
-  IMPORTED_LOCATION "${PROJECT_REPO_ROOT}/backend/lib/libMLIRXSMTAsyncDialect.a"
-)
 
 add_triton_library(TritonToLinalgExperimental
   TritonToLinalgExperimentalPass.cpp
@@ -27,7 +18,6 @@ add_triton_library(TritonToLinalgExperimental
 
   LINK_LIBS PUBLIC
   TritonTilingExtIR
-  MLIRXSMTAsyncDialect
   MLIRIR
   MLIRArithDialect
   MLIRDialectUtils
