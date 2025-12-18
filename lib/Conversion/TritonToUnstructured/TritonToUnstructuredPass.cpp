@@ -318,7 +318,10 @@ public:
                   // if the pointer returning from both branches will have the
                   // same source
                   if (addptr->getParentOfType<scf::IfOp>()) {
-                    return failure();
+                      Value basePtr = addptr.getPtr();
+                      if (!ptrArgs.contains(basePtr)) {
+                          return failure();
+                      }
                   }
 
                   OpBuilder b{addptr};

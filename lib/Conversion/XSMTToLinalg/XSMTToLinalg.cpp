@@ -321,6 +321,18 @@ struct DescriptorLoadPattern : public OpRewritePattern<DescriptorLoadOp> {
 
     Value reinterpretCast = unrealizedCast.getOperand(0);
     auto reinterpretCastOp = reinterpretCast.getDefiningOp<memref::ReinterpretCastOp>();
+    if (!reinterpretCastOp){
+      if(auto castop = reinterpretCast.getDefiningOp<memref::CastOp>()){
+        reinterpretCast = castop.getOperand();
+        if(auto reinterpretCastOp1 = reinterpretCast.getDefiningOp<memref::ReinterpretCastOp>()){
+          reinterpretCastOp = reinterpretCastOp1;
+        }else{
+          return failure();
+        }
+      }else{
+        return failure();
+      }
+    }
     if (!reinterpretCastOp) return failure();
 
     auto sizes = reinterpretCastOp.getSizes();
