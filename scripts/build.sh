@@ -10,9 +10,6 @@ VERSION_NUMBER=$(cat VERSION_NUMBER)
 
 echo "LLVM_INSTALL_DIR: ${LLVM_INSTALL_DIR}"
 
-HASH_FILE="triton-src-hash.txt"
-COMMIT_ID=$(grep -v '^\s*$\|^\s*#' "$HASH_FILE" | head -n 1 | tr -d '[:space:]')
-
 export TRITON_PLUGIN_DIRS=${PWD}
 
 mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}

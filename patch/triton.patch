@@ -1,7 +1,23 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index a534cf430..0adf3e3aa 100644
+old mode 100644
+new mode 100755
+index a534cf4307..db01dd1e83
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
+@@ -239,10 +239,10 @@ if(TRITON_BUILD_PYTHON_MODULE)
+ 
+     # LLVM
+     LLVMPasses
+-    LLVMNVPTXCodeGen
++    # LLVMNVPTXCodeGen
+     # LLVMNVPTXAsmPrinter
+-    LLVMAMDGPUCodeGen
+-    LLVMAMDGPUAsmParser
++    # LLVMAMDGPUCodeGen
++    # LLVMAMDGPUAsmParser
+ 
+     Python3::Module
+     pybind11::headers
 @@ -265,6 +265,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
          LLVMPowerPCAsmParser
          LLVMPowerPCCodeGen
@@ -46,7 +62,7 @@ index a534cf430..0adf3e3aa 100644
 diff --git a/python/src/ir.cc b/python/src/ir.cc
 old mode 100644
 new mode 100755
-index d4e0619cc..49ddf287e
+index d4e0619cca..49ddf287e8
 --- a/python/src/ir.cc
 +++ b/python/src/ir.cc
 @@ -40,7 +40,9 @@
@@ -128,7 +144,7 @@ index d4e0619cc..49ddf287e
 diff --git a/python/src/ir.h b/python/src/ir.h
 old mode 100644
 new mode 100755
-index 499dd9e8a..9c863e6fa
+index 499dd9e8a9..9c863e6fa9
 --- a/python/src/ir.h
 +++ b/python/src/ir.h
 @@ -2,6 +2,9 @@
@@ -153,7 +169,7 @@ index 499dd9e8a..9c863e6fa
 diff --git a/python/triton/compiler/code_generator.py b/python/triton/compiler/code_generator.py
 old mode 100644
 new mode 100755
-index 3ffb90457..39b4b0984
+index 3ffb904574..39b4b09840
 --- a/python/triton/compiler/code_generator.py
 +++ b/python/triton/compiler/code_generator.py
 @@ -1150,7 +1150,15 @@ class CodeGenerator(ast.NodeVisitor):
@@ -206,7 +222,7 @@ index 3ffb90457..39b4b0984
              self.scf_stack.append(node)
              for_op_body = for_op.get_body(0)
 diff --git a/python/triton/language/core.py b/python/triton/language/core.py
-index bf01d5bc1..27d17df5e 100644
+index bf01d5bc14..27d17df5e8 100644
 --- a/python/triton/language/core.py
 +++ b/python/triton/language/core.py
 @@ -1111,6 +1111,12 @@ class tensor(base_value):
@@ -223,17 +239,22 @@ index bf01d5bc1..27d17df5e 100644
      def T(self):
          """Transposes a 2D tensor."""
 diff --git a/python/triton/language/semantic.py b/python/triton/language/semantic.py
-index bd48990d6..7f734d79a 100644
+old mode 100644
+new mode 100755
+index bd48990d67..fa7cb28f21
 --- a/python/triton/language/semantic.py
 +++ b/python/triton/language/semantic.py
-@@ -1973,3 +1973,5 @@ class TritonSemantic(Generic[TensorTy]):
+@@ -1973,3 +1973,6 @@ class TritonSemantic(Generic[TensorTy]):
                                                              [s.handle for s in strides], block_shape, is_signed_int,
                                                              padding)
          return tl.tensor_descriptor(handle, shape, strides, type)
++
 +    def smt_bind(self, dest: tl.tensor, src: tl.tensor):
 +        return self.tensor(self.builder.create_smt_bind(src.handle, dest.handle), dest.type)
 diff --git a/setup.py b/setup.py
-index fccb4ef17..883fb515b 100644
+old mode 100644
+new mode 100755
+index fccb4ef17e..281895d223
 --- a/setup.py
 +++ b/setup.py
 @@ -60,6 +60,8 @@ class Backend:
@@ -334,7 +355,7 @@ index fccb4ef17..883fb515b 100644
  
  # keep it separate for easy substitution
 -TRITON_VERSION = "3.6.0" + get_triton_version_suffix()
-+TRITON_VERSION = "3.3.0" + "+" + os.environ.get("SPINE_TRITON_VERSION_NUMBER", "")
++TRITON_VERSION = "3.6.0" + "+" + os.environ.get("SPINE_TRITON_VERSION_NUMBER", "")
  
  # Dynamically define supported Python versions and classifiers
  MIN_PYTHON = (3, 10)
