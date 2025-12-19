@@ -183,11 +183,6 @@ static PyObject *getArchId(PyObject *self, PyObject *args) {
         return PyUnicode_FromString(arch_id_str);
     }
 
-    const char *env_arch = getenv("SPACEMIT_EP_QEMU_SET_CORE_ARCH");
-    if (env_arch != NULL && env_arch[0] != '\0') {
-        return PyUnicode_FromString(env_arch);
-    }
-
     return PyUnicode_FromString("0xA03C");
 }
 

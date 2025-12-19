@@ -4,9 +4,6 @@ import torch
 import triton
 from triton.backends.spine_triton.driver import CPUDriver
 triton.runtime.driver.set_active(CPUDriver())
-driver = CPUDriver()
-driver.set_current_arch_id("0xA03C")
-triton.runtime.driver.set_active(driver)
 import flag_gems
 from .conftest import QUICK_MODE, TO_CPU
 import random

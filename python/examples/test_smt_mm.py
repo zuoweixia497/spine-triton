@@ -123,9 +123,6 @@ def triton_mm(a, b):
     return c
 
 if __name__ == "__main__":
-    driver = CPUDriver()
-    driver.set_current_arch_id("0xA03C")
-    triton.runtime.driver.set_active(driver)
 
     M, N, K = 256, 256, 512
     A = torch.randn((M, K), dtype=torch.float32, device="cpu", requires_grad=False)

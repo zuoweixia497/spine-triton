@@ -58,6 +58,24 @@ Value ensureIndexType(Location loc, Value value, PatternRewriter &rewriter) {
     return arith::IndexCastOp::create(rewriter, loc, indexType, value);
   }
 
+Value ofrToIndexValue(const Location loc, const OpFoldResult ofr,
+                      PatternRewriter &rewriter) {
+  if (Value val = dyn_cast<Value>(ofr)) {
+    assert(val.getType().isIntOrIndex());
+    if (!val.getType().isIndex()) {
+      val = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), val);
+    }
+    return val;
+  }
+
+  auto intVal = getIntAttr(ofr);
+  if (intVal.has_value()) {
+    return arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(intVal.value()));
+  }
+  llvm_unreachable("Unexpected OpFoldResult state");
+  return nullptr;
+}
+
 Value createZeroConstant(PatternRewriter &rewriter, Location loc, Type elementType) {
     if (elementType.isF32()) {
       return arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.0f));
@@ -333,23 +351,24 @@ struct DescriptorLoadPattern : public OpRewritePattern<DescriptorLoadOp> {
         return failure();
       }
     }
-    if (!reinterpretCastOp) return failure();
 
-    auto sizes = reinterpretCastOp.getSizes();
+    auto sizes = reinterpretCastOp.getMixedSizes();
     if (sizes.size() != 2) {
       return failure();
     }
-    Value dim0Value = sizes[0];
-    Value dim1Value = sizes[1];
+
+    Location loc = descriptorLoadOp.getLoc();
+    Value dim0Value = ofrToIndexValue(loc, sizes[0], rewriter);
+    Value dim1Value = ofrToIndexValue(loc, sizes[1], rewriter);
 
     auto microSizeAttr = descriptorLoadOp.getMicroSize();
     if (microSizeAttr.size() != 2) {
       return failure();
     }
+
     int32_t tile0 = microSizeAttr[0];
     int32_t tile1 = microSizeAttr[1];
 
-    Location loc = descriptorLoadOp.getLoc();
     Value c1 = ConstantIndexOp::create(rewriter, loc, 1);
     Value tile0Value = ConstantIndexOp::create(rewriter, loc, tile0);
     Value tile1Value = ConstantIndexOp::create(rewriter, loc, tile1);
