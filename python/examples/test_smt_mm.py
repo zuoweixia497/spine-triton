@@ -3,6 +3,7 @@ import triton
 import triton.language as tl
 import triton.language.extra.smt as smt
 from triton.backends.spine_triton.driver import CPUDriver
+triton.runtime.driver.set_active(CPUDriver())
 
 @triton.jit
 def mm_kernel(

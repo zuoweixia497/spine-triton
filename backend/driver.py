@@ -100,7 +100,7 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False):
     )
     kernel_parameters += ", " if kernel_parameters else ""
 
-    smt_parallel_inside_arg = "constexpr bool smt_parallel_inside = {}".format("true" if smt_parallel_inside else "false")
+    smt_parallel_inside_arg = "constexpr bool smt_parallel_inside = {};".format("true" if smt_parallel_inside else "false")
 
     return f"""
 #include <assert.h>
@@ -134,15 +134,14 @@ void spineStreamDispatch(
     void *stream, const std::function<void(const std::array<int64_t, 3> &)> &fn,
     const std::array<int64_t, 3> &grid_size);
 
+}} // namespace speir
+}}// namespace mlir
+
 extern "C" {{
 int64_t spine_get_stream_threads();
 int64_t spine_require_stream();
 void spine_release_stream(int64_t);
 }}
-
-}} // namespace speir
-}}// namespace mlir
-
 
 using kernel_ptr_t = void(*)({kernel_arg_decls} int, int, int, int, int, int);
 
@@ -193,6 +192,8 @@ static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_
   if (gridX*gridY*gridZ <= 0) return;
   int64_t stream_threads = spine_get_stream_threads();
   int64_t gridX_out = (gridX + stream_threads - 1) / stream_threads;
+  {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
+            for i, ty in signature.items() if i not in constants and ty[0] == "*")}
   if constexpr (!smt_parallel_inside) {{
     mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
       int x_out = block[0];
@@ -205,8 +206,6 @@ static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_
         if (x >= gridX) {{
             return;
         }}
-        {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
-            for i, ty in signature.items() if i not in constants and ty[0] == "*")}
         (*kernel_ptr)({kernel_parameters}
                    gridX, gridY, gridZ, x, y_out, z_out);
       }},
@@ -220,8 +219,6 @@ static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_
       int x = block[0];
       int y = block[1];
       int z = block[2];
-      {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
-            for i, ty in signature.items() if i not in constants and ty[0] == "*")}
       (*kernel_ptr)({kernel_parameters}
                    gridX, gridY, gridZ, x, y, z);
     }},
