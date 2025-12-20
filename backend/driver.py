@@ -74,7 +74,7 @@ def _format_of(ty):
     }[ty]
 
 
-def _generate_launcher(constants, signature, smt_parallel_inside=False, smt_parallel_inside):
+def _generate_launcher(constants, signature, smt_parallel_inside=False):
     arg_decls = ", ".join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
     args_format = "".join(
         [_format_of(_extracted_type(ty)) for ty in signature.values()]
