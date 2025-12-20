@@ -74,7 +74,7 @@ def _format_of(ty):
     }[ty]
 
 
-def _generate_launcher(constants, signature, smt_parallel_inside):
+def _generate_launcher(constants, signature, smt_parallel_inside=False, smt_parallel_inside):
     arg_decls = ", ".join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
     args_format = "".join(
         [_format_of(_extracted_type(ty)) for ty in signature.values()]
@@ -100,6 +100,8 @@ def _generate_launcher(constants, signature, smt_parallel_inside):
     )
     kernel_parameters += ", " if kernel_parameters else ""
 
+    smt_parallel_inside_arg = "constexpr bool smt_parallel_inside = {}".format("true" if smt_parallel_inside else "false")
+
     return f"""
 #include <assert.h>
 #include <stdbool.h>
@@ -120,13 +122,23 @@ def _generate_launcher(constants, signature, smt_parallel_inside):
 
 namespace mlir {{
 namespace speir {{
-void *spineGetMultiStream(int64_t expected_multi_stream = 1);
+void *spineGetMultiStream(int64_t);
 
 template <int64_t rank>
 void spineMultiStreamDispatch(
     void *multi_stream,
     const std::function<void(const std::array<int64_t, rank> &)> &fn,
     const std::array<int64_t, rank> &block_size);
+
+void spineStreamDispatch(
+    void *stream, const std::function<void(const std::array<int64_t, 3> &)> &fn,
+    const std::array<int64_t, 3> &grid_size);
+
+extern "C" {{
+int64_t spine_get_stream_threads();
+int64_t spine_require_stream();
+void spine_release_stream(int64_t);
+}}
 
 }} // namespace speir
 }}// namespace mlir
@@ -177,17 +189,45 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
 
 
 static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_t kernel_ptr, {arg_decls}) {{
+  {smt_parallel_inside_arg}
   if (gridX*gridY*gridZ <= 0) return;
-  mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
-    int x = block[0];
-    int y = block[1];
-    int z = block[2];
-    {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
-          for i, ty in signature.items() if i not in constants and ty[0] == "*")}
-    (*kernel_ptr)({kernel_parameters}
-                 gridX, gridY, gridZ, x, y, z);
-  }},
-     {{gridX, gridY, gridZ}});
+  int64_t stream_threads = spine_get_stream_threads();
+  int64_t gridX_out = (gridX + stream_threads - 1) / stream_threads;
+  if constexpr (!smt_parallel_inside) {{
+    mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
+      int x_out = block[0];
+      int y_out = block[1];
+      int z_out = block[2];
+      int64_t current_stream = spine_require_stream();
+      mlir::speir::spineStreamDispatch(reinterpret_cast<void*>(current_stream),
+      [&] (const std::array<int64_t, 3> & cur_grid) {{
+        int x = cur_grid[0] + x_out * stream_threads;
+        if (x >= gridX) {{
+            return;
+        }}
+        {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
+            for i, ty in signature.items() if i not in constants and ty[0] == "*")}
+        (*kernel_ptr)({kernel_parameters}
+                   gridX, gridY, gridZ, x, y_out, z_out);
+      }},
+        {{stream_threads, 1, 1}});
+
+      spine_release_stream(current_stream);
+    }},
+       {{gridX_out, gridY, gridZ}});
+  }} else {{
+    mlir::speir::spineMultiStreamDispatch<3>(reinterpret_cast<void*>(stream), [&](const std::array<int64_t, 3> &block){{
+      int x = block[0];
+      int y = block[1];
+      int z = block[2];
+      {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
+            for i, ty in signature.items() if i not in constants and ty[0] == "*")}
+      (*kernel_ptr)({kernel_parameters}
+                   gridX, gridY, gridZ, x, y, z);
+    }},
+       {{gridX, gridY, gridZ}});
+  }}
+
   }}
 
 static PyObject* launch(PyObject* self, PyObject* args) {{

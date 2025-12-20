@@ -33,7 +33,7 @@ git checkout a992f29451b9e140424f35ac5e20177db4afbdc0
 mkdir -p build-llvm-riscv64
 pushd build-llvm-riscv64
 cmake -G Ninja ../llvm-project/llvm \
-   -DLLVM_ENABLE_PROJECTS="mlir;llvm;lld" \
+   -DLLVM_ENABLE_PROJECTS="mlir;llvm" \
    -DLLVM_TARGETS_TO_BUILD="RISCV" \
    -DLLVM_ENABLE_ASSERTIONS=ON \
    -DCMAKE_BUILD_TYPE=Release \
@@ -43,9 +43,9 @@ cmake -G Ninja ../llvm-project/llvm \
    -DLLVM_INSTALL_UTILS=ON \
    -DLLVM_INCLUDE_TESTS=OFF \
    -DLLVM_BUILD_TESTS=OFF \
-   -DLLVM_ENABLE_LLD=ON \
+   -DLLVM_ENABLE_LLD=OFF \
    -DCMAKE_INSTALL_PREFIX=installed \
-   -DCMAKE_TOOLCHAIN_FILE=../cmake/linux_riscv64.clang.toolchain.cmake
+   -DCMAKE_TOOLCHAIN_FILE=../cmake/linux_riscv64.toolchain.cmake
 
 cmake --build . --target install --parallel 40
 popd
