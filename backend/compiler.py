@@ -23,6 +23,7 @@ from . import (
 def _ttir_to_linalgdir(mod, metadata):
     # Get Triton-MLIR as string
     ttir_code = str(mod)
+    metadata["smt_parallel_inside"] = ("bind_sub_block = true" in ttir_code)
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, "tt.mlir")
         dst_path = os.path.join(tmpdir, "linalg.mlir")

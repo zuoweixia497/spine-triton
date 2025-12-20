@@ -74,7 +74,7 @@ def _format_of(ty):
     }[ty]
 
 
-def _generate_launcher(constants, signature):
+def _generate_launcher(constants, signature, smt_parallel_inside):
     arg_decls = ", ".join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
     args_format = "".join(
         [_format_of(_extracted_type(ty)) for ty in signature.values()]
@@ -416,7 +416,8 @@ class CPULauncher(object):
         cst_key = lambda i: src.fn.arg_names.index(i) if isinstance(i, str) else i
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
-        launcher_src = _generate_launcher(constants, signature)
+        smt_parallel_inside = metadata.smt_parallel_inside
+        launcher_src = _generate_launcher(constants, signature, smt_parallel_inside)
         mod = compile_module(launcher_src, "__spine_triton_kernel_launcher")
         self.launch = mod.launch
 
