@@ -130,22 +130,45 @@ def _optimize_llir(llir: str):
 
 def _llir_to_so(llir: str, metadata):
     cpu_arch = platform.machine()
+    target_arch_id = metadata["target"].arch_id
+    target_arch_id_to_cpu_arch = {
+        "0xA03C": "spacemit-x60",
+        "0xA064": "spacemit-a100",
+    }
+    ai_cpu_arch = target_arch_id_to_cpu_arch.get(target_arch_id, None)
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, ".ll")
+        src_opt_path = os.path.join(tmpdir, ".opt.ll")
         dst_path = os.path.join(tmpdir, ".o")
         Path(src_path).write_text(llir)
+
+        llopt_path = get_llvm_bin_path("opt")
+        llopt_flags = []
+        if cpu_arch == "riscv64":
+            llopt_flags.extend([
+                    "--march=riscv64",
+                    "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
+                    "-passes=loop-vectorize",
+                    "-force-vector-width=32",
+                    "-force-vector-interleave=2"
+            ])
+
+        subprocess.check_call(
+            [llopt_path, src_path, *llopt_flags, "-o", src_opt_path]
+        )
+
         llc_path = get_llvm_bin_path("llc")
         llc_flags = ["-O3", "--float-abi=hard", "--relocation-model=pic"]
         if cpu_arch == "riscv64":
             llc_flags.extend(
                 [
                     "--march=riscv64",
-                    "--mattr=64bit,a,b,c,d,f,i,m,v,zfh,zicbop,zicbom,zicboz",
+                    "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
                 ]
             )
 
         subprocess.check_call(
-            [llc_path, src_path, *llc_flags, "-filetype=obj", "-o", dst_path]
+            [llc_path, src_opt_path, *llc_flags, "-filetype=obj", "-o", dst_path]
         )
         dump_ir_if_needed([dst_path], metadata["name"])
         import sys
