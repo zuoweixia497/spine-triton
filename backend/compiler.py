@@ -48,7 +48,7 @@ def _optimize_linalgdir(linalgdir: str):
     return linalgdir
 
 
-def _linalgdir_to_llir(linalgdir: str, metadata):
+def _spine_mlir_linalgdir_to_llir_ref(linalgdir: str, metadata):
     with tempfile.TemporaryDirectory() as tmpdir:
         linalg_path = os.path.join(tmpdir, "linalg.mlir")
         llmlir_path = os.path.join(tmpdir, "ll.mlir")
@@ -60,7 +60,7 @@ def _linalgdir_to_llir(linalgdir: str, metadata):
             [
                 spine_mlir_path,
                 linalg_path,
-                "--spine-ref-pipeline",
+                "--spine-triton-e2e-ref-pipeline",
                 "-o",
                 llmlir_path,
             ]
@@ -82,14 +82,11 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
         llir_path = os.path.join(tmpdir, ".ll")
         Path(linalg_path).write_text(linalgdir)
         spine_mlir_path = get_spine_mlir_opt_path()
-        vec_method = os.getenv("SPINE_MLIR_VEC_METHOD", "")
-        # SpineTriton-MLIR to LLVM-MLIR
-        vectorization_method_option = ("=vectorization-method=" + vec_method) if vec_method in ("linalg", "affine", "mix") else ""
         subprocess.check_call(
             [
                 spine_mlir_path,
                 linalg_path,
-                "--spine-triton-pipeline" + vectorization_method_option,
+                "--spine-triton-e2e-pipeline",
                 "-o",
                 llmlir_path,
             ]
@@ -327,7 +324,7 @@ class CPUBackend(BaseBackend):
             )
         else:
             stages["llir"] = lambda src, metadata: _optimize_llir(
-                _linalgdir_to_llir(src, metadata)
+                _spine_mlir_linalgdir_to_llir_ref(src, metadata)
             )
 
         stages["so"] = lambda src, metadata: _llir_to_so(src, metadata)
