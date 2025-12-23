@@ -1141,6 +1141,38 @@ LogicalResult PtrAnalysis::visitOperandBitcast(triton::BitcastOp op,
   return success();
 }
 
+LogicalResult PtrAnalysis::visitOperandAlloc(xsmt::AllocOp allocOp,
+                                           PtrState &state,
+                                           const Location loc,
+                                           OpBuilder &builder) {
+  assert(state.isEmpty());
+  state.source = allocOp.getResult();
+
+  auto shapeValues = allocOp.getShape();
+
+  SmallVector<int64_t> shapeDims;
+  for (auto size : shapeValues) {
+    shapeDims.push_back(static_cast<int64_t>(size));
+  }
+
+  auto indexTy = builder.getIndexType();
+
+  for (auto size : shapeDims) {
+    state.offsets.push_back(builder.getIndexAttr(0));
+    state.sizes.push_back(builder.getIndexAttr(size));
+    state.strides.push_back(builder.getIndexAttr(1));
+    state.shape.push_back(builder.getIndexAttr(0));
+  }
+
+  for (int i = shapeDims.size() - 1; i >= 0; i--) {
+    state.order.push_back(i);
+  }
+
+  state.origiOffsets = state.offsets;
+
+  return success();
+}
+
 LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
                                         const Location loc,
                                         OpBuilder &builder) {
@@ -1187,6 +1219,8 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
       } else if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
         state.source = operand;
         return success();
+      } else if (auto allocOp = dyn_cast<xsmt::AllocOp>(op)) {
+        return visitOperandAlloc(allocOp, state, loc, builder);
       } else {
         op->emitRemark("Unexpected defining op for triton pointer operand");
         return failure();
@@ -1877,39 +1911,6 @@ LogicalResult PtrAnalysis::rewriteDescriptorLoadOp(xsmt::DescriptorLoadOp op) {
   return success();
 }
 
-LogicalResult PtrAnalysis::rewriteDescriptorLoadViewOp(xsmt::DescriptorLoadViewOp op) {
-  Value ptrOperand = op->getOperand(0);
-  auto newPtr = ptrMap.lookupOrNull(ptrOperand);
-  if (!newPtr) {
-    op->emitRemark("PtrAnalysis: pointer is not replaced with tts.make_tptr so "
-                   "xsmt.descriptor_load_view cannot be rewritten");
-    return failure();
-  }
-
-  auto ptrType = dyn_cast<triton::PointerType>(newPtr.getType());
-  if (ptrType && !isa<ShapedType>(ptrType.getPointeeType())) {
-    op->emitRemark("PtrAnalysis: scalar pointer used in xsmt.descriptor_load_view "
-                   "will not be rewritten");
-    return failure();
-  }
-
-  LLVM_DEBUG({
-    llvm::dbgs() << "Rewriting xsmt.descriptor_load_view with new pointer:\n";
-    newPtr.dump();
-    llvm::dbgs() << "Original operation:\n";
-    op->dump();
-  });
-
-  op->setOperand(0, newPtr);
-
-  LLVM_DEBUG({
-    llvm::dbgs() << "Rewritten xsmt.descriptor_load_view:\n";
-    op->dump();
-  });
-
-  return success();
-}
-
 LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
   LLVM_DEBUG({
     llvm::dbgs() << "rewriting rootOp\n";
@@ -1985,9 +1986,19 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
           }
           return WalkResult::advance();
         })
-        .Case<xsmt::DescriptorLoadViewOp>([&](auto descriptor_load_view) {
-          if (rewriteDescriptorLoadViewOp(descriptor_load_view).failed()) {
-            descriptor_load_view->emitRemark("PtrAnalysis: Failed to rewrite xsmt.descriptor_load_view");
+        .Case<xsmt::AllocOp>([&](auto alloc) {
+          OpBuilder builder(alloc);
+          PtrState state;
+          if (succeeded(visitOperandAlloc(alloc, state, alloc.getLoc(), builder))) {
+          //   knownPtrs[alloc.getResult()] = state;
+          //   if (state.isStructured()) {
+          //     auto maketptrOp = state.createTTSMakeTensorPtrOp(builder, state.origiOffsets, alloc.getLoc());
+          //     ptrMap.map(alloc.getResult(), maketptrOp.getResult());
+          //   } else {
+              ptrMap.map(alloc.getResult(), alloc.getResult());
+            // }
+          } else {
+            alloc->emitRemark("PtrAnalysis: Failed to analyze xsmt.alloc");
           }
           return WalkResult::advance();
         })

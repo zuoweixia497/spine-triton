@@ -5,6 +5,10 @@ from triton.language import core as tl
 from typing import List
 from triton.language import semantic as tl_semantic
 
+from typing import TypeVar
+T = TypeVar('T')
+TensorTy = TypeVar('TensorTy')
+
 
 def compile_hint(ptr: tl.tensor, hint_name: str, hint_val, _semantic=None):
     if not hint_val:
@@ -48,7 +52,7 @@ def descriptor_load(base: tl.tensor, offsets, shape, micro_size, _semantic=None)
     return tl.tensor(handle, tl.block_type(element_ty, result_shape))
 
 
-def descriptor_load_view(base: tl.tensor, offsets, shape, destination: tl.tensor, micro_size, _semantic=None) -> tl.tensor:
+def descriptor_load_to_destination(base: tl.tensor, offsets, shape, destination: tl.tensor, micro_size, _semantic=None) -> tl.tensor:
     semantic_instance = tl_semantic.TritonSemantic(_semantic.builder)
     offsets = semantic_instance._convert_to_ir_values(offsets)
     shape = [elem.value if isinstance(
@@ -56,7 +60,7 @@ def descriptor_load_view(base: tl.tensor, offsets, shape, destination: tl.tensor
     micro_size = [elem.value if isinstance(
         elem, tl.constexpr) else elem for elem in micro_size]
 
-    handle = _semantic.builder.create_descriptor_load_view(
+    handle = _semantic.builder.create_descriptor_load_to_destination(
         base.handle, offsets, shape, micro_size, destination.handle)
     result_tensor = tl.tensor(handle, destination.type)
     return result_tensor
@@ -107,34 +111,17 @@ def view(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tens
     return result_tensor
 
 
-def alloc(shape, dtype, micro_size, storage: str, _semantic=None) -> tl.tensor:
-    dtype = dtype.to_ir(_semantic.builder)
+def alloc(shape, dtype, storage: str, _semantic=None):
+
     shape = [elem.value if isinstance(
         elem, tl.constexpr) else elem for elem in shape]
-    micro_size = [elem.value if isinstance(
-        elem, tl.constexpr) else elem for elem in micro_size]
 
-    assert all(isinstance(elem, int) and -2**31 <= elem < 2**31 for elem in shape), \
-        "Expected a list of constant integers (`int32_t` range) in `shape`"
-    assert all(isinstance(elem, int) and -2**31 <= elem < 2**31 for elem in micro_size), \
-        "Expected a list of constant integers (`int32_t` range) in `micro_size`"
-    assert len(shape) == len(micro_size), \
-        "Shape and micro_size must have the same length"
+    ptr_type = tl.pointer_type(tl.block_type(dtype, shape))
+    dtype_ir = ptr_type.to_ir(_semantic.builder)
 
-    for i, (dim, micro) in enumerate(zip(shape, micro_size)):
-        assert dim % micro == 0, \
-            f"Dimension {i} of shape ({dim}) must be divisible by micro_size ({micro})"
+    handle = _semantic.builder.create_alloc(shape, dtype_ir, storage)
 
-    handle = _semantic.builder.create_alloc(shape, micro_size, dtype)
-
-    result_shape = [
-        shape[0] // micro_size[0],
-        shape[1] // micro_size[1],
-        micro_size[0],
-        micro_size[1]
-    ]
-
-    return tl.tensor(handle, tl.block_type(dtype, result_shape))
+    return tl.tensor(handle, ptr_type)
 
 
 def mmt4d(a_packed: tl.tensor, b_packed: tl.tensor, out_unpacked: tl.tensor, _semantic=None):

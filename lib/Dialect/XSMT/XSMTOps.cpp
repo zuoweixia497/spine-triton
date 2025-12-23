@@ -51,15 +51,6 @@ void DescriptorLoadOp::build(OpBuilder &builder, OperationState &state,
                builder.getDenseI32ArrayAttr(micro_size));
 }
 
-void DescriptorLoadViewOp::build(OpBuilder &builder, OperationState &state,
-                                 Value base, ValueRange offsets, ArrayRef<int32_t> shape,
-                                 ArrayRef<int32_t> micro_size, Value destination) {
-  auto resultType = destination.getType();
-  return build(builder, state, resultType, base, offsets,
-               builder.getDenseI32ArrayAttr(shape),
-               builder.getDenseI32ArrayAttr(micro_size), destination);
-}
-
 
 void ViewOp::build(OpBuilder &builder, OperationState &state,
                    Value base, ValueRange offsets,
@@ -120,22 +111,6 @@ void ViewOp::build(OpBuilder &builder, OperationState &state,
                 builder.getDenseI32ArrayAttr(shape),
                 builder.getDenseI32ArrayAttr(micro_size));
   }
-}
-
-void AllocOp::build(OpBuilder &builder, OperationState &state,
-                    ArrayRef<int32_t> shape,
-                    ArrayRef<int32_t> micro_size,
-                    Type elementType) {
-  SmallVector<int64_t> resultShape;
-  resultShape.push_back(shape[0] / micro_size[0]);
-  resultShape.push_back(shape[1] / micro_size[1]);
-  resultShape.push_back(micro_size[0]);
-  resultShape.push_back(micro_size[1]);
-
-  auto resultType = RankedTensorType::get(resultShape, elementType);
-  build(builder, state, resultType,
-        builder.getDenseI32ArrayAttr(shape),
-        builder.getDenseI32ArrayAttr(micro_size));
 }
 
 } // namespace xsmt

@@ -12,6 +12,7 @@
 #include "triton-shared/Dialect/TPtr/IR/TPtrDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -77,7 +78,7 @@ public:
                 math::MathDialect, linalg::LinalgDialect, affine::AffineDialect,
                 scf::SCFDialect, tensor::TensorDialect,
                 bufferization::BufferizationDialect, triton::TritonDialect,
-                ttx::TritonTilingExtDialect, memref::MemRefDialect>();
+                ttx::TritonTilingExtDialect, memref::MemRefDialect, xsmt::XSMTDialect>();
   }
 
   void runOnOperation() override {
@@ -93,7 +94,7 @@ public:
         bufferization::BufferizationDialect, ttx::TritonTilingExtDialect,
         memref::MemRefDialect>();
 
-    target.addIllegalOp<tts::LoadOp, tts::StoreOp, tts::MakeTensorPtrOp>();
+    target.addIllegalOp<tts::LoadOp, tts::StoreOp, tts::MakeTensorPtrOp, xsmt::AllocOp>();
 
     target.addLegalOp<UnrealizedConversionCastOp>();
 

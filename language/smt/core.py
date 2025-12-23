@@ -68,7 +68,7 @@ def descriptor_load(base, offsets, shape, micro_size=None, destination=None, _se
     if destination is None:
         return smt_semantic.descriptor_load(base, offsets, shape, micro_size, _semantic)
 
-    return smt_semantic.descriptor_load_view(base, offsets, shape, destination, micro_size, _semantic)
+    return smt_semantic.descriptor_load_to_destination(base, offsets, shape, destination, micro_size, _semantic)
 
 
 @builtin
@@ -93,24 +93,20 @@ def view(base, offsets, shape, micro_size=None, _semantic=None):
 
 
 @builtin
-def alloc(shape, dtype=tl.float32, micro_size=None, storage="l2",  _semantic=None):
+def alloc(shape, type=tl.float32, storage="l2",  _semantic=None):
     """Allocate a tensor in shared memory with specified shape and micro tile size.
 
     :param shape: shape of the tensor to allocate (e.g., [BLOCK_SIZE_N, BLOCK_SIZE_K])
-    :param micro_size: micro tile size for tensor cores (e.g., [16, 8])
-    :param dtype: data type of the tensor elements (default: float32)
+    :param type: data type of the tensor elements (default: float32)
 
     Example
     *******
     .. code-block:: python
 
-        b_packed_shared = tl.alloc([BLOCK_SIZE_N, BLOCK_SIZE_K], [16, 8])
+        b_packed_shared = tl.alloc([BLOCK_SIZE_N, BLOCK_SIZE_K])
     """
-    rank = len(shape)
-    if micro_size is None:
-        micro_size = [0] * rank
 
-    return smt_semantic.alloc(shape, dtype, micro_size, storage, _semantic)
+    return smt_semantic.alloc(shape, type, storage, _semantic)
 
 
 @builtin

@@ -334,6 +334,9 @@ public:
   LogicalResult visitOperandBitcast(triton::BitcastOp bitcastOp, PtrState &state,
                                     const Location loc, OpBuilder &builder);
 
+  LogicalResult visitOperandAlloc(xsmt::AllocOp allocOp, PtrState &state,
+                                    const Location loc, OpBuilder &builder);
+
   // Get the computed PtrState for the forOp's init-arg at the provided index.
   FailureOr<PtrState> getLoopInitArgPtrState(scf::ForOp forOp, size_t index);
 
@@ -374,8 +377,6 @@ public:
   LogicalResult rewriteStoreOp(triton::StoreOp op, bool useUnsafeMask = false);
 
   LogicalResult rewriteDescriptorLoadOp(xsmt::DescriptorLoadOp op);
-
-  LogicalResult rewriteDescriptorLoadViewOp(xsmt::DescriptorLoadViewOp op);
 
   LogicalResult rewriteOp(Operation *op, bool useUnsafeMask = false);
 };

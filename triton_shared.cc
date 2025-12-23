@@ -10,6 +10,7 @@
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <iostream>
 
 namespace py = pybind11;
 using namespace ir;
@@ -34,10 +35,20 @@ void init_triton_xsmt_ir(py::module &&m) {
              return self.create<xsmt::DescriptorLoadOp>(base, offsets, shape,
                                                         packed_size);
            })
-      .def("create_descriptor_load_view",
+      .def("create_descriptor_load_to_destination",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
-              std::vector<int32_t> &shape, std::vector<int32_t> &packed_size , Value &destination) -> Value {
-             return self.create<xsmt::DescriptorLoadViewOp>(base, offsets, shape, packed_size, destination);
+              std::vector<int32_t> &shape, std::vector<int32_t> &packed_size , Value &destination) {
+               Value DescriptorLoadOp = self.create<xsmt::DescriptorLoadOp>(base, offsets, shape, packed_size);
+               auto resultType = dyn_cast<RankedTensorType>(DescriptorLoadOp.getType());
+               int rank = resultType.getRank();
+               std::vector<int32_t> boundary_check;
+               for (int i = 0; i < rank; ++i) {
+                  boundary_check.push_back(i);
+               }
+               self.create<mlir::triton::StoreOp>(destination, DescriptorLoadOp,
+                                           boundary_check,
+                                           triton::CacheModifier::NONE,
+                                           triton::EvictionPolicy::NORMAL);
            })
       .def("create_view",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
@@ -47,8 +58,14 @@ void init_triton_xsmt_ir(py::module &&m) {
            })
       .def("create_alloc",
            [](TritonOpBuilder &self, std::vector<int32_t> &shape,
-              std::vector<int32_t> &packed_size, Type &elementType) -> Value {
-             return self.create<xsmt::AllocOp>(shape, packed_size, elementType);
+              mlir::Type type, std::string storage) -> Value {
+            if (shape.empty()) {
+              throw std::runtime_error("alloc shape cannot be empty");
+            }
+            std::cout << "Shape size: " << shape.size() << std::endl;
+            auto loc = self.getBuilder().getUnknownLoc();
+            auto op = self.create<xsmt::AllocOp>(type, shape, storage);
+            return op;
            })
       .def("create_mmt4d",
      [](TritonOpBuilder &self, Value &a, Value &b, std::optional<Value> c = std::nullopt) -> Value {

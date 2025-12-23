@@ -28,6 +28,7 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/MathExtras.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 
 #include <numeric>
 #include <type_traits>
@@ -114,116 +115,6 @@ inline bool isInsideLoop(mlir::Operation *op) {
   }
   return false;
 }
-
-class TransposeEliminationPattern : public OpRewritePattern<linalg::TransposeOp> {
-public:
-  TransposeEliminationPattern(MLIRContext *context)
-      : OpRewritePattern<linalg::TransposeOp>(context) {}
-
-  LogicalResult matchAndRewrite(linalg::TransposeOp transposeOp,
-                                PatternRewriter &rewriter) const override {
-    auto permutation = transposeOp.getPermutation();
-    SmallVector<int64_t> expectedPerm = {1, 0, 3, 2};
-    if (!permutation.equals(expectedPerm)) {
-      return failure();
-    }
-
-    Value transposeInput = transposeOp.getInput();
-    auto viewOp = transposeInput.getDefiningOp<xsmt::ViewOp>();
-    if (!viewOp) return failure();
-    auto allocOp = viewOp.getBase().getDefiningOp<xsmt::AllocOp>();
-    if (!allocOp) return failure();
-
-    xsmt::DescriptorLoadViewOp descriptorLoadViewOp = nullptr;
-    for (auto user : viewOp.getResult().getUsers()) {
-      if (auto loadOp = dyn_cast<xsmt::DescriptorLoadViewOp>(user)) {
-        descriptorLoadViewOp = loadOp;
-        break;
-      }
-    }
-    if (!descriptorLoadViewOp) return failure();
-
-    Value transposeOutput = transposeOp->getResult(0);
-    if (!transposeOutput.hasOneUse()) return failure();
-
-    auto mmt4dUser = *transposeOutput.user_begin();
-    auto mmt4dOp = dyn_cast<xsmt::MMT4DOp>(mmt4dUser);
-    if (!mmt4dOp) return failure();
-
-    rewriter.setInsertionPoint(allocOp);
-    auto oldAllocType = dyn_cast<RankedTensorType>(allocOp.getResult().getType());
-    if (!oldAllocType) return failure();
-    auto oldShape = oldAllocType.getShape();
-    if (oldShape.size() != 4) return failure();
-
-    SmallVector<int64_t> newAllocShape;
-    newAllocShape.push_back(oldShape[1]);
-    newAllocShape.push_back(oldShape[0]);
-    newAllocShape.push_back(oldShape[3]);
-    newAllocShape.push_back(oldShape[2]);
-
-    auto newAllocType = RankedTensorType::get(newAllocShape, oldAllocType.getElementType());
-    auto oldShapeAttr = allocOp.getShape();
-    auto oldMicroSizeAttr = allocOp.getMicroSize();
-
-    SmallVector<int32_t> newShapeVec = {oldShapeAttr[1], oldShapeAttr[0]};
-    SmallVector<int32_t> newMicroSizeVec = {oldMicroSizeAttr[1], oldMicroSizeAttr[0]};
-
-    auto newAlloc = xsmt::AllocOp::create(rewriter, allocOp.getLoc(), newAllocType,
-        rewriter.getDenseI32ArrayAttr(newShapeVec),
-        rewriter.getDenseI32ArrayAttr(newMicroSizeVec));
-
-    rewriter.setInsertionPoint(viewOp);
-    auto oldOffsets = viewOp.getOffsets();
-    auto oldShapeView = viewOp.getShape();
-    auto oldMicroSizeView = viewOp.getMicroSize();
-    SmallVector<Value> newOffsets = {oldOffsets[1], oldOffsets[0]};
-
-    SmallVector<int32_t> newShapeViewVec = {oldShapeView[1], oldShapeView[0]};
-    SmallVector<int32_t> newMicroSizeViewVec = {oldMicroSizeView[1], oldMicroSizeView[0]};
-
-    auto oldViewType = dyn_cast<RankedTensorType>(viewOp.getResult().getType());
-    if (!oldViewType) return failure();
-    auto oldViewShape = oldViewType.getShape();
-
-    SmallVector<int64_t> newViewShape;
-    newViewShape.push_back(oldViewShape[1]);
-    newViewShape.push_back(oldViewShape[0]);
-    newViewShape.push_back(oldViewShape[3]);
-    newViewShape.push_back(oldViewShape[2]);
-
-    auto newViewType = RankedTensorType::get(newViewShape, oldViewType.getElementType());
-
-    auto newView = xsmt::ViewOp::create(rewriter, viewOp.getLoc(), newViewType, newAlloc, newOffsets,
-        rewriter.getDenseI32ArrayAttr(newShapeViewVec),
-        rewriter.getDenseI32ArrayAttr(newMicroSizeViewVec));
-
-    rewriter.setInsertionPoint(descriptorLoadViewOp);
-
-    auto newDescriptorLoad = xsmt::DescriptorLoadViewOp::create(rewriter, descriptorLoadViewOp.getLoc(), newViewType,
-        descriptorLoadViewOp.getBase(), newOffsets, newShapeViewVec, newMicroSizeViewVec, newView);
-    newDescriptorLoad->setAttr("transpose", rewriter.getBoolAttr(true));
-    rewriter.replaceAllUsesWith(transposeOp.getResult(), newView.getResult());
-
-    rewriter.eraseOp(transposeOp);
-    if (auto emptyOp = transposeOp.getDpsInitOperand(0)->get().getDefiningOp<tensor::EmptyOp>()) {
-      if (emptyOp->use_empty()) {
-        rewriter.eraseOp(emptyOp);
-      }
-    }
-    if (descriptorLoadViewOp->use_empty()) {
-      rewriter.eraseOp(descriptorLoadViewOp);
-    }
-    if (viewOp->use_empty()) {
-      rewriter.eraseOp(viewOp);
-    }
-    if (allocOp->use_empty()) {
-      rewriter.eraseOp(allocOp);
-    }
-
-    return success();
-  }
-};
 
 struct MMT4DBindFusionPattern : public OpRewritePattern<xsmt::BindOp> {
   MMT4DBindFusionPattern(MLIRContext *context)
@@ -526,142 +417,6 @@ private:
 
 
 
-struct DescriptorLoadViewOpPattern : public OpRewritePattern<DescriptorLoadViewOp> {
-public:
-  DescriptorLoadViewOpPattern(MLIRContext *context)
-      : OpRewritePattern<xsmt::DescriptorLoadViewOp>(context) {}
-
-  LogicalResult matchAndRewrite(DescriptorLoadViewOp DescriptorLoadViewOp,
-                                PatternRewriter &rewriter) const override {
-    Value result = DescriptorLoadViewOp.getResult();
-
-    Value sourcePtr = DescriptorLoadViewOp.getBase();
-    auto unrealizedCast = sourcePtr.getDefiningOp<UnrealizedConversionCastOp>();
-    if (!unrealizedCast) return failure();
-
-    Value reinterpretCast = unrealizedCast.getOperand(0);
-    auto reinterpretCastOp = reinterpretCast.getDefiningOp<memref::ReinterpretCastOp>();
-    if (!reinterpretCastOp) return failure();
-
-    auto sizes = reinterpretCastOp.getSizes();
-    if (sizes.size() != 2) {
-      return failure();
-    }
-    bool hasTranspose = DescriptorLoadViewOp->hasAttr("transpose") &&
-                        DescriptorLoadViewOp->getAttrOfType<BoolAttr>("transpose").getValue();
-    if (!hasTranspose){
-      return failure();
-    }
-
-    Value  dim0Value = sizes[1];
-    Value  dim1Value = sizes[0];
-
-    ValueRange offsets = DescriptorLoadViewOp.getOffsets();
-    ArrayRef<int32_t> shapes = DescriptorLoadViewOp.getShape();
-    ArrayRef<int32_t> microSizeAttr = DescriptorLoadViewOp.getMicroSize();
-
-    int32_t tile0 = microSizeAttr[0];
-    int32_t tile1 = microSizeAttr[1];
-
-    Location loc = DescriptorLoadViewOp.getLoc();
-    Value c1 = ConstantIndexOp::create(rewriter, loc, 1);
-    Value tile0Value = ConstantIndexOp::create(rewriter, loc, tile0);
-    Value tile1Value = ConstantIndexOp::create(rewriter, loc, tile1);
-
-    Value offset0 = offsets[0];
-    Value offset1 = offsets[1];
-    Value rankedMemRef = reinterpretCast;
-
-    Value indexOffset0 = ensureIndexType(loc, offset0, rewriter);
-    Value indexOffset1 = ensureIndexType(loc, offset1, rewriter);
-    Value indexDim0Value = ensureIndexType(loc, dim0Value, rewriter);
-    Value indexDim1Value = ensureIndexType(loc, dim1Value, rewriter);
-
-    Value size_m1 = SubIOp::create(rewriter, loc, indexDim0Value, indexOffset0);
-    Value shape0 = ConstantIndexOp::create(rewriter, loc, shapes[0]);
-    Value dim0 = MinSIOp::create(rewriter, loc, size_m1, shape0);
-
-    Value size_k1 = SubIOp::create(rewriter, loc, indexDim1Value, indexOffset1);
-    Value shape1 = ConstantIndexOp::create(rewriter, loc, shapes[1]);
-    Value dim1 = MinSIOp::create(rewriter, loc, size_k1, shape1);
-
-    Value subview = SubViewOp::create(rewriter, loc,
-        rankedMemRef,
-        ArrayRef<OpFoldResult>{indexOffset1, indexOffset0},
-        ArrayRef<OpFoldResult>{dim1, dim0},
-        ArrayRef<OpFoldResult>{c1, c1});
-
-    auto subviewType = cast<MemRefType>(subview.getType());
-    auto tensorType = RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
-    Value tensor = ToTensorOp::create(rewriter, loc, tensorType, subview,
-                                              /*restrict=*/rewriter.getUnitAttr());
-    Value packedRows = createCeilDivUI(rewriter, loc, dim0, tile0Value);
-    Value packedCols = createCeilDivUI(rewriter, loc, dim1, tile1Value);
-
-    SmallVector<int64_t, 4> shapeDims;
-    shapeDims.push_back(ShapedType::kDynamic);
-    shapeDims.push_back(ShapedType::kDynamic);
-    shapeDims.push_back(tile0);
-    shapeDims.push_back(tile1);
-    Type elementType = tensorType.getElementType();
-
-    auto emptyType = RankedTensorType::get(shapeDims, elementType);
-
-    Value emptyTensor = EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
-    Value paddingValue = createZeroConstant(rewriter, loc, elementType);
-
-    auto packOp = PackOp::create(rewriter, loc,
-          tensor,
-          emptyTensor,
-          ArrayRef<int64_t>{1, 0},
-          ArrayRef<OpFoldResult>{rewriter.getIndexAttr(tile0), rewriter.getIndexAttr(tile1)},
-          paddingValue,
-          ArrayRef<int64_t>{1, 0});
-
-    Value desSubview;
-    Value castValue = DescriptorLoadViewOp->getOperand(3);
-    if (auto subviewValue = findSubview(castValue)) {
-      desSubview = subviewValue;
-    } else {
-      return failure();
-    }
-
-    Value c0 = ConstantIndexOp::create(rewriter, loc, 0);
-    Value c16 = ConstantIndexOp::create(rewriter, loc, 16);
-    Value c8 = ConstantIndexOp::create(rewriter, loc, 8);
-
-    auto destMemRefType = dyn_cast<MemRefType>(desSubview.getType());
-    if (!destMemRefType || destMemRefType.getRank() < 4) {
-      return rewriter.notifyMatchFailure(DescriptorLoadViewOp, "Destination memref must be at least 4D");
-    }
-
-    Value destSubview = SubViewOp::create(rewriter, loc,
-        desSubview,
-        ArrayRef<OpFoldResult>{c0, c0, c0, c0},
-        ArrayRef<OpFoldResult>{packedRows, packedCols, c16, c8},
-        ArrayRef<OpFoldResult>{c1, c1, c1, c1});
-
-    auto materializeOp = bufferization::MaterializeInDestinationOp::create(rewriter, packOp.getLoc(), packOp.getResult(), destSubview);
-    materializeOp.setWritable(true);
-    rewriter.eraseOp(DescriptorLoadViewOp);
-
-    return success();
-  }
-
-private:
-  Value findSubview(mlir::Value castValue) const {
-    if (auto castOp = castValue.getDefiningOp<tensor::CastOp>()) {
-      Value toTensorValue = castOp.getSource();
-      if (auto toTensorOp = toTensorValue.getDefiningOp<bufferization::ToTensorOp>()) {
-        Value subviewValue = toTensorOp->getOperand(0);
-        return subviewValue;
-        }
-      }
-    return nullptr;
-  }
-};
-
-
 struct FillOpPattern : public OpRewritePattern<linalg::FillOp> {
 public:
   FillOpPattern(MLIRContext *context)
@@ -717,30 +472,6 @@ public:
 };
 
 
-class ConvertXSMTAllocToMemRef : public OpRewritePattern<xsmt::AllocOp> {
-public:
-  using OpRewritePattern<xsmt::AllocOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(xsmt::AllocOp allocOp,
-                                PatternRewriter &rewriter) const override {
-    Location loc = allocOp.getLoc();
-    TensorType resultType = cast<TensorType>(allocOp.getResult().getType());
-
-    MemRefType memrefType = MemRefType::get(
-        resultType.getShape(),
-        resultType.getElementType()
-    );
-
-    Value memref = memref::AllocOp::create(rewriter, loc, memrefType);
-
-    Value newTensor = bufferization::ToTensorOp::create(rewriter, loc, resultType, memref);
-
-    rewriter.replaceOp(allocOp, newTensor);
-
-    return success();
-  }
-};
-
 struct ViewOpPattern : public OpRewritePattern<xsmt::ViewOp> {
 public:
   ViewOpPattern(MLIRContext *context)
@@ -780,9 +511,7 @@ public:
     bool isSameMicroSize = false;
     ArrayRef<int32_t> preMicroSize;
 
-    if (auto allocOp = base.getDefiningOp<xsmt::AllocOp>()) {
-        preMicroSize = allocOp.getMicroSize();
-    } else if (auto loadOp = base.getDefiningOp<xsmt::DescriptorLoadOp>()) {
+    if (auto loadOp = base.getDefiningOp<xsmt::DescriptorLoadOp>()) {
         preMicroSize = loadOp.getMicroSize();
     } else if (auto ViewOp = base.getDefiningOp<xsmt::ViewOp>()) {
         preMicroSize = ViewOp.getMicroSize();
@@ -798,11 +527,6 @@ public:
     SmallVector<OpFoldResult> sizes;
     if (auto ViewOp = base.getDefiningOp<xsmt::ViewOp>()){
       auto shapes = ViewOp.getShape();
-      for (int64_t shape : shapes) {
-        sizes.push_back(rewriter.getIndexAttr(shape));
-      }
-    }else if (auto AllocOp = base.getDefiningOp<xsmt::AllocOp>()){
-      auto shapes = AllocOp.getShape();
       for (int64_t shape : shapes) {
         sizes.push_back(rewriter.getIndexAttr(shape));
       }
@@ -990,9 +714,7 @@ private:
     bool other = false;
 
     ArrayRef<int32_t> preMicroSize;
-    if (auto allocOp = base.getDefiningOp<xsmt::AllocOp>()) {
-      preMicroSize = allocOp.getMicroSize();
-    } else if (auto loadOp = base.getDefiningOp<xsmt::DescriptorLoadOp>()) {
+    if (auto loadOp = base.getDefiningOp<xsmt::DescriptorLoadOp>()) {
       preMicroSize = loadOp.getMicroSize();
     } else if (auto prevViewOp = base.getDefiningOp<xsmt::ViewOp>()) {
       preMicroSize = prevViewOp.getMicroSize();
@@ -1686,7 +1408,6 @@ struct InsertMBarrierReleasePattern : public mlir::OpRewritePattern<xsmt_async::
 
 
 void mlir::triton::populateXSMTOptimizationAndValidationPatterns(RewritePatternSet &patterns) {
-  patterns.add<TransposeEliminationPattern>(patterns.getContext());
   patterns.add<MMT4DBindFusionPattern>(patterns.getContext());
   patterns.add<MBarrierLoopCheckPattern<xsmt_async::MBarrierAllocOp>>(patterns.getContext());
   patterns.add<MBarrierLoopCheckPattern<xsmt::GlobalMBarrierInitOp>>(patterns.getContext());
@@ -1696,10 +1417,8 @@ void mlir::triton::populateXSMTOptimizationAndValidationPatterns(RewritePatternS
 
 void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<FillOpPattern>(patterns.getContext());
-  patterns.add<ConvertXSMTAllocToMemRef>(patterns.getContext());
   patterns.add<ViewOpPattern>(patterns.getContext());
   patterns.add<DescriptorLoadPattern>(patterns.getContext());
-  patterns.add<DescriptorLoadViewOpPattern>(patterns.getContext());
   patterns.add<InsertMBarrierReleasePattern>(patterns.getContext());
   patterns.add<GetThreadOpToLLVMCallPattern>(patterns.getContext());
   }

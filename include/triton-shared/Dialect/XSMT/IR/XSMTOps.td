@@ -68,39 +68,6 @@ def DescriptorLoadOp : XSMT_Op<"descriptor_load", [Pure, MemoryEffects<[MemWrite
   ];
 }
 
-def DescriptorLoadViewOp : XSMT_Op<"descriptor_load_view", [Pure, MemoryEffects<[MemWrite]>]> {
-  let summary = "Descriptor-based block load operation with view";
-  let description = [{
-    Loads a block of data from memory using tensor core descriptors and a view.
-    This form uses a pre-defined view tensor to specify the access pattern.
-  }];
-
-  let arguments = (ins
-    TT_Ptr:$base,
-    Variadic<I64>:$offsets,
-    DenseI32ArrayAttr:$shape,
-    DenseI32ArrayAttr:$micro_size,
-    TT_Tensor:$destination
-  );
-
-  let results = (outs TT_Tensor:$result);
-
-  let assemblyFormat = [{
-    $base `,` $destination `,` `[` $offsets `]` `,` `[` $shape `]` `,` `[` $micro_size `]` attr-dict `:`
-    type($base) `,` type($destination) `->` type($result)
-  }];
-
-  let builders = [
-    OpBuilder<(ins
-      "Value":$base,
-      "ValueRange":$offsets,
-      "ArrayRef<int32_t>":$shape,
-      "ArrayRef<int32_t>":$micro_size,
-      "Value":$destination
-    )>
-  ];
-}
-
 def ViewOp : XSMT_Op<"view", [Pure, MemoryEffects<[MemWrite]>]> {
   let summary = "Create a local view of a tensor with new shape and micro tile size";
   let description = [{
@@ -133,31 +100,21 @@ def ViewOp : XSMT_Op<"view", [Pure, MemoryEffects<[MemWrite]>]> {
 }
 
 def AllocOp : XSMT_Op<"alloc", [MemoryEffects<[MemAlloc]>]> {
-  let summary = "Allocate a tensor in shared memory with specified shape and micro tile size";
+  let summary = "Allocate a tensor in specified memory storage";
   let description = [{
-    Allocates a tensor in shared memory with the specified shape and micro tile size.
-    This operation is commonly used for allocating intermediate results in matrix multiplication
-    and other tensor operations that require specific memory layouts for tensor cores.
+    Allocates memory for a tensor with given shape in specified storage (e.g., l2, shared).
   }];
 
   let arguments = (ins
     DenseI32ArrayAttr:$shape,
-    DenseI32ArrayAttr:$micro_size
+    StrAttr:$storage
   );
 
-  let results = (outs TT_Tensor:$result);
+  let results = (outs TT_TensorPtr:$result);
 
   let assemblyFormat = [{
-    `[` $shape `]` `,` `[` $micro_size `]` attr-dict `:` type($result)
+    `[` $shape `]` `storage` `(` $storage `)` attr-dict `:` type($result)
   }];
-
-  let builders = [
-    OpBuilder<(ins
-      "ArrayRef<int32_t>":$shape,
-      "ArrayRef<int32_t>":$micro_size,
-      "Type":$elementType
-    )>
-  ];
 }
 
 

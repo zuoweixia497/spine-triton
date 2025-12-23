@@ -10,6 +10,7 @@
 #include "triton-shared/Analysis/OpFoldResultUtils.h"
 #include "triton-shared/Conversion/StructuredToMemref/StructuredToMemref.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -785,8 +786,16 @@ private:
         llvm_unreachable("unexpected wraparound type");
       }
     } else {
-      auto ReinterpretCastOp = cast<memref::ReinterpretCastOp>(ptrDefiningOp);
-      auto sizes = ReinterpretCastOp.getMixedSizes();
+      SmallVector<OpFoldResult> sizes;
+      if (auto ReinterpretCastOp = ptr.getDefiningOp<memref::ReinterpretCastOp>()){
+        sizes = ReinterpretCastOp.getMixedSizes();
+      }else if(auto allocOp = ptr.getDefiningOp<memref::AllocOp>()){
+        auto memrefType = allocOp.getType();
+        auto shape = memrefType.getShape();
+        for (int64_t dim : shape) {
+          sizes.push_back(rewriter.getIndexAttr(dim));
+        }
+      }
       Value c0f32 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.0f));
 
       fillWithValue(loc, alloc, c0f32, tensorType.getShape(),
@@ -1153,6 +1162,12 @@ public:
       SmallVector<OpFoldResult> sizes;
       if (auto castOp = ptr.getDefiningOp<memref::ReinterpretCastOp>()){
         sizes = castOp.getMixedSizes();
+      }else if (auto allocOp = ptr.getDefiningOp<memref::AllocOp>()){
+        auto memrefType = allocOp.getType();
+        auto shape = memrefType.getShape();
+        for (int64_t dim : shape) {
+          sizes.push_back(rewriter.getIndexAttr(dim));
+        }
       }
       auto srcSlice =
         getExtractSlice(rank, sizes, storeValue, loc, rewriter);
@@ -1170,11 +1185,69 @@ public:
   }
 };
 
+struct XSMTAllocConverter : public OpConversionPattern<xsmt::AllocOp> {
+private:
+  using OpConversionPattern<xsmt::AllocOp>::OpConversionPattern;
+
+public:
+  XSMTAllocConverter(const TypeConverter &typeConverter, MLIRContext *context)
+      : OpConversionPattern<xsmt::AllocOp>(typeConverter, context) {}
+
+  LogicalResult
+  matchAndRewrite(xsmt::AllocOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto shapeAttr = op.getShape();
+    SmallVector<int64_t> shape;
+    shape.reserve(shapeAttr.size());
+    for (int32_t dim : shapeAttr) {
+      shape.push_back(static_cast<int64_t>(dim));
+    }
+
+    Value allocResult = op.getResult();
+    auto allocPtrType = cast<triton::PointerType>(allocResult.getType());
+    Type originalPointeeType = allocPtrType.getPointeeType();
+
+    Type elementType;
+    if (auto tensorType = dyn_cast<RankedTensorType>(originalPointeeType)) {
+      elementType = tensorType.getElementType();
+    } else if (isa<FloatType>(originalPointeeType) || isa<IntegerType>(originalPointeeType)) {
+      elementType = originalPointeeType;
+    } else {
+      emitError(loc) << "Unsupported pointee type: " << originalPointeeType;
+      return failure();
+    }
+
+    auto storageAttr = op->getAttr("storage");
+    if (!storageAttr) {
+      emitWarning(loc) << "'storage' attribute not found on xsmt.alloc, using default";
+    }
+
+    MemRefType memrefType = MemRefType::get(shape, elementType);
+
+    auto allocOp = memref::AllocOp::create(rewriter,
+        loc, memrefType,
+        /*dynamicSizes=*/ValueRange{},
+        /*symbolOperands=*/ValueRange{},
+        /*alignment=*/nullptr
+    );
+
+    if (storageAttr) {
+      allocOp->setAttr("storage", storageAttr);
+    }
+
+    rewriter.replaceOp(op, allocOp.getResult());
+    return success();
+  }
+};
+
+
 } // namespace
 
 void mlir::triton::populateStructuredToMemrefConversionPatterns(
     RewritePatternSet &patterns, TypeConverter &typeConverter) {
-  patterns.add<MakeTensorPtrConverter, MakeGatherScatterTensorPtrConverter>(
+  patterns.add<MakeTensorPtrConverter, MakeGatherScatterTensorPtrConverter, XSMTAllocConverter>(
       typeConverter, patterns.getContext());
   patterns.add<LoadConverter, StoreConverter>(patterns.getContext());
 }
