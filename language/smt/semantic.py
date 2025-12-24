@@ -22,53 +22,29 @@ def compile_hint(ptr: tl.tensor, hint_name: str, hint_val, _semantic=None):
     _semantic.builder.create_annotation(ptr.handle, hint_name, hint_val)
 
 
-def descriptor_load(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tensor:
+def descriptor_load(base: tl.tensor, offsets, _semantic=None) -> tl.tensor:
+    from triton.language.core import _unwrap_if_constexpr
+
     semantic_instance = tl_semantic.TritonSemantic(_semantic.builder)
-    offsets = semantic_instance._convert_to_ir_values(offsets)
-    shape = [elem.value if isinstance(
-        elem, tl.constexpr) else elem for elem in shape]
-    micro_size = [elem.value if isinstance(
-        elem, tl.constexpr) else elem for elem in micro_size]
-
-    assert all(isinstance(elem, int) and -2**31 <= elem < 2**31 for elem in shape), \
-        "Expected a list of constant integers (`int32_t` range) in `shape`"
-    assert all(isinstance(elem, int) and -2**31 <= elem < 2**31 for elem in micro_size), \
-        "Expected a list of constant integers (`int32_t` range) in `micro_size`"
-
-    assert len(shape) == len(micro_size), \
-        "Expected shape and micro_size to have the same length"
-
+    offsets = semantic_instance._convert_to_ir_values(offsets, require_i64=False)
     handle = _semantic.builder.create_descriptor_load(
-        base.handle, offsets, shape, micro_size)
-
-    result_shape = [
-        shape[0] // micro_size[0],
-        shape[1] // micro_size[1],
-        micro_size[0],
-        micro_size[1]
-    ]
-
-    element_ty = base.type.element_ty.element_ty
-    return tl.tensor(handle, tl.block_type(element_ty, result_shape))
+        base.handle, offsets)
+    dst_ty = base.type.element_ty
+    return tl.tensor(handle, dst_ty)
 
 
-def descriptor_load_to_destination(base: tl.tensor, offsets, shape, destination: tl.tensor, micro_size, _semantic=None) -> tl.tensor:
+def descriptor_load_to_destination(base: tl.tensor, offsets, destination, _semantic=None) -> tl.tensor:
     semantic_instance = tl_semantic.TritonSemantic(_semantic.builder)
-    offsets = semantic_instance._convert_to_ir_values(offsets)
-    shape = [elem.value if isinstance(
-        elem, tl.constexpr) else elem for elem in shape]
-    micro_size = [elem.value if isinstance(
-        elem, tl.constexpr) else elem for elem in micro_size]
+    offsets = semantic_instance._convert_to_ir_values(offsets, require_i64=False)
 
-    handle = _semantic.builder.create_descriptor_load_to_destination(
-        base.handle, offsets, shape, micro_size, destination.handle)
-    result_tensor = tl.tensor(handle, destination.type)
-    return result_tensor
+    _semantic.builder.create_descriptor_load_to_destination(
+        base.handle, offsets, destination.handle)
+
 
 
 def view(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tensor:
     semantic_instance = tl_semantic.TritonSemantic(_semantic.builder)
-    offsets = semantic_instance._convert_to_ir_values(offsets)
+    offsets = semantic_instance._convert_to_ir_values(offsets, require_i64=False)
 
     shape = [elem.value if isinstance(
         elem, tl.constexpr) else elem for elem in shape]

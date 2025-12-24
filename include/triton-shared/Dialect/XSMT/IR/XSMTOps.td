@@ -37,37 +37,6 @@ def AnnotationOp : XSMT_Op<"annotation", [Pure, MemoryEffects<[MemWrite]>]> {
 }
 
 
-def DescriptorLoadOp : XSMT_Op<"descriptor_load", [Pure, MemoryEffects<[MemWrite]>]> {
-  let summary = "Descriptor-based block load operation";
-  let description = [{
-    Loads a block of data from memory using tensor core descriptors.
-    This operation uses descriptor-based addressing for efficient tensor core access patterns.
-  }];
-
-  let arguments = (ins
-    TT_Ptr:$base,
-    Variadic<I64>:$offsets,
-    DenseI32ArrayAttr:$shape,
-    DenseI32ArrayAttr:$micro_size
-  );
-
-  let results = (outs TT_Tensor:$result);
-
-  let assemblyFormat = [{
-    $base `,` `[` $offsets `]` `,` `[` $shape `]` `,` `[` $micro_size `]` attr-dict `:`
-    type($base) `->` type($result)
-  }];
-
-  let builders = [
-    OpBuilder<(ins
-      "Value":$base,
-      "ValueRange":$offsets,
-      "ArrayRef<int32_t>":$shape,
-      "ArrayRef<int32_t>":$micro_size
-    )>
-  ];
-}
-
 def ViewOp : XSMT_Op<"view", [Pure, MemoryEffects<[MemWrite]>]> {
   let summary = "Create a local view of a tensor with new shape and micro tile size";
   let description = [{
@@ -77,7 +46,7 @@ def ViewOp : XSMT_Op<"view", [Pure, MemoryEffects<[MemWrite]>]> {
 
   let arguments = (ins
     TT_Tensor:$base,
-    Variadic<I64>:$offsets,
+    Variadic<I32>:$offsets,
     DenseI32ArrayAttr:$shape,
     DenseI32ArrayAttr:$micro_size
   );

@@ -29,23 +29,22 @@ void init_triton_xsmt_ir(py::module &&m) {
                                     attrVal);
             })
       .def("create_descriptor_load",
-           [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
-              std::vector<int32_t> &shape,
-              std::vector<int32_t> &packed_size) -> Value {
-             return self.create<xsmt::DescriptorLoadOp>(base, offsets, shape,
-                                                        packed_size);
+           [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets) -> Value {
+              auto AdvanceOp = self.create<triton::AdvanceOp>(base.getType(), base, offsets);
+              auto LoadOp = self.create<triton::LoadOp>(AdvanceOp.getResult(), triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
+             return LoadOp;
            })
       .def("create_descriptor_load_to_destination",
-           [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
-              std::vector<int32_t> &shape, std::vector<int32_t> &packed_size , Value &destination) {
-               Value DescriptorLoadOp = self.create<xsmt::DescriptorLoadOp>(base, offsets, shape, packed_size);
-               auto resultType = dyn_cast<RankedTensorType>(DescriptorLoadOp.getType());
+           [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets, Value &destination) {
+               auto AdvanceOp = self.create<triton::AdvanceOp>(base.getType(), base, offsets);
+               auto LoadOp = self.create<triton::LoadOp>(AdvanceOp.getResult(), triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
+               auto resultType = dyn_cast<RankedTensorType>(LoadOp.getType());
                int rank = resultType.getRank();
                std::vector<int32_t> boundary_check;
                for (int i = 0; i < rank; ++i) {
                   boundary_check.push_back(i);
                }
-               self.create<mlir::triton::StoreOp>(destination, DescriptorLoadOp,
+               self.create<mlir::triton::StoreOp>(destination, LoadOp,
                                            boundary_check,
                                            triton::CacheModifier::NONE,
                                            triton::EvictionPolicy::NORMAL);
@@ -62,7 +61,6 @@ void init_triton_xsmt_ir(py::module &&m) {
             if (shape.empty()) {
               throw std::runtime_error("alloc shape cannot be empty");
             }
-            std::cout << "Shape size: " << shape.size() << std::endl;
             auto loc = self.getBuilder().getUnknownLoc();
             auto op = self.create<xsmt::AllocOp>(type, shape, storage);
             return op;

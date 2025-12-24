@@ -376,8 +376,6 @@ public:
 
   LogicalResult rewriteStoreOp(triton::StoreOp op, bool useUnsafeMask = false);
 
-  LogicalResult rewriteDescriptorLoadOp(xsmt::DescriptorLoadOp op);
-
   LogicalResult rewriteOp(Operation *op, bool useUnsafeMask = false);
 };
 

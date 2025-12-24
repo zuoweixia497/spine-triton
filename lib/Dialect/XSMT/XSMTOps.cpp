@@ -22,34 +22,6 @@
 
 namespace mlir {
 namespace xsmt {
-void DescriptorLoadOp::build(OpBuilder &builder, OperationState &state,
-                               Value base, ValueRange offsets,
-                               ArrayRef<int32_t> shape,
-                               ArrayRef<int32_t> micro_size) {
-  auto pointerType = cast<mlir::triton::PointerType>(base.getType());
-  auto pointeeType = pointerType.getPointeeType();
-
-  Type elementType = pointeeType;
-  while (auto tensorType = dyn_cast<RankedTensorType>(elementType)) {
-    elementType = tensorType.getElementType();
-  }
-
-  if (isa<RankedTensorType>(elementType)) {
-    llvm::report_fatal_error("Cannot determine scalar element type for tensor");
-  }
-
-  SmallVector<int64_t> resultShape;
-  resultShape.push_back(shape[0] / micro_size[0]);
-  resultShape.push_back(shape[1] / micro_size[1]);
-  resultShape.push_back(micro_size[0]);
-  resultShape.push_back(micro_size[1]);
-
-  auto resultType = RankedTensorType::get(resultShape, elementType);
-
-  return build(builder, state, resultType, base, offsets,
-               builder.getDenseI32ArrayAttr(shape),
-               builder.getDenseI32ArrayAttr(micro_size));
-}
 
 
 void ViewOp::build(OpBuilder &builder, OperationState &state,

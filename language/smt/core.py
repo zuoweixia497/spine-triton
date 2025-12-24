@@ -40,35 +40,30 @@ class parallel(range):
 
 
 @builtin
-def descriptor_load(base, offsets, shape, micro_size=None, destination=None, _semantic=None):
+def descriptor_load(base, offsets, destination=None, _semantic=None):
     """Descriptor-based block load operation with two forms:
 
-    Form 1: descriptor_load(base, offsets, shape, micro_size)
-    Form 2: descriptor_load(base, offsets, shape, micro_size, destination)
+    Form 1: descriptor_load(base, offsets)
+    Form 2: descriptor_load(base, offsets, destination)
 
     :param base: the base tensor pointer to load from
     :param offsets: offset values (e.g., [s * SUB_BLK_M, 0])
-    :param shape: shape of the block to load (e.g., [SUB_BLK_M, BLOCK_SIZE_N])
     :param destination: destination
-    :param micro_size: micro tile size for tensor cores (e.g., [8, 8])
 
     Examples
     *******
     .. code-block:: python
 
         # Form 1
-        a = smt.descriptor_load(a_block_ptr, [s * SUB_BLK_M, 0], [SUB_BLK_M, BLOCK_SIZE_N], [8, 8])
+        a = smt.descriptor_load(a_block_ptr, [s * SUB_BLK_M, 0])
         # Form 2
-        a = smt.descriptor_load(a_block_ptr, [s * SUB_BLK_M, 0], [SUB_BLK_M, BLOCK_SIZE_N], destination, [8, 8])
+        a = smt.descriptor_load(a_block_ptr, [s * SUB_BLK_M, 0], destination)
     """
-    rank = len(shape)
-    if micro_size is None:
-        micro_size = [0] * rank
 
     if destination is None:
-        return smt_semantic.descriptor_load(base, offsets, shape, micro_size, _semantic)
+        return smt_semantic.descriptor_load(base, offsets, _semantic)
 
-    return smt_semantic.descriptor_load_to_destination(base, offsets, shape, destination, micro_size, _semantic)
+    return smt_semantic.descriptor_load_to_destination(base, offsets, destination, _semantic)
 
 
 @builtin
