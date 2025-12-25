@@ -51,7 +51,9 @@ def ViewOp : XSMT_Op<"view", [Pure, MemoryEffects<[MemWrite]>]> {
     DenseI32ArrayAttr:$micro_size
   );
 
-  let results = (outs TT_Tensor:$result);
+  let results = (outs
+    TT_Tensor:$result
+  );
 
   let assemblyFormat = [{
     $base `,` `[` $offsets `]` `,` `[` $shape `]` `,` `[` $micro_size `]` attr-dict `:`
@@ -66,6 +68,44 @@ def ViewOp : XSMT_Op<"view", [Pure, MemoryEffects<[MemWrite]>]> {
       "ArrayRef<int32_t>":$micro_size
     )>
   ];
+
+  let hasVerifier = 1;
+}
+
+
+def ViewPtrOp : XSMT_Op<"viewptr", [Pure, MemoryEffects<[MemWrite]>]> {
+  let summary = "Create a local view of a tensor with new shape and micro tile size";
+  let description = [{
+    Creates a local view of a tensor with the specified shape and micro tile size.
+    This operation reshapes a tensor in shared memory for tensor core operations.
+  }];
+
+  let arguments = (ins
+    TT_TensorPtr:$base,
+    Variadic<I32>:$offsets,
+    DenseI32ArrayAttr:$shape,
+    DenseI32ArrayAttr:$micro_size
+  );
+
+  let results = (outs
+    TT_TensorPtr:$result
+  );
+
+  let assemblyFormat = [{
+    $base `,` `[` $offsets `]` `,` `[` $shape `]` `,` `[` $micro_size `]` attr-dict `:`
+    type($base) `->` type($result)
+  }];
+
+  let builders = [
+    OpBuilder<(ins
+      "Value":$base,
+      "ValueRange":$offsets,
+      "ArrayRef<int32_t>":$shape,
+      "ArrayRef<int32_t>":$micro_size
+    )>
+  ];
+
+  let hasVerifier = 1;
 }
 
 def AllocOp : XSMT_Op<"alloc", [MemoryEffects<[MemAlloc]>]> {

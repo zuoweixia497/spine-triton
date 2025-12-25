@@ -28,6 +28,7 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "triton/Dialect/Triton/IR/Types.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #define DEBUG_TYPE "structured-to-memref"
 
@@ -43,12 +44,20 @@ namespace triton {
 
 namespace {
 
-class PtrToUnrankedMemrefConverter : public TypeConverter {
+class PtrToMemrefConverter : public TypeConverter {
 public:
-  PtrToUnrankedMemrefConverter() {
+  PtrToMemrefConverter() {
     addConversion([](Type type) { return type; });
-    addConversion([](triton::PointerType ptrType) {
-      return UnrankedMemRefType::get(ptrType.getPointeeType(), 0);
+    addConversion([](triton::PointerType ptrType) -> Type {
+
+      Type pointeeType = ptrType.getPointeeType();
+      if (auto tensorType = dyn_cast<RankedTensorType>(pointeeType)) {
+        SmallVector<int64_t> shape(tensorType.getShape());
+        Type elementType = tensorType.getElementType();
+        return MemRefType::get(shape, elementType);
+      }
+
+      return UnrankedMemRefType::get(pointeeType, /*memorySpace=*/0);
     });
     addTargetMaterialization([&](OpBuilder &builder,
                                  UnrankedMemRefType resultType,
@@ -94,11 +103,12 @@ public:
         bufferization::BufferizationDialect, ttx::TritonTilingExtDialect,
         memref::MemRefDialect>();
 
-    target.addIllegalOp<tts::LoadOp, tts::StoreOp, tts::MakeTensorPtrOp, xsmt::AllocOp>();
+    target.addIllegalOp<tts::LoadOp, tts::StoreOp, tts::MakeTensorPtrOp, xsmt::AllocOp, xsmt::ViewPtrOp>();
+
 
     target.addLegalOp<UnrealizedConversionCastOp>();
 
-    PtrToUnrankedMemrefConverter typeConverter;
+    PtrToMemrefConverter typeConverter;
 
     triton::populateStructuredToMemrefConversionPatterns(patterns,
                                                          typeConverter);

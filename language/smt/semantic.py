@@ -51,17 +51,22 @@ def view(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tens
     micro_size = [elem.value if isinstance(
         elem, tl.constexpr) else elem for elem in micro_size]
 
-    assert all(isinstance(elem, int) and -2**31 <= elem < 2**31 for elem in shape), \
-        "Expected a list of constant integers (`int32_t` range) in `shape`"
-    assert all(isinstance(elem, int) and -2**31 <= elem < 2**31 for elem in micro_size), \
-        "Expected a list of constant integers (`int32_t` range) in `micro_size`"
     assert len(shape) == len(micro_size), \
         "Shape and micro_size must have the same length"
 
-    handle = _semantic.builder.create_view(
-        base.handle, offsets, shape, micro_size)
+    pointee_type = base.type.element_ty
 
-    element_ty = base.type.element_ty
+    is_block_ptr = False
+    if hasattr(pointee_type, 'is_block') and pointee_type.is_block():
+        is_block_ptr = True
+
+    if hasattr(pointee_type, 'is_block') and pointee_type.is_block():
+        element_ty = pointee_type.element_ty
+        handle = _semantic.builder.create_viewptr(base.handle, offsets, shape, micro_size)
+
+    else:
+        element_ty = pointee_type
+        handle = _semantic.builder.create_view(base.handle, offsets, shape, micro_size)
 
     if all(s == 0 for s in micro_size):
         base_tensor = tl.tensor(handle, base.type)
@@ -73,9 +78,15 @@ def view(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tens
             actualMicroSize[0],
             actualMicroSize[1]
         ]
-        result_tensor = tl.tensor(handle, tl.block_type(element_ty, result_shape))
+        if is_block_ptr:
+            result_tensor = tl.tensor(handle, tl.pointer_type(tl.block_type(element_ty, result_shape)))
+        else:
+            result_tensor = tl.tensor(handle, tl.block_type(element_ty, result_shape))
     elif all(s == 1 for s in micro_size):
-        result_tensor = tl.tensor(handle, tl.block_type(element_ty, shape))
+        if is_block_ptr:
+            result_tensor = tl.tensor(handle, tl.pointer_type(tl.block_type(element_ty, shape)))
+        else:
+            result_tensor = tl.tensor(handle, tl.block_type(element_ty, shape))
     else:
         result_shape = [
             shape[0] // micro_size[0],
@@ -83,7 +94,10 @@ def view(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tens
             micro_size[0],
             micro_size[1]
         ]
-        result_tensor = tl.tensor(handle, tl.block_type(element_ty, result_shape))
+        if is_block_ptr:
+            result_tensor = tl.tensor(handle, tl.pointer_type(tl.block_type(element_ty, result_shape)))
+        else:
+            result_tensor = tl.tensor(handle, tl.block_type(element_ty, result_shape))
     return result_tensor
 
 

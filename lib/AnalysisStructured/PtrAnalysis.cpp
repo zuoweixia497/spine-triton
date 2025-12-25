@@ -1173,6 +1173,20 @@ LogicalResult PtrAnalysis::visitOperandAlloc(xsmt::AllocOp allocOp,
   return success();
 }
 
+LogicalResult PtrAnalysis::visitOperandView(xsmt::ViewPtrOp viewOp,
+                                           PtrState &state,
+                                           const Location loc,
+                                           OpBuilder &builder) {
+  auto result = viewOp.getResult();
+  auto base = viewOp.getBase();;
+  if(!triton::isTensorPointerType(result.getType()) || !triton::isTensorPointerType(base.getType())){
+    viewOp->emitRemark("xsmt::ViewPtrOp is not TensorPointerType, temporarily not lowering");
+    return failure();
+  }
+  return success();
+}
+
+
 LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
                                         const Location loc,
                                         OpBuilder &builder) {
@@ -1221,7 +1235,9 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
         return success();
       } else if (auto allocOp = dyn_cast<xsmt::AllocOp>(op)) {
         return visitOperandAlloc(allocOp, state, loc, builder);
-      } else {
+      } else if (auto viewOp = dyn_cast<xsmt::ViewPtrOp>(op)) {
+        return visitOperandView(viewOp, state, loc, builder);
+      }else {
         op->emitRemark("Unexpected defining op for triton pointer operand");
         return failure();
       }
@@ -1951,15 +1967,19 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
           OpBuilder builder(alloc);
           PtrState state;
           if (succeeded(visitOperandAlloc(alloc, state, alloc.getLoc(), builder))) {
-          //   knownPtrs[alloc.getResult()] = state;
-          //   if (state.isStructured()) {
-          //     auto maketptrOp = state.createTTSMakeTensorPtrOp(builder, state.origiOffsets, alloc.getLoc());
-          //     ptrMap.map(alloc.getResult(), maketptrOp.getResult());
-          //   } else {
               ptrMap.map(alloc.getResult(), alloc.getResult());
-            // }
           } else {
             alloc->emitRemark("PtrAnalysis: Failed to analyze xsmt.alloc");
+          }
+          return WalkResult::advance();
+        })
+        .Case<xsmt::ViewPtrOp>([&](auto viewop) {
+          OpBuilder builder(viewop);
+          PtrState state;
+          if (succeeded(visitOperandView(viewop, state, viewop.getLoc(), builder))) {
+              ptrMap.map(viewop.getResult(), viewop.getResult());
+          } else {
+            viewop->emitRemark("PtrAnalysis: Failed to analyze xsmt.view");
           }
           return WalkResult::advance();
         })

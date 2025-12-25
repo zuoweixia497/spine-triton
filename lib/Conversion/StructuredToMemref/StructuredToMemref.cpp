@@ -22,6 +22,7 @@
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -795,6 +796,12 @@ private:
         for (int64_t dim : shape) {
           sizes.push_back(rewriter.getIndexAttr(dim));
         }
+      }else if(auto transposeOp = ptr.getDefiningOp<memref::TransposeOp>()){
+        auto memrefType = transposeOp.getType();
+        auto shape = memrefType.getShape();
+        for (int64_t dim : shape) {
+          sizes.push_back(rewriter.getIndexAttr(dim));
+        }
       }
       Value c0f32 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.0f));
 
@@ -1168,6 +1175,12 @@ public:
         for (int64_t dim : shape) {
           sizes.push_back(rewriter.getIndexAttr(dim));
         }
+      }else if (auto transposeOp = ptr.getDefiningOp<memref::TransposeOp>()){
+        auto memrefType = transposeOp.getType();
+        auto shape = memrefType.getShape();
+        for (int64_t dim : shape) {
+          sizes.push_back(rewriter.getIndexAttr(dim));
+        }
       }
       auto srcSlice =
         getExtractSlice(rank, sizes, storeValue, loc, rewriter);
@@ -1243,11 +1256,175 @@ public:
 };
 
 
+struct XSMTViewConverter : public OpConversionPattern<xsmt::ViewPtrOp> {
+private:
+  using OpConversionPattern<xsmt::ViewPtrOp>::OpConversionPattern;
+
+public:
+  XSMTViewConverter(const TypeConverter &typeConverter, MLIRContext *context)
+      : OpConversionPattern<xsmt::ViewPtrOp>(typeConverter, context) {}
+
+  LogicalResult matchAndRewrite(xsmt::ViewPtrOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    Value base = adaptor.getBase();
+    auto baseType = dyn_cast<MemRefType>(base.getType());
+    if (!baseType)
+      return rewriter.notifyMatchFailure(op, "base is not a MemRefType after conversion");
+
+    auto resultType = op.getResult().getType();
+    auto ptrType = dyn_cast<triton::PointerType>(resultType);
+    if (!ptrType)
+      return rewriter.notifyMatchFailure(op, "Unsupported result type (not a triton ptr)");
+
+    Type elementType;
+    Type pointeeType = ptrType.getPointeeType();
+    if (auto tensorType = dyn_cast<RankedTensorType>(pointeeType))
+      elementType = tensorType.getElementType();
+    else
+      elementType = pointeeType;
+
+    ValueRange offsets = adaptor.getOffsets();
+    SmallVector<OpFoldResult> offsetValues;
+    offsetValues.reserve(offsets.size());
+    for (Value off : offsets) {
+      if (!off.getType().isIndex())
+        off = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), off);
+      offsetValues.push_back(off);
+    }
+
+    auto shapeAttr = op.getShape();
+    auto microSizeAttr = op.getMicroSize();
+
+    SmallVector<int64_t> shapeDims;
+    shapeDims.reserve(shapeAttr.size());
+    for (int32_t d : shapeAttr)
+      shapeDims.push_back(static_cast<int64_t>(d));
+
+    SmallVector<int64_t> microSizeDims;
+    microSizeDims.reserve(microSizeAttr.size());
+    for (int32_t d : microSizeAttr)
+      microSizeDims.push_back(static_cast<int64_t>(d));
+
+    if (shapeDims.size() != microSizeDims.size())
+      return rewriter.notifyMatchFailure(op, "shape rank != micro_size rank");
+
+    SmallVector<OpFoldResult> sizeValues;
+    sizeValues.reserve(shapeDims.size());
+    for (int64_t dim : shapeDims)
+      sizeValues.push_back(rewriter.getIndexAttr(dim));
+
+    SmallVector<OpFoldResult> strideValues(shapeDims.size(), rewriter.getIndexAttr(1));
+
+    Type inferredSubviewTy =
+        memref::SubViewOp::inferResultType(baseType, offsetValues, sizeValues, strideValues);
+    auto inferredSubviewMemRefTy = dyn_cast<MemRefType>(inferredSubviewTy);
+    if (!inferredSubviewMemRefTy)
+      return rewriter.notifyMatchFailure(op, "inferResultType did not return a MemRefType");
+
+    auto subview = memref::SubViewOp::create(rewriter, loc, inferredSubviewMemRefTy, base, offsetValues, sizeValues, strideValues);
+
+    SmallVector<int64_t> expandedShape;
+    expandedShape.reserve(shapeDims.size() * 2);
+
+    SmallVector<ReassociationIndices> reassociation;
+    reassociation.reserve(shapeDims.size());
+
+    for (size_t i = 0; i < shapeDims.size(); i++) {
+      int64_t dim = shapeDims[i];
+      int64_t micro = microSizeDims[i];
+      if (micro <= 0)
+        return rewriter.notifyMatchFailure(op, "micro_size must be > 0");
+      if (dim % micro != 0)
+        return rewriter.notifyMatchFailure(op, "shape dim is not divisible by micro_size");
+
+      expandedShape.push_back(dim / micro);
+      expandedShape.push_back(micro);
+
+      reassociation.push_back(ReassociationIndices{static_cast<int64_t>(2 * i),
+                                                  static_cast<int64_t>(2 * i + 1)});
+    }
+
+    SmallVector<int64_t> subStrides;
+    int64_t subOffset = 0;
+    if (failed(inferredSubviewMemRefTy.getStridesAndOffset(subStrides, subOffset))) {
+      return rewriter.notifyMatchFailure(op, "failed to get strides/offset from subview memref");
+    }
+    if (subStrides.size() != shapeDims.size())
+      return rewriter.notifyMatchFailure(op, "subview stride rank mismatch");
+
+    SmallVector<int64_t> expandedStrides;
+    expandedStrides.reserve(subStrides.size() * 2);
+
+    for (size_t i = 0; i < subStrides.size(); i++) {
+      int64_t s = subStrides[i];
+      int64_t micro = microSizeDims[i];
+      int64_t outerStride;
+      if (s == ShapedType::kDynamic) {
+        outerStride = ShapedType::kDynamic;
+      } else {
+        if (micro != 0 && (s > (std::numeric_limits<int64_t>::max() / micro)))
+          return rewriter.notifyMatchFailure(op, "stride overflow when computing expanded strides");
+        outerStride = s * micro;
+      }
+
+      expandedStrides.push_back(outerStride);
+      expandedStrides.push_back(s);
+    }
+
+    auto *ctx = rewriter.getContext();
+    auto expandedLayout = StridedLayoutAttr::get(ctx, subOffset, expandedStrides);
+    auto expandedType = MemRefType::get(expandedShape, elementType, expandedLayout,
+                                        inferredSubviewMemRefTy.getMemorySpace());
+
+    auto expandShape = memref::ExpandShapeOp::create(rewriter, loc, expandedType, subview.getResult(), reassociation);
+
+    SmallVector<int64_t> permutation;
+    permutation.reserve(expandedShape.size());
+    if (expandedShape.size() == 4) {
+      permutation = {0, 2, 1, 3};
+    } else {
+      for (int64_t i = 0, e = static_cast<int64_t>(expandedShape.size()); i < e; i++)
+        permutation.push_back(i);
+    }
+
+    SmallVector<AffineExpr> exprs;
+    exprs.reserve(permutation.size());
+    for (int64_t p : permutation)
+      exprs.push_back(rewriter.getAffineDimExpr(p));
+    auto permMap = AffineMap::get(static_cast<unsigned>(expandedShape.size()),
+                                  /*symbolCount=*/0, exprs, ctx);
+    auto permMapAttr = AffineMapAttr::get(permMap);
+
+    SmallVector<int64_t> finalShape;
+    finalShape.reserve(expandedShape.size());
+    SmallVector<int64_t> finalStrides;
+    finalStrides.reserve(expandedStrides.size());
+
+    for (size_t i = 0; i < permutation.size(); i++) {
+      int64_t p = permutation[i];
+      finalShape.push_back(expandedShape[p]);
+      finalStrides.push_back(expandedStrides[p]);
+    }
+
+    auto finalLayout = StridedLayoutAttr::get(ctx, subOffset, finalStrides);
+    auto finalType = MemRefType::get(finalShape, elementType, finalLayout,
+                                     expandedType.getMemorySpace());
+
+    auto transpose = memref::TransposeOp::create(rewriter, loc, finalType, expandShape.getResult(), permMapAttr);
+
+    rewriter.replaceOp(op, transpose.getResult());
+    return success();
+  }
+};
+
+
 } // namespace
 
 void mlir::triton::populateStructuredToMemrefConversionPatterns(
     RewritePatternSet &patterns, TypeConverter &typeConverter) {
-  patterns.add<MakeTensorPtrConverter, MakeGatherScatterTensorPtrConverter, XSMTAllocConverter>(
+  patterns.add<MakeTensorPtrConverter, MakeGatherScatterTensorPtrConverter, XSMTAllocConverter, XSMTViewConverter>(
       typeConverter, patterns.getContext());
   patterns.add<LoadConverter, StoreConverter>(patterns.getContext());
 }

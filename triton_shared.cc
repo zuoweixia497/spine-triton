@@ -55,6 +55,12 @@ void init_triton_xsmt_ir(py::module &&m) {
               std::vector<int32_t> &packed_size) -> Value {
              return self.create<xsmt::ViewOp>(base, offsets, shape, packed_size);
            })
+      .def("create_viewptr",
+           [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets,
+              std::vector<int32_t> &shape,
+              std::vector<int32_t> &packed_size) -> Value {
+             return self.create<xsmt::ViewPtrOp>(base, offsets, shape, packed_size);
+           })
       .def("create_alloc",
            [](TritonOpBuilder &self, std::vector<int32_t> &shape,
               mlir::Type type, std::string storage) -> Value {

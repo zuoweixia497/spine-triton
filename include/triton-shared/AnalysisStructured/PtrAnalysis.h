@@ -337,6 +337,9 @@ public:
   LogicalResult visitOperandAlloc(xsmt::AllocOp allocOp, PtrState &state,
                                     const Location loc, OpBuilder &builder);
 
+  LogicalResult visitOperandView(xsmt::ViewPtrOp viewOp, PtrState &state,
+                                    const Location loc, OpBuilder &builder);
+
   // Get the computed PtrState for the forOp's init-arg at the provided index.
   FailureOr<PtrState> getLoopInitArgPtrState(scf::ForOp forOp, size_t index);
 
