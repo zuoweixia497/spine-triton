@@ -31,19 +31,27 @@ void init_triton_xsmt_ir(py::module &&m) {
       .def("create_descriptor_load",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets) -> Value {
               auto AdvanceOp = self.create<triton::AdvanceOp>(base.getType(), base, offsets);
-              auto LoadOp = self.create<triton::LoadOp>(AdvanceOp.getResult(), triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
+              auto pointeeType = cast<mlir::triton::PointerType>(base.getType()).getPointeeType();
+              auto resultType = dyn_cast<RankedTensorType>(pointeeType);
+              int rank = resultType.getRank();
+              std::vector<int32_t> boundary_check;
+              for (int i = 0; i < rank; ++i) {
+                  boundary_check.push_back(i);
+              }
+              auto LoadOp = self.create<triton::LoadOp>(AdvanceOp.getResult(), boundary_check, std::nullopt, triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
              return LoadOp;
            })
       .def("create_descriptor_load_to_destination",
            [](TritonOpBuilder &self, Value &base, std::vector<Value> &offsets, Value &destination) {
                auto AdvanceOp = self.create<triton::AdvanceOp>(base.getType(), base, offsets);
-               auto LoadOp = self.create<triton::LoadOp>(AdvanceOp.getResult(), triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
-               auto resultType = dyn_cast<RankedTensorType>(LoadOp.getType());
+               auto pointeeType = cast<mlir::triton::PointerType>(base.getType()).getPointeeType();
+               auto resultType = dyn_cast<RankedTensorType>(pointeeType);
                int rank = resultType.getRank();
                std::vector<int32_t> boundary_check;
                for (int i = 0; i < rank; ++i) {
                   boundary_check.push_back(i);
                }
+               auto LoadOp = self.create<triton::LoadOp>(AdvanceOp.getResult(), boundary_check, std::nullopt, triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
                self.create<mlir::triton::StoreOp>(destination, LoadOp,
                                            boundary_check,
                                            triton::CacheModifier::NONE,

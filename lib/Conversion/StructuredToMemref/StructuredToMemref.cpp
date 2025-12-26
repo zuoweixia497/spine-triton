@@ -786,7 +786,7 @@ private:
       } else {
         llvm_unreachable("unexpected wraparound type");
       }
-    } else {
+    } else if (!op.getBoundaryCheck().empty()){
       SmallVector<OpFoldResult> sizes;
       if (auto ReinterpretCastOp = ptr.getDefiningOp<memref::ReinterpretCastOp>()){
         sizes = ReinterpretCastOp.getMixedSizes();
@@ -812,9 +812,12 @@ private:
       memref::SubViewOp dstSubview =
           getSubview(tensorType.getRank(), sizes, alloc, loc, rewriter);
       memref::CopyOp::create(rewriter, loc, srcSubview, dstSubview);
+      Value tensor = bufferization::ToTensorOp::create(rewriter, loc, tensorType, alloc, true /* restrict */, true /* writable */);
+      rewriter.replaceOp(op, tensor);
+    }else{
+      Value tensor = bufferization::ToTensorOp::create(rewriter, loc, tensorType, ptr, true /* restrict */, true /* writable */);
+      rewriter.replaceOp(op, tensor);
     }
-    Value tensor = bufferization::ToTensorOp::create(rewriter, loc, tensorType, alloc, true /* restrict */, true /* writable */);
-    rewriter.replaceOp(op, tensor);
 
     return success();
   }
