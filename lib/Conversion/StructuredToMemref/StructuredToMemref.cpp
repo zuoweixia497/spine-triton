@@ -803,10 +803,27 @@ private:
           sizes.push_back(rewriter.getIndexAttr(dim));
         }
       }
-      Value c0f32 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.0f));
 
-      fillWithValue(loc, alloc, c0f32, tensorType.getShape(),
-                    std::move(sizes), tensorType.getShape(), rewriter);
+      auto paddingAttr = op.getPadding();
+      if (paddingAttr.has_value()) {
+        if (paddingAttr.value() == triton::PaddingOption::PAD_NEG_INF) {
+          Value ninfF32 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat::getInf(llvm::APFloat::IEEEsingle(), /*Negative=*/true));
+          fillWithValue(loc, alloc, ninfF32, tensorType.getShape(),
+                      std::move(sizes), tensorType.getShape(), rewriter);
+        }else if (paddingAttr.value() == triton::PaddingOption::PAD_INF) {
+          Value infF32 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat::getInf(llvm::APFloat::IEEEsingle()));
+          fillWithValue(loc, alloc, infF32, tensorType.getShape(),
+                      std::move(sizes), tensorType.getShape(), rewriter);
+        }else{
+          Value c0f32 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.0f));
+          fillWithValue(loc, alloc, c0f32, tensorType.getShape(),
+                      std::move(sizes), tensorType.getShape(), rewriter);
+        }
+      }else{
+        Value c0f32 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.0f));
+          fillWithValue(loc, alloc, c0f32, tensorType.getShape(),
+                      std::move(sizes), tensorType.getShape(), rewriter);
+      }
       memref::SubViewOp srcSubview =
           getSubview(tensorType.getRank(), sizes, ptr, loc, rewriter);
       memref::SubViewOp dstSubview =

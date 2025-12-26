@@ -1739,11 +1739,15 @@ LogicalResult PtrAnalysis::rewriteLoadOp(triton::LoadOp op,
       return failure();
     }
   }
-  newOp = tts::LoadOp::create(builder, loc,
-    ptr,
-    dims,
-    scalarOther,
-    boundaryCheck);
+  auto paddingOpt = op.getPadding();
+
+  if (paddingOpt.has_value()) {
+    newOp = tts::LoadOp::create(builder, loc, ptr, dims, scalarOther,
+                                        boundaryCheck, paddingOpt);
+  } else {
+    newOp = tts::LoadOp::create(builder, loc, ptr, dims, scalarOther,
+                                        boundaryCheck, std::nullopt);
+}
 
   auto loadOp = cast<tts::LoadOp>(newOp);
   LLVM_DEBUG({

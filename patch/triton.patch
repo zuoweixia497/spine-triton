@@ -1,7 +1,7 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 old mode 100644
 new mode 100755
-index a534cf4307..db01dd1e83
+index a534cf430..db01dd1e8
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -239,10 +239,10 @@ if(TRITON_BUILD_PYTHON_MODULE)
@@ -59,10 +59,25 @@ index a534cf4307..db01dd1e83
  
  endif()
  
+diff --git a/include/triton/Dialect/Triton/IR/TritonAttrDefs.td b/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
+index 5a76a1d7b..9968583a9 100644
+--- a/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
++++ b/include/triton/Dialect/Triton/IR/TritonAttrDefs.td
+@@ -44,7 +44,9 @@ def TT_PaddingOptionAttr : I32EnumAttr<
+     [
+         I32EnumAttrCase<"PAD_ZERO", 1, "zero">,
+         // We can not set the string value to "NAN" because it is a keyword in C++
+-        I32EnumAttrCase<"PAD_NAN", 2, "nan">
++        I32EnumAttrCase<"PAD_NAN", 2, "nan">,
++        I32EnumAttrCase<"PAD_NEG_INF", 3, "neg_inf">,
++        I32EnumAttrCase<"PAD_INF", 4, "inf">
+     ]> {
+     let cppNamespace = "::mlir::triton";
+ }
 diff --git a/python/src/ir.cc b/python/src/ir.cc
 old mode 100644
 new mode 100755
-index d4e0619cca..49ddf287e8
+index d4e0619cc..a81802a60
 --- a/python/src/ir.cc
 +++ b/python/src/ir.cc
 @@ -40,7 +40,9 @@
@@ -105,7 +120,16 @@ index d4e0619cca..49ddf287e8
  void init_triton_ir(py::module &&m) {
    using ret = py::return_value_policy;
    using namespace pybind11::literals;
-@@ -540,6 +548,7 @@ void init_triton_ir(py::module &&m) {
+@@ -266,6 +274,8 @@ void init_triton_ir(py::module &&m) {
+   py::enum_<PaddingOption>(m, "PADDING_OPTION", py::module_local())
+       .value("PAD_ZERO", PaddingOption::PAD_ZERO)
+       .value("PAD_NAN", PaddingOption::PAD_NAN)
++      .value("PAD_NEG_INF", PaddingOption::PAD_NEG_INF)
++      .value("PAD_INF", PaddingOption::PAD_INF)
+       .export_values();
+ 
+   py::enum_<CacheModifier>(m, "CACHE_MODIFIER", py::module_local())
+@@ -540,6 +550,7 @@ void init_triton_ir(py::module &&m) {
    py::class_<IntegerAttr, Attribute>(m, "integer_attr", py::module_local());
    py::class_<BoolAttr, Attribute>(m, "bool_attr", py::module_local());
    py::class_<UnitAttr, Attribute>(m, "unit_attr", py::module_local());
@@ -113,7 +137,7 @@ index d4e0619cca..49ddf287e8
  
    // Ops
    py::class_<OpState>(m, "OpState", py::module_local())
-@@ -805,9 +814,12 @@ void init_triton_ir(py::module &&m) {
+@@ -805,9 +816,12 @@ void init_triton_ir(py::module &&m) {
  
    py::class_<OpBuilder::InsertPoint>(m, "InsertPoint", py::module_local());
  
@@ -129,7 +153,7 @@ index d4e0619cca..49ddf287e8
        .def("get_op_builder", &TritonOpBuilder::getBuilder, ret::reference)
        // getters
        .def("create_module",
-@@ -1850,6 +1862,11 @@ void init_triton_ir(py::module &&m) {
+@@ -1850,6 +1864,11 @@ void init_triton_ir(py::module &&m) {
               return self.create<MakeTensorDescOp>(base, shape, strides,
                                                    tensorShape, isSignedInteger,
                                                    paddingOption);
@@ -144,7 +168,7 @@ index d4e0619cca..49ddf287e8
 diff --git a/python/src/ir.h b/python/src/ir.h
 old mode 100644
 new mode 100755
-index 499dd9e8a9..9c863e6fa9
+index 499dd9e8a..9c863e6fa
 --- a/python/src/ir.h
 +++ b/python/src/ir.h
 @@ -2,6 +2,9 @@
@@ -169,7 +193,7 @@ index 499dd9e8a9..9c863e6fa9
 diff --git a/python/triton/compiler/code_generator.py b/python/triton/compiler/code_generator.py
 old mode 100644
 new mode 100755
-index 3ffb904574..39b4b09840
+index 3ffb90457..39b4b0984
 --- a/python/triton/compiler/code_generator.py
 +++ b/python/triton/compiler/code_generator.py
 @@ -1150,7 +1150,15 @@ class CodeGenerator(ast.NodeVisitor):
@@ -222,7 +246,7 @@ index 3ffb904574..39b4b09840
              self.scf_stack.append(node)
              for_op_body = for_op.get_body(0)
 diff --git a/python/triton/language/core.py b/python/triton/language/core.py
-index bf01d5bc14..27d17df5e8 100644
+index bf01d5bc1..27d17df5e 100644
 --- a/python/triton/language/core.py
 +++ b/python/triton/language/core.py
 @@ -1111,6 +1111,12 @@ class tensor(base_value):
@@ -241,20 +265,46 @@ index bf01d5bc14..27d17df5e8 100644
 diff --git a/python/triton/language/semantic.py b/python/triton/language/semantic.py
 old mode 100644
 new mode 100755
-index bd48990d67..fa7cb28f21
+index bd48990d6..b2da9f052
 --- a/python/triton/language/semantic.py
 +++ b/python/triton/language/semantic.py
-@@ -1973,3 +1973,6 @@ class TritonSemantic(Generic[TensorTy]):
+@@ -957,6 +957,10 @@ class TritonSemantic(Generic[TensorTy]):
+                 padding = ir.PADDING_OPTION.PAD_ZERO
+             elif padding_option == "nan":
+                 padding = ir.PADDING_OPTION.PAD_NAN
++            elif padding_option == "neg_inf":
++                padding = ir.PADDING_OPTION.PAD_NEG_INF
++            elif padding_option == "inf":
++                padding = ir.PADDING_OPTION.PAD_INF
+             else:
+                 raise ValueError(f"Padding option {padding_option} not supported")
+         return padding
+@@ -1973,3 +1977,6 @@ class TritonSemantic(Generic[TensorTy]):
                                                              [s.handle for s in strides], block_shape, is_signed_int,
                                                              padding)
          return tl.tensor_descriptor(handle, shape, strides, type)
 +
 +    def smt_bind(self, dest: tl.tensor, src: tl.tensor):
 +        return self.tensor(self.builder.create_smt_bind(src.handle, dest.handle), dest.type)
+diff --git a/python/triton/runtime/interpreter.py b/python/triton/runtime/interpreter.py
+index def96711a..e4cf4fec6 100644
+--- a/python/triton/runtime/interpreter.py
++++ b/python/triton/runtime/interpreter.py
+@@ -681,6 +681,10 @@ class InterpreterBuilder:
+             other = TensorHandle(np.zeros_like(ptrs.data, dtype=dtype_np), dtype_tt)
+         elif padding_option == _ir.PADDING_OPTION.PAD_NAN:
+             other = TensorHandle(np.full_like(ptrs.data, float('nan'), dtype=dtype_np), dtype_tt)
++        elif padding_option == _ir.PADDING_OPTION.PAD_NEG_INF:
++            other = TensorHandle(np.full_like(ptrs.data, float('-inf'), dtype=dtype_np), dtype_tt)
++        elif padding_option == _ir.PADDING_OPTION.PAD_INF:
++            other = TensorHandle(np.full_like(ptrs.data, float('inf'), dtype=dtype_np), dtype_tt)
+         else:
+             raise ValueError(f"unsupported padding option {padding_option}")
+         return self.create_masked_load(ptrs, masks, other, cache_modifier, eviction_policy, is_volatile)
 diff --git a/setup.py b/setup.py
 old mode 100644
 new mode 100755
-index fccb4ef17e..281895d223
+index fccb4ef17..281895d22
 --- a/setup.py
 +++ b/setup.py
 @@ -60,6 +60,8 @@ class Backend:

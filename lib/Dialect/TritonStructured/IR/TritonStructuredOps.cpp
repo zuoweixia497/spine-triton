@@ -163,7 +163,7 @@ void MakeGatherScatterTensorPtrOp::build(OpBuilder &b, OperationState &state,
 }
 
 void LoadOp::build(OpBuilder &b, OperationState &state, Value ptr,
-                   ArrayRef<OpFoldResult> dims, Value other, ArrayRef<int32_t> boundaryCheck) {
+                   ArrayRef<OpFoldResult> dims, Value other, ArrayRef<int32_t> boundaryCheck,  std::optional<mlir::triton::PaddingOption> padding) {
   SmallVector<int64_t> staticDims;
   SmallVector<Value> dynamicDims;
 
@@ -185,8 +185,12 @@ void LoadOp::build(OpBuilder &b, OperationState &state, Value ptr,
     resType = RankedTensorType::get(tensorType.getShape(),
                                     tensorType.getElementType());
   }
+  auto paddingAttr =
+      padding.has_value()
+          ? triton::PaddingOptionAttr::get(b.getContext(), padding.value())
+          : triton::PaddingOptionAttr();
   build(b, state, resType, ptr, dynamicDims, b.getDenseI64ArrayAttr(staticDims),
-        other, boundaryCheck);
+        other, boundaryCheck, paddingAttr);
 }
 
 void StoreOp::build(OpBuilder &b, OperationState &state, Value ptr, Value value,
