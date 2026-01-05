@@ -49,12 +49,17 @@ public:
   PtrToMemrefConverter() {
     addConversion([](Type type) { return type; });
     addConversion([](triton::PointerType ptrType) -> Type {
-
+      MLIRContext *ctx = ptrType.getContext();
       Type pointeeType = ptrType.getPointeeType();
+
       if (auto tensorType = dyn_cast<RankedTensorType>(pointeeType)) {
         SmallVector<int64_t> shape(tensorType.getShape());
         Type elementType = tensorType.getElementType();
-        return MemRefType::get(shape, elementType);
+
+        SmallVector<int64_t> dynStrides(tensorType.getRank(), ShapedType::kDynamic);
+        auto layout = StridedLayoutAttr::get(ctx, /*offset=*/ShapedType::kDynamic, dynStrides);
+
+        return MemRefType::get(shape, elementType, layout, /*memorySpace=*/0);
       }
 
       return UnrankedMemRefType::get(pointeeType, /*memorySpace=*/0);
@@ -93,7 +98,13 @@ public:
   void runOnOperation() override {
     auto moduleOp = getOperation();
 
-    RewritePatternSet patterns(&getContext());
+    RewritePatternSet patterns1(&getContext());
+    triton::ViewOpPtrPatternConversionPatterns(patterns1);
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns1)))) {
+      signalPassFailure();
+    }
+
+    RewritePatternSet patterns0(&getContext());
     ConversionTarget target(getContext());
 
     target.addLegalDialect<
@@ -110,10 +121,10 @@ public:
 
     PtrToMemrefConverter typeConverter;
 
-    triton::populateStructuredToMemrefConversionPatterns(patterns,
+    triton::populateStructuredToMemrefConversionPatterns(patterns0,
                                                          typeConverter);
 
-    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns)))) {
+    if (failed(applyPartialConversion(moduleOp, target, std::move(patterns0)))) {
       signalPassFailure();
     }
 

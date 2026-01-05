@@ -11,6 +11,8 @@
 #include "triton-shared/Conversion/StructuredToMemref/StructuredToMemref.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton-shared/Utils/Utils.h"
+#include "triton-shared/Analysis/OpFoldResultUtils.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -43,6 +45,7 @@
 #define DEBUG_TYPE "structured-to-memref"
 
 using namespace mlir;
+using namespace mlir::triton;
 
 #define GEN_PASS_CLASSES
 #include "triton-shared/Conversion/TritonArithToLinalg/Passes.h.inc"
@@ -802,26 +805,65 @@ private:
         for (int64_t dim : shape) {
           sizes.push_back(rewriter.getIndexAttr(dim));
         }
+      }else if (auto subView = ptr.getDefiningOp<memref::SubViewOp>()) {
+        for (OpFoldResult ofr : subView.getMixedSizes())
+          sizes.push_back(ofr);
       }
 
       auto paddingAttr = op.getPadding();
       if (paddingAttr.has_value()) {
-        if (paddingAttr.value() == triton::PaddingOption::PAD_NEG_INF) {
-          Value ninfF32 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat::getInf(llvm::APFloat::IEEEsingle(), /*Negative=*/true));
-          fillWithValue(loc, alloc, ninfF32, tensorType.getShape(),
-                      std::move(sizes), tensorType.getShape(), rewriter);
-        }else if (paddingAttr.value() == triton::PaddingOption::PAD_INF) {
-          Value infF32 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat::getInf(llvm::APFloat::IEEEsingle()));
-          fillWithValue(loc, alloc, infF32, tensorType.getShape(),
-                      std::move(sizes), tensorType.getShape(), rewriter);
-        }else{
-          Value c0f32 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.0f));
-          fillWithValue(loc, alloc, c0f32, tensorType.getShape(),
-                      std::move(sizes), tensorType.getShape(), rewriter);
+        Value paddingValue;
+        if (auto floatType = dyn_cast<FloatType>(elemType)) {
+          const llvm::fltSemantics &semantics = floatType.getFloatSemantics();
+          if (paddingAttr.value() == triton::PaddingOption::PAD_NEG_INF) {
+            paddingValue = arith::ConstantFloatOp::create(
+                rewriter, loc, floatType,
+                APFloat::getInf(semantics, /*Negative=*/true));
+          } else if (paddingAttr.value() == triton::PaddingOption::PAD_INF) {
+            paddingValue = arith::ConstantFloatOp::create(
+                rewriter, loc, floatType,
+                APFloat::getInf(semantics));
+          } else {
+            paddingValue = arith::ConstantFloatOp::create(
+                rewriter, loc, floatType,
+                APFloat::getZero(semantics));
+          }
+        } else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+          if (paddingAttr.value() == triton::PaddingOption::PAD_NEG_INF) {
+            paddingValue = arith::ConstantIntOp::create(
+                rewriter, loc, intType,
+                intType.isSigned() ? APInt::getSignedMinValue(intType.getWidth())
+                                  : APInt::getMinValue(intType.getWidth()));
+          } else if (paddingAttr.value() == triton::PaddingOption::PAD_INF) {
+            paddingValue = arith::ConstantIntOp::create(
+                rewriter, loc, intType,
+                intType.isSigned() ? APInt::getSignedMaxValue(intType.getWidth())
+                                  : APInt::getMaxValue(intType.getWidth()));
+          } else {
+            paddingValue = arith::ConstantIntOp::create(
+                rewriter, loc, intType, 0);
+          }
+        } else {
+          llvm_unreachable("Unsupported element type used for fill");
         }
-      }else{
-        Value c0f32 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.0f));
-          fillWithValue(loc, alloc, c0f32, tensorType.getShape(),
+
+        fillWithValue(loc, alloc, paddingValue, tensorType.getShape(),
+                      std::move(sizes), tensorType.getShape(), rewriter);
+      } else {
+        Value zeroValue;
+        if (auto floatType = dyn_cast<FloatType>(elemType)) {
+          const llvm::fltSemantics &semantics = floatType.getFloatSemantics();
+          zeroValue = arith::ConstantFloatOp::create(
+              rewriter, loc, floatType,
+              APFloat::getZero(semantics));
+        } else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+          zeroValue = arith::ConstantIntOp::create(
+              rewriter, loc, intType, 0);
+        } else {
+          llvm_unreachable("Unsupported element type used for fill");
+        }
+
+        fillWithValue(loc, alloc, zeroValue, tensorType.getShape(),
                       std::move(sizes), tensorType.getShape(), rewriter);
       }
       memref::SubViewOp srcSubview =
@@ -1201,6 +1243,9 @@ public:
         for (int64_t dim : shape) {
           sizes.push_back(rewriter.getIndexAttr(dim));
         }
+      }else if (auto subView = ptr.getDefiningOp<memref::SubViewOp>()) {
+        for (OpFoldResult ofr : subView.getMixedSizes())
+          sizes.push_back(ofr);
       }
       auto srcSlice =
         getExtractSlice(rank, sizes, storeValue, loc, rewriter);
@@ -1317,130 +1362,336 @@ public:
     auto shapeAttr = op.getShape();
     auto microSizeAttr = op.getMicroSize();
 
-    SmallVector<int64_t> shapeDims;
-    shapeDims.reserve(shapeAttr.size());
-    for (int32_t d : shapeAttr)
-      shapeDims.push_back(static_cast<int64_t>(d));
+    bool hasMicroSize = false;
+    bool isSameMicroSize = false;
+    ArrayRef<int32_t> preMicroSize;
 
-    SmallVector<int64_t> microSizeDims;
-    microSizeDims.reserve(microSizeAttr.size());
-    for (int32_t d : microSizeAttr)
-      microSizeDims.push_back(static_cast<int64_t>(d));
-
-    if (shapeDims.size() != microSizeDims.size())
-      return rewriter.notifyMatchFailure(op, "shape rank != micro_size rank");
-
-    SmallVector<OpFoldResult> sizeValues;
-    sizeValues.reserve(shapeDims.size());
-    for (int64_t dim : shapeDims)
-      sizeValues.push_back(rewriter.getIndexAttr(dim));
-
-    SmallVector<OpFoldResult> strideValues(shapeDims.size(), rewriter.getIndexAttr(1));
-
-    Type inferredSubviewTy =
-        memref::SubViewOp::inferResultType(baseType, offsetValues, sizeValues, strideValues);
-    auto inferredSubviewMemRefTy = dyn_cast<MemRefType>(inferredSubviewTy);
-    if (!inferredSubviewMemRefTy)
-      return rewriter.notifyMatchFailure(op, "inferResultType did not return a MemRefType");
-
-    auto subview = memref::SubViewOp::create(rewriter, loc, inferredSubviewMemRefTy, base, offsetValues, sizeValues, strideValues);
-
-    SmallVector<int64_t> expandedShape;
-    expandedShape.reserve(shapeDims.size() * 2);
-
-    SmallVector<ReassociationIndices> reassociation;
-    reassociation.reserve(shapeDims.size());
-
-    for (size_t i = 0; i < shapeDims.size(); i++) {
-      int64_t dim = shapeDims[i];
-      int64_t micro = microSizeDims[i];
-      if (micro <= 0)
-        return rewriter.notifyMatchFailure(op, "micro_size must be > 0");
-      if (dim % micro != 0)
-        return rewriter.notifyMatchFailure(op, "shape dim is not divisible by micro_size");
-
-      expandedShape.push_back(dim / micro);
-      expandedShape.push_back(micro);
-
-      reassociation.push_back(ReassociationIndices{static_cast<int64_t>(2 * i),
-                                                  static_cast<int64_t>(2 * i + 1)});
+    if (auto dense = op->getAttrOfType<mlir::DenseI32ArrayAttr>("pre_micro_size")) {
+      preMicroSize = dense.asArrayRef();
+    } else {
+      llvm::errs() << "micro_size missing or not DenseI32ArrayAttr\n";
     }
 
-    SmallVector<int64_t> subStrides;
-    int64_t subOffset = 0;
-    if (failed(inferredSubviewMemRefTy.getStridesAndOffset(subStrides, subOffset))) {
-      return rewriter.notifyMatchFailure(op, "failed to get strides/offset from subview memref");
+    if(!preMicroSize.empty()){
+        hasMicroSize = true;
+        if(preMicroSize == microSizeAttr){
+            isSameMicroSize = true;
+        }
     }
-    if (subStrides.size() != shapeDims.size())
-      return rewriter.notifyMatchFailure(op, "subview stride rank mismatch");
 
-    SmallVector<int64_t> expandedStrides;
-    expandedStrides.reserve(subStrides.size() * 2);
+    if(!hasMicroSize){
+      SmallVector<int64_t> shapeDims;
+      shapeDims.reserve(shapeAttr.size());
+      for (int32_t d : shapeAttr)
+        shapeDims.push_back(static_cast<int64_t>(d));
 
-    for (size_t i = 0; i < subStrides.size(); i++) {
-      int64_t s = subStrides[i];
-      int64_t micro = microSizeDims[i];
-      int64_t outerStride;
-      if (s == ShapedType::kDynamic) {
-        outerStride = ShapedType::kDynamic;
-      } else {
-        if (micro != 0 && (s > (std::numeric_limits<int64_t>::max() / micro)))
-          return rewriter.notifyMatchFailure(op, "stride overflow when computing expanded strides");
-        outerStride = s * micro;
+      SmallVector<int64_t> microSizeDims;
+      microSizeDims.reserve(microSizeAttr.size());
+      for (int32_t d : microSizeAttr)
+        microSizeDims.push_back(static_cast<int64_t>(d));
+
+      if (shapeDims.size() != microSizeDims.size())
+        return rewriter.notifyMatchFailure(op, "shape rank != micro_size rank");
+
+      SmallVector<OpFoldResult> sizeValues;
+      sizeValues.reserve(shapeDims.size());
+      for (int64_t dim : shapeDims)
+        sizeValues.push_back(rewriter.getIndexAttr(dim));
+
+      SmallVector<OpFoldResult> strideValues(shapeDims.size(), rewriter.getIndexAttr(1));
+
+      Type inferredSubviewTy =
+          memref::SubViewOp::inferResultType(baseType, offsetValues, sizeValues, strideValues);
+      auto inferredSubviewMemRefTy = dyn_cast<MemRefType>(inferredSubviewTy);
+      if (!inferredSubviewMemRefTy)
+        return rewriter.notifyMatchFailure(op, "inferResultType did not return a MemRefType");
+
+      auto subview = memref::SubViewOp::create(rewriter, loc, inferredSubviewMemRefTy, base, offsetValues, sizeValues, strideValues);
+
+      SmallVector<int64_t> expandedShape;
+      expandedShape.reserve(shapeDims.size() * 2);
+
+      SmallVector<ReassociationIndices> reassociation;
+      reassociation.reserve(shapeDims.size());
+
+      for (size_t i = 0; i < shapeDims.size(); i++) {
+        int64_t dim = shapeDims[i];
+        int64_t micro = microSizeDims[i];
+        if (micro <= 0)
+          return rewriter.notifyMatchFailure(op, "micro_size must be > 0");
+        if (dim % micro != 0)
+          return rewriter.notifyMatchFailure(op, "shape dim is not divisible by micro_size");
+
+        expandedShape.push_back(dim / micro);
+        expandedShape.push_back(micro);
+
+        reassociation.push_back(ReassociationIndices{static_cast<int64_t>(2 * i),
+                                                    static_cast<int64_t>(2 * i + 1)});
       }
 
-      expandedStrides.push_back(outerStride);
-      expandedStrides.push_back(s);
+      SmallVector<int64_t> subStrides;
+      int64_t subOffset = 0;
+      if (failed(inferredSubviewMemRefTy.getStridesAndOffset(subStrides, subOffset))) {
+        return rewriter.notifyMatchFailure(op, "failed to get strides/offset from subview memref");
+      }
+      if (subStrides.size() != shapeDims.size())
+        return rewriter.notifyMatchFailure(op, "subview stride rank mismatch");
+
+      SmallVector<int64_t> expandedStrides;
+      expandedStrides.reserve(subStrides.size() * 2);
+
+      for (size_t i = 0; i < subStrides.size(); i++) {
+        int64_t s = subStrides[i];
+        int64_t micro = microSizeDims[i];
+        int64_t outerStride;
+        if (s == ShapedType::kDynamic) {
+          outerStride = ShapedType::kDynamic;
+        } else {
+          if (micro != 0 && (s > (std::numeric_limits<int64_t>::max() / micro)))
+            return rewriter.notifyMatchFailure(op, "stride overflow when computing expanded strides");
+          outerStride = s * micro;
+        }
+
+        expandedStrides.push_back(outerStride);
+        expandedStrides.push_back(s);
+      }
+
+      auto *ctx = rewriter.getContext();
+      auto expandedLayout = StridedLayoutAttr::get(ctx, subOffset, expandedStrides);
+      auto expandedType = MemRefType::get(expandedShape, elementType, expandedLayout,
+                                          inferredSubviewMemRefTy.getMemorySpace());
+
+      auto expandShape = memref::ExpandShapeOp::create(rewriter, loc, expandedType, subview.getResult(), reassociation);
+
+      SmallVector<int64_t> permutation;
+      permutation.reserve(expandedShape.size());
+      if (expandedShape.size() == 4) {
+        permutation = {0, 2, 1, 3};
+      } else {
+        for (int64_t i = 0, e = static_cast<int64_t>(expandedShape.size()); i < e; i++)
+          permutation.push_back(i);
+      }
+
+      SmallVector<AffineExpr> exprs;
+      exprs.reserve(permutation.size());
+      for (int64_t p : permutation)
+        exprs.push_back(rewriter.getAffineDimExpr(p));
+      auto permMap = AffineMap::get(static_cast<unsigned>(expandedShape.size()),
+                                    /*symbolCount=*/0, exprs, ctx);
+      auto permMapAttr = AffineMapAttr::get(permMap);
+
+      SmallVector<int64_t> finalShape;
+      finalShape.reserve(expandedShape.size());
+      SmallVector<int64_t> finalStrides;
+      finalStrides.reserve(expandedStrides.size());
+
+      for (size_t i = 0; i < permutation.size(); i++) {
+        int64_t p = permutation[i];
+        finalShape.push_back(expandedShape[p]);
+        finalStrides.push_back(expandedStrides[p]);
+      }
+
+      auto finalLayout = StridedLayoutAttr::get(ctx, subOffset, finalStrides);
+      auto finalType = MemRefType::get(finalShape, elementType, finalLayout,
+                                      expandedType.getMemorySpace());
+
+      auto transpose = memref::TransposeOp::create(rewriter, loc, finalType, expandShape.getResult(), permMapAttr);
+
+      rewriter.replaceOp(op, transpose.getResult());
+      return success();
     }
+  else if(hasMicroSize && isSameMicroSize){
+    SmallVector<OpFoldResult> sizes;
 
-    auto *ctx = rewriter.getContext();
-    auto expandedLayout = StridedLayoutAttr::get(ctx, subOffset, expandedStrides);
-    auto expandedType = MemRefType::get(expandedShape, elementType, expandedLayout,
-                                        inferredSubviewMemRefTy.getMemorySpace());
-
-    auto expandShape = memref::ExpandShapeOp::create(rewriter, loc, expandedType, subview.getResult(), reassociation);
-
-    SmallVector<int64_t> permutation;
-    permutation.reserve(expandedShape.size());
-    if (expandedShape.size() == 4) {
-      permutation = {0, 2, 1, 3};
+    ArrayRef<int32_t> preShape;
+    if (auto shape = op->getAttrOfType<mlir::DenseI32ArrayAttr>("pre_shape")) {
+      preShape = shape.asArrayRef();
     } else {
-      for (int64_t i = 0, e = static_cast<int64_t>(expandedShape.size()); i < e; i++)
-        permutation.push_back(i);
+      llvm::errs() << "shape missing or not DenseI32ArrayAttr\n";
     }
 
-    SmallVector<AffineExpr> exprs;
-    exprs.reserve(permutation.size());
-    for (int64_t p : permutation)
-      exprs.push_back(rewriter.getAffineDimExpr(p));
-    auto permMap = AffineMap::get(static_cast<unsigned>(expandedShape.size()),
-                                  /*symbolCount=*/0, exprs, ctx);
-    auto permMapAttr = AffineMapAttr::get(permMap);
-
-    SmallVector<int64_t> finalShape;
-    finalShape.reserve(expandedShape.size());
-    SmallVector<int64_t> finalStrides;
-    finalStrides.reserve(expandedStrides.size());
-
-    for (size_t i = 0; i < permutation.size(); i++) {
-      int64_t p = permutation[i];
-      finalShape.push_back(expandedShape[p]);
-      finalStrides.push_back(expandedStrides[p]);
+    for (int64_t shape : preShape) {
+        sizes.push_back(rewriter.getIndexAttr(shape));
     }
 
-    auto finalLayout = StridedLayoutAttr::get(ctx, subOffset, finalStrides);
-    auto finalType = MemRefType::get(finalShape, elementType, finalLayout,
-                                     expandedType.getMemorySpace());
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    auto size_m1 = subOFRs(sizes[0], offsetValues[0], loc, rewriter);
+    Value size_m2 = ofrToIndexValue(size_m1, loc, rewriter);
+    Value shape0 = arith::ConstantIndexOp::create(rewriter, loc, shapeAttr[0]);
+    Value size_m3 = arith::MinSIOp::create(rewriter, loc, size_m2, shape0);
 
-    auto transpose = memref::TransposeOp::create(rewriter, loc, finalType, expandShape.getResult(), permMapAttr);
+    auto size_n1 = subOFRs(sizes[1], offsetValues[1], loc, rewriter);
+    Value size_n2 = ofrToIndexValue(size_n1, loc, rewriter);
+    Value shape1 = arith::ConstantIndexOp::create(rewriter, loc, shapeAttr[1]);
+    Value size_n3 = arith::MinSIOp::create(rewriter, loc, size_n2, shape1);
 
-    rewriter.replaceOp(op, transpose.getResult());
+    Value tile0Value = arith::ConstantIndexOp::create(rewriter, loc, microSizeAttr[0]);
+    Value tile1Value = arith::ConstantIndexOp::create(rewriter, loc, microSizeAttr[1]);
+    Value size0 = createCeilDivUI(rewriter, loc, size_m3, tile0Value);
+    Value size1 = createCeilDivUI(rewriter, loc, size_n3, tile1Value);
+
+    Value offset0 = createCeilDivUI(rewriter, loc, offsets[0], tile0Value);
+    Value offset1 = createCeilDivUI(rewriter, loc, offsets[1], tile1Value);
+
+    Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value src = base;
+    if (auto castOp = base.getDefiningOp<UnrealizedConversionCastOp>())
+      src = castOp.getOperand(0);
+
+    auto srcMemRefTy = dyn_cast<MemRefType>(src.getType());
+    if (!srcMemRefTy)
+      return rewriter.notifyMatchFailure(op, "src is not a MemRefType");
+
+    SmallVector<OpFoldResult> offsetValues = {offset0, offset1, c0, c0};
+    SmallVector<OpFoldResult> sizeValues   = {size0, size1, tile0Value, tile1Value};
+    SmallVector<OpFoldResult> strideValues = {c1, c1, c1, c1};
+
+    auto inferredTy =
+        memref::SubViewOp::inferResultType(srcMemRefTy, offsetValues, sizeValues, strideValues);
+
+    auto subview = memref::SubViewOp::create(
+        rewriter, loc, inferredTy, src, offsetValues, sizeValues, strideValues);
+
+    rewriter.replaceOp(op, subview.getResult());
+    return success();
+  }
+  op->emitRemark("StructuredToMemref: do not support diff micro size");
+  return failure();
+  }
+};
+
+struct ViewOpPtrPattern : public OpRewritePattern<xsmt::ViewPtrOp> {
+  using OpRewritePattern<xsmt::ViewPtrOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(xsmt::ViewPtrOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op->hasAttr("pre_micro_size") && op->hasAttr("pre_shape")) {
+      return failure();
+    }
+
+    Value base = op.getBase();
+    auto defView = base.getDefiningOp<xsmt::ViewPtrOp>();
+    if (!defView) {
+      return failure();
+    }
+
+    auto microSize = defView.getMicroSize();
+    auto shape = defView.getShape();
+    if (microSize.empty() || shape.empty()) {
+      return failure();
+    }
+
+    llvm::SmallVector<int32_t, 8> ms32(microSize.begin(), microSize.end());
+    llvm::SmallVector<int32_t, 8> sh32(shape.begin(), shape.end());
+
+    auto ctx = rewriter.getContext();
+    auto dense0 = DenseI32ArrayAttr::get(ctx, ms32);
+    auto dense1 = DenseI32ArrayAttr::get(ctx, sh32);
+
+    rewriter.modifyOpInPlace(op, [&] {
+      op->setAttr("pre_micro_size", dense0);
+      op->setAttr("pre_shape", dense1);
+    });
+
     return success();
   }
 };
 
+static bool allOffsetsAreConstZero(mlir::ValueRange offsets) {
+  for (Value v : offsets) {
+    APInt c;
+    if (!matchPattern(v, m_ConstantInt(&c)))
+      return false;
+    if (!c.isZero())
+      return false;
+  }
+  return true;
+}
+
+static FailureOr<DenseI32ArrayAttr>
+computeOutShapeFromViewAttrs(xsmt::ViewPtrOp view) {
+  DenseI32ArrayAttr shapeAttr = view.getShapeAttr();
+  DenseI32ArrayAttr microAttr = view.getMicroSizeAttr();
+  if (!shapeAttr || !microAttr)
+    return failure();
+
+  ArrayRef<int32_t> shape = shapeAttr.asArrayRef();
+  ArrayRef<int32_t> micro = microAttr.asArrayRef();
+
+  if (shape.size() != micro.size())
+    return failure();
+
+  SmallVector<int32_t, 8> outDims;
+  outDims.reserve(shape.size() * 2);
+
+  for (size_t i = 0; i < shape.size(); ++i) {
+    int32_t s = shape[i];
+    int32_t m = micro[i];
+    if (m <= 0)
+      return failure();
+    if (s % m != 0)
+      return failure();
+    outDims.push_back(s / m);
+  }
+  for (int32_t m : micro)
+    outDims.push_back(m);
+
+  return DenseI32ArrayAttr::get(view.getContext(), outDims);
+}
+
+struct FoldAllocViewPtrToAlloc final : public OpRewritePattern<xsmt::ViewPtrOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(xsmt::ViewPtrOp view,
+                                PatternRewriter &rewriter) const override {
+    Value base = view.getBase();
+    auto oldAlloc = base.getDefiningOp<xsmt::AllocOp>();
+    if (!oldAlloc)
+      return failure();
+
+    if (!oldAlloc.getResult().hasOneUse())
+      return failure();
+    if (*oldAlloc.getResult().getUsers().begin() != view.getOperation())
+      return failure();
+
+    if (!allOffsetsAreConstZero(view.getOffsets()))
+      return failure();
+    Type outTy = view.getResult().getType();
+    FailureOr<DenseI32ArrayAttr> newShapeAttr = computeOutShapeFromViewAttrs(view);
+    if (failed(newShapeAttr))
+      return failure();
+
+    StringAttr storageAttr = oldAlloc.getStorageAttr();
+
+    rewriter.setInsertionPoint(view);
+
+    auto newAlloc = xsmt::AllocOp::create(
+        rewriter, view.getLoc(),
+        outTy,
+        *newShapeAttr,
+        storageAttr);
+
+    {
+      NamedAttrList extra(oldAlloc->getAttrs());
+      extra.erase(StringAttr::get(rewriter.getContext(), "shape"));
+      extra.erase(StringAttr::get(rewriter.getContext(), "storage"));
+      for (auto it : extra)
+        newAlloc->setAttr(it.getName(), it.getValue());
+    }
+
+    rewriter.replaceOp(view, newAlloc.getResult());
+    rewriter.eraseOp(oldAlloc);
+
+    return success();
+  }
+};
 
 } // namespace
+
+void mlir::triton::ViewOpPtrPatternConversionPatterns(RewritePatternSet &patterns) {
+  patterns.add<ViewOpPtrPattern>(patterns.getContext());
+  patterns.add<FoldAllocViewPtrToAlloc>(patterns.getContext());
+}
 
 void mlir::triton::populateStructuredToMemrefConversionPatterns(
     RewritePatternSet &patterns, TypeConverter &typeConverter) {

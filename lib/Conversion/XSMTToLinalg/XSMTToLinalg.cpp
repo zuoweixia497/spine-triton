@@ -8,6 +8,7 @@
 #include "triton-shared/Conversion/XSMTToLinalg/XSMTToLinalg.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Analysis/OpFoldResultUtils.h"
+#include "triton-shared/Utils/Utils.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -40,6 +41,7 @@
 #include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
 
 using namespace mlir;
+using namespace mlir::triton;
 using namespace mlir::arith;
 using namespace mlir::linalg;
 using namespace mlir::memref;
@@ -49,33 +51,6 @@ using namespace mlir::xsmt;
 
 #define GEN_PASS_CLASSES
 #include "triton-shared/Conversion/XSMTToLinalg/Passes.h.inc"
-
-
-Value ensureIndexType(Location loc, Value value, PatternRewriter &rewriter) {
-    auto indexType = rewriter.getIndexType();
-    if (value.getType() == indexType) {
-      return value;
-    }
-    return arith::IndexCastOp::create(rewriter, loc, indexType, value);
-  }
-
-Value ofrToIndexValue(const Location loc, const OpFoldResult ofr,
-                      PatternRewriter &rewriter) {
-  if (Value val = dyn_cast<Value>(ofr)) {
-    assert(val.getType().isIntOrIndex());
-    if (!val.getType().isIndex()) {
-      val = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), val);
-    }
-    return val;
-  }
-
-  auto intVal = getIntAttr(ofr);
-  if (intVal.has_value()) {
-    return arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(intVal.value()));
-  }
-  llvm_unreachable("Unexpected OpFoldResult state");
-  return nullptr;
-}
 
 Value createZeroConstant(PatternRewriter &rewriter, Location loc, Type elementType) {
     if (elementType.isF32()) {
@@ -91,17 +66,6 @@ Value createZeroConstant(PatternRewriter &rewriter, Location loc, Type elementTy
     }
     return nullptr;
   }
-
-Value createCeilDivUI(PatternRewriter &rewriter, Location loc, Value dividend, Value divisor) {
-  auto indexType = rewriter.getIndexType();
-  Value dividendIndex = ensureIndexType(loc, dividend, rewriter);
-  Value divisorIndex = ensureIndexType(loc, divisor, rewriter);
-
-  auto one = arith::ConstantIndexOp::create(rewriter, loc, 1);
-  auto sum = arith::AddIOp::create(rewriter, loc, dividendIndex, divisorIndex);
-  auto numerator = arith::SubIOp::create(rewriter, loc, sum, one);
-  return arith::DivUIOp::create(rewriter, loc, numerator, divisorIndex);
-}
 
 inline bool isInsideLoop(mlir::Operation *op) {
   mlir::Operation *parent = op->getParentOp();

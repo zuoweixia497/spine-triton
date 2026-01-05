@@ -69,7 +69,10 @@ def view(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tens
         handle = _semantic.builder.create_view(base.handle, offsets, shape, micro_size)
 
     if all(s == 0 for s in micro_size):
-        base_tensor = tl.tensor(handle, base.type)
+        if is_block_ptr:
+            base_tensor = tl.tensor(handle, base.type.element_ty)
+        else:
+            base_tensor = tl.tensor(handle, base.type)
 
         actualMicroSize = [base_tensor.shape[2], base_tensor.shape[3]]
         result_shape = [
