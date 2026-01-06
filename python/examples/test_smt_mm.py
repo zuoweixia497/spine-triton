@@ -31,7 +31,6 @@ def mm_kernel(
     MICRO_M: tl.constexpr,
     MICRO_K: tl.constexpr,
     MICRO_N: tl.constexpr,
-    expect_count: tl.constexpr,
 ):
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
@@ -79,7 +78,7 @@ def mm_kernel(
         total_sub_blocks = sub_num_m * sub_num_n
         b_alloc_ptr =  smt.alloc(shape=[BLOCK_SIZE_K, BLOCK_SIZE_N])
         b_alloc_view_ptr = smt.view(b_alloc_ptr, (0, 0), (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N))
-        bar = smt.mbarrier(flag=0, expect_count=expect_count)
+        bar = smt.mbarrier(flag=0, expect_count=sub_num_n)
         for s in smt.parallel(0, total_sub_blocks):
             s_m = s // sub_num_n
             s_n = s % sub_num_n
@@ -131,7 +130,7 @@ def mm_kernel(
         )
         tl.store(c_block_ptr, c, boundary_check=(0, 1))
 
-        
+
 def triton_mm(a, b):
     # handle non-contiguous inputs if necessary
     if a.stride(0) > 1 and a.stride(1) > 1:
@@ -176,7 +175,6 @@ def triton_mm(a, b):
         MICRO_M=8,
         MICRO_N=16,
         MICRO_K=8,
-        expect_count=3
     )
     return c
 

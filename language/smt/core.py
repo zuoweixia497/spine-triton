@@ -119,7 +119,7 @@ def dot(a_packed, b_packed, out_unpacked=None, _semantic=None):
 
 
 @builtin
-def mbarrier(flag = tl.constexpr(0), arrive_count = tl.constexpr(1), transaction_count = tl.constexpr(1), expect_count = tl.constexpr(1), _semantic=None):
+def mbarrier(flag = tl.constexpr(0), arrive_count = tl.constexpr(0), transaction_count = tl.constexpr(0), expect_count = tl.constexpr(1), _semantic=None):
     """Initialize a memory barrier for thread synchronization.
 
     :param flag: Barrier mode flag (0=normal, 1=async, 2=with fence)
@@ -138,9 +138,9 @@ def barrier_arrive(bar, _semantic=None):
     return smt_semantic.barrier_arrive(bar, _semantic)
 
 @builtin
-def barrier_wait(bar, flag = tl.constexpr(0), expect_count = tl.constexpr(1), _semantic=None):
+def barrier_wait(bar, flag = tl.constexpr(0), arrive_count = tl.constexpr(0), _semantic=None):
     """Wait for barrier to reach expected version."""
-    return smt_semantic.barrier_wait(bar, flag, expect_count, _semantic)
+    return smt_semantic.barrier_wait(bar, flag, arrive_count, _semantic)
 
 @builtin
 def get_num_of_thread(_semantic=None):
