@@ -191,6 +191,7 @@ def get_num_of_thread(_semantic=None):
     _semantic.builder.create_get_num_of_thread()
 
 def global_mbarrier(id, _semantic=None) -> tl.tensor:
+    raise NotImplementedError("global_mbarrier Not supported: The syntax is not currently implemented in the lowering.")
     from triton.language.core import _unwrap_if_constexpr
 
     id = _unwrap_if_constexpr(id)

@@ -579,7 +579,6 @@ class CPUDriver(DriverBase):
         return
 
     def get_current_target(self):
-        print("self.num_of_stream_threads", self.num_of_stream_threads)
         return AICPUTarget("cpu", self.cpu_arch, 0, self.num_cores,
                            self.num_of_stream_threads,
                            self.current_arch_id,
