@@ -51,6 +51,17 @@ cmake --build . --target install --parallel 40
 popd
 ~~~
 
+2. download spine-mlir
+~~~
+https://archive.spacemit.com/spacemit-ai/spine-mlir/spine-mlir-riscv64-0.5.1.tar.gz
+~~~
+
+3. install triton
+~~~
+git submodule update --init --recursive
+bash scripts/build.sh ${LLVM_INSTALL_DIR} {arch/x86_64/riscv64} {spine-mlir-install-dir}
+~~~
+
 ## License
 
 spine-triton is licensed under the [MIT license](/LICENSE).
