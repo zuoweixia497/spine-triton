@@ -10,6 +10,7 @@ import os
 
 SPINE_MLIR_BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 
+
 def get_spine_mlir_cc_debug() -> bool:
     debug_or_not = int(os.getenv("SPINE_MLIR_DEBUG_MODE", "0"))
     return debug_or_not == 1
@@ -30,7 +31,8 @@ def get_llvm_bin_path(bin_name: str) -> str:
 
 
 def get_spine_triton_opt_path() -> str:
-    spine_triton_opt_path = os.path.join(SPINE_MLIR_BASE_PATH, "bin", "spine-triton-opt")
+    spine_triton_opt_path = os.path.join(
+        SPINE_MLIR_BASE_PATH, "bin", "spine-triton-opt")
     if os.path.isfile(spine_triton_opt_path):
         path = spine_triton_opt_path
     else:
@@ -47,7 +49,8 @@ def dump_ir_if_needed(files, kernel_name=None):
         return
     for f in files:
         if kernel_name != None:
-            shutil.copy(f, os.path.join(path, kernel_name + "_" + os.path.basename(f)))
+            shutil.copy(f, os.path.join(
+                path, kernel_name + "_" + os.path.basename(f)))
         else:
             shutil.copy(f, os.path.join(path) + os.path.basename(f))
 
@@ -57,6 +60,19 @@ def extract_kernel_name(pattern, ir):
     assert len(matches) == 1
     kernel_name = matches[0]
     return kernel_name
+
+
+def get_cpu_name_from_arch_id(arch_id: str) -> str:
+    target_arch_id_to_cpu_arch = {
+        "0x503C": "spacemit-x60",
+        "0x5064": "spacemit-x100",
+        "0xA03C": "spacemit-a60",
+        "0xA064": "spacemit-a100",
+    }
+    cpu_name = target_arch_id_to_cpu_arch.get(arch_id, None)
+    if cpu_name is None:
+        raise ValueError(f"Unknown arch_id: {arch_id}")
+    return cpu_name
 
 
 try:
@@ -73,7 +89,8 @@ except Exception as e:
 
 try:
     triton_path = os.path.dirname(triton.__file__)
-    libtritonruntime_path = os.path.join(triton_path, "_C", "libSpineTritonRuntime.so")
+    libtritonruntime_path = os.path.join(
+        triton_path, "_C", "libSpineTritonRuntime.so")
     if os.path.isfile(libtritonruntime_path):
         libtritonruntime = CDLL(libtritonruntime_path, mode=RTLD_GLOBAL)
     else:

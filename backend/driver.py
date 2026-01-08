@@ -14,8 +14,14 @@ from triton.runtime.cache import get_cache_manager
 from triton.runtime.build import compile_module_from_src
 from triton.backends.driver import DriverBase
 from triton.backends.compiler import GPUTarget
-from . import get_spine_mlir_cc_debug
-from .env import *
+from . import (
+    get_spine_triton_opt_path,
+    dump_ir_if_needed,
+    get_llvm_bin_path,
+    get_spine_mlir_opt_path,
+    extract_kernel_name,
+    get_cpu_name_from_arch_id
+)
 
 
 dirname = os.path.dirname(os.path.realpath(__file__))
@@ -75,7 +81,8 @@ def _format_of(ty):
 
 
 def _generate_launcher(constants, signature, smt_parallel_inside=False):
-    arg_decls = ", ".join(f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
+    arg_decls = ", ".join(
+        f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
     args_format = "".join(
         [_format_of(_extracted_type(ty)) for ty in signature.values()]
     )
@@ -100,7 +107,8 @@ def _generate_launcher(constants, signature, smt_parallel_inside=False):
     )
     kernel_parameters += ", " if kernel_parameters else ""
 
-    smt_parallel_inside_arg = "constexpr bool smt_parallel_inside = {};".format("true" if smt_parallel_inside else "false")
+    smt_parallel_inside_arg = "constexpr bool smt_parallel_inside = {};".format(
+        "true" if smt_parallel_inside else "false")
 
     return f"""
 #include <assert.h>
@@ -265,7 +273,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
 
   // raise exception asap
   {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
-  _launch(gridX, gridY, gridZ, _stream, kernel_ptr, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
+  _launch(gridX, gridY, gridZ, _stream, kernel_ptr, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0] == "*" else f"_arg{i}"for i, ty in signature.items())});
   if (PyErr_Occurred()) {{
     return NULL;
   }}
@@ -440,6 +448,8 @@ class CPUUtils(object):
         self.get_device_properties = mod.get_device_properties
         self._get_current_stream = mod.get_current_stream
         self._get_arch_id = mod.get_arch_id
+        self._get_num_cores = mod.get_num_cores
+        self._get_stream_threads = mod.get_stream_threads
 
     def get_current_stream(self):
         return self._get_current_stream()
@@ -447,14 +457,24 @@ class CPUUtils(object):
     def get_arch_id(self):
         return self._get_arch_id()
 
+    def get_num_cores(self):
+        return self._get_num_cores()
+
+    def get_stream_threads(self):
+        return self._get_stream_threads()
+
+
 class CPULauncher(object):
     def __init__(self, src, metadata):
         constants = src.constants if hasattr(src, "constants") else dict()
-        cst_key = lambda i: src.fn.arg_names.index(i) if isinstance(i, str) else i
+        def cst_key(i): return src.fn.arg_names.index(
+            i) if isinstance(i, str) else i
         constants = {cst_key(key): value for key, value in constants.items()}
-        signature = {cst_key(key): value for key, value in src.signature.items()}
+        signature = {cst_key(key): value for key,
+                     value in src.signature.items()}
         smt_parallel_inside = metadata.smt_parallel_inside
-        launcher_src = _generate_launcher(constants, signature, smt_parallel_inside)
+        launcher_src = _generate_launcher(
+            constants, signature, smt_parallel_inside)
         mod = compile_module(launcher_src, "__spine_triton_kernel_launcher")
         self.launch = mod.launch
 
@@ -527,6 +547,9 @@ class CPUDriver(DriverBase):
         self.launcher_cls = CPULauncher
         self.binary_ext = "so"
         self.current_arch_id = self.utils.get_arch_id()
+        self.cpu_arch = get_cpu_name_from_arch_id(self.current_arch_id)
+        self.num_cores = self.utils.get_num_cores()
+        self.num_of_stream_threads = self.utils.get_stream_threads()
 
     # CPU driver won't be automatically chosen unless explicitly set through
     # triton.runtime.driver.set_active(CPUDriver())
@@ -555,7 +578,10 @@ class CPUDriver(DriverBase):
         return
 
     def get_current_target(self):
-        return AICPUTarget("cpu", "a60", 0, 8, 4, self.current_arch_id, 3)
+        return AICPUTarget("cpu", self.cpu_arch, 0, self.num_cores,
+                           self.num_of_stream_threads,
+                           self.current_arch_id,
+                           self.num_of_stream_threads)
 
     def get_active_torch_device(self):
         import torch

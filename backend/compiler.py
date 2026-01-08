@@ -17,6 +17,7 @@ from . import (
     get_llvm_bin_path,
     get_spine_mlir_opt_path,
     extract_kernel_name,
+    get_cpu_name_from_arch_id
 )
 
 
@@ -114,7 +115,8 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
         # LLVM-MLIR to LLVM-IR
         mlir_translate_path = get_llvm_bin_path("mlir-translate")
         subprocess.check_call(
-            [mlir_translate_path, llmlir_new_path, "--mlir-to-llvmir", "-o", llir_path]
+            [mlir_translate_path, llmlir_new_path,
+                "--mlir-to-llvmir", "-o", llir_path]
         )
         dump_ir_if_needed([llir_path], metadata["name"])
         return Path(llir_path).read_text()
@@ -128,11 +130,12 @@ def _optimize_llir(llir: str):
 def _llir_to_so(llir: str, metadata):
     cpu_arch = platform.machine()
     target_arch_id = metadata["target"].arch_id
-    target_arch_id_to_cpu_arch = {
-        "0xA03C": "spacemit-x60",
-        "0xA064": "spacemit-a100",
-    }
-    ai_cpu_arch = target_arch_id_to_cpu_arch.get(target_arch_id, None)
+    ai_cpu_arch = get_cpu_name_from_arch_id(target_arch_id)
+
+    if ai_cpu_arch == "spacemit-a60":
+        # special case for a60
+        ai_cpu_arch = "spacemit-x60"
+
     with tempfile.TemporaryDirectory() as tmpdir:
         src_path = os.path.join(tmpdir, ".ll")
         src_opt_path = os.path.join(tmpdir, ".opt.ll")
@@ -143,11 +146,11 @@ def _llir_to_so(llir: str, metadata):
         llopt_flags = []
         if cpu_arch == "riscv64":
             llopt_flags.extend([
-                    "--march=riscv64",
-                    "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
-                    "-passes=loop-vectorize",
-                    "-force-vector-width=32",
-                    "-force-vector-interleave=2"
+                "--march=riscv64",
+                "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
+                "-passes=loop-vectorize",
+                "-force-vector-width=32",
+                "-force-vector-interleave=2"
             ])
 
         subprocess.check_call(
@@ -193,7 +196,8 @@ def _llir_to_so(llir: str, metadata):
         so_path = os.path.join(tmpdir, ".so")
         gcc_flags = []
         if cpu_arch == "riscv64":
-            gcc_flags.extend(["-march=rv64gcv_zfh_zba_zicbop", "-mabi=lp64d", "-O3"])
+            gcc_flags.extend(
+                ["-march=rv64gcv_zfh_zba_zicbop", "-mabi=lp64d", "-O3"])
         subprocess.check_call(
             [
                 "g++",
@@ -238,7 +242,8 @@ class CPUOptions:
         pass
 
     def hash(self):
-        key = "_".join([f"{name}-{val}" for name, val in self.__dict__.items()])
+        key = "_".join([f"{name}-{val}" for name,
+                       val in self.__dict__.items()])
         return hashlib.md5(key.encode("utf-8")).hexdigest()
 
 
@@ -257,7 +262,8 @@ class CPUBackend(BaseBackend):
             opts.pop("instrumentation_mode")
         args = {"arch": self.target.arch}
         args.update(
-            {k: opts[k] for k in CPUOptions.__dataclass_fields__.keys() if k in opts}
+            {k: opts[k]
+                for k in CPUOptions.__dataclass_fields__.keys() if k in opts}
         )
         return CPUOptions(**args)
 
@@ -310,7 +316,8 @@ class CPUBackend(BaseBackend):
         return mod
 
     def add_stages(self, stages, options, language):
-        stages["ttir"] = lambda src, metadata: self.make_ttir(src, metadata, options)
+        stages["ttir"] = lambda src, metadata: self.make_ttir(
+            src, metadata, options)
         stages["linalgdir"] = lambda src, metadata: _optimize_linalgdir(
             _ttir_to_linalgdir(src, metadata)
         )
@@ -359,7 +366,8 @@ def get_cache_sizes():
             results.append(0)
             continue
 
-        match = re.search(r"(\d+)\s*([KMG]?i?B)\s*\((\d+)\s*instances\)", output)
+        match = re.search(
+            r"(\d+)\s*([KMG]?i?B)\s*\((\d+)\s*instances\)", output)
         matchNoinstances = re.search(r"(\d+)\s*([KMG]?i?B)", output)
         if match:
             total_size, unit, instances = match.groups()
@@ -371,7 +379,8 @@ def get_cache_sizes():
             continue
 
         unit = unit.lower().rstrip("ib")
-        bytes_per_instance = (int(total_size) * unit_map[unit]) // int(instances)
+        bytes_per_instance = (
+            int(total_size) * unit_map[unit]) // int(instances)
         results.append(bytes_per_instance)
 
     return results  # Format: [L1_size, L2_size, L3_size] in bytes
