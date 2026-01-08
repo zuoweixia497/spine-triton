@@ -106,13 +106,21 @@ public:
       signalPassFailure();
     }
 
-    moduleOp.walk([](linalg::Mmt4DOp mmt4dOp) {
-      for (OpOperand &operand : mmt4dOp->getOpOperands()) {
-        if (auto castOp = operand.get().getDefiningOp<tensor::CastOp>()) {
-          operand.set(castOp.getSource());
-        }
+    llvm::SmallPtrSet<mlir::Operation *, 16> maybeDeadCasts;
+    moduleOp.walk([&](linalg::Mmt4DOp mmt4dOp) {
+      for (mlir::OpOperand &operand : mmt4dOp->getOpOperands()) {
+        auto castOp = operand.get().getDefiningOp<mlir::tensor::CastOp>();
+        if (!castOp)
+          continue;
+        operand.set(castOp.getSource());
+        maybeDeadCasts.insert(castOp.getOperation());
       }
     });
+
+    for (mlir::Operation *op : maybeDeadCasts) {
+      if (op->use_empty())
+        op->erase();
+    }
 
   }
 };

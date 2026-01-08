@@ -1513,26 +1513,18 @@ public:
     for (int64_t shape : preShape) {
         sizes.push_back(rewriter.getIndexAttr(shape));
     }
-
-    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    auto size_m1 = subOFRs(sizes[0], offsetValues[0], loc, rewriter);
-    Value size_m2 = ofrToIndexValue(size_m1, loc, rewriter);
-    Value shape0 = arith::ConstantIndexOp::create(rewriter, loc, shapeAttr[0]);
-    Value size_m3 = arith::MinSIOp::create(rewriter, loc, size_m2, shape0);
-
-    auto size_n1 = subOFRs(sizes[1], offsetValues[1], loc, rewriter);
-    Value size_n2 = ofrToIndexValue(size_n1, loc, rewriter);
-    Value shape1 = arith::ConstantIndexOp::create(rewriter, loc, shapeAttr[1]);
-    Value size_n3 = arith::MinSIOp::create(rewriter, loc, size_n2, shape1);
-
     Value tile0Value = arith::ConstantIndexOp::create(rewriter, loc, microSizeAttr[0]);
     Value tile1Value = arith::ConstantIndexOp::create(rewriter, loc, microSizeAttr[1]);
-    Value size0 = createCeilDivUI(rewriter, loc, size_m3, tile0Value);
-    Value size1 = createCeilDivUI(rewriter, loc, size_n3, tile1Value);
+
+    Value shape0 = arith::ConstantIndexOp::create(rewriter, loc, shapeAttr[0]);
+    Value shape1 = arith::ConstantIndexOp::create(rewriter, loc, shapeAttr[1]);
+    Value size0 = createCeilDivUI(rewriter, loc, shape0, tile0Value);
+    Value size1 = createCeilDivUI(rewriter, loc, shape1, tile1Value);
 
     Value offset0 = createCeilDivUI(rewriter, loc, offsets[0], tile0Value);
     Value offset1 = createCeilDivUI(rewriter, loc, offsets[1], tile1Value);
 
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
     Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value src = base;
     if (auto castOp = base.getDefiningOp<UnrealizedConversionCastOp>())
@@ -1686,11 +1678,72 @@ struct FoldAllocViewPtrToAlloc final : public OpRewritePattern<xsmt::ViewPtrOp> 
   }
 };
 
+struct FuseTTSLoadAndViewToDescriptorLoadView
+    : public mlir::OpRewritePattern<xsmt::ViewOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  mlir::LogicalResult matchAndRewrite(xsmt::ViewOp view,
+                                      mlir::PatternRewriter &rewriter) const override {
+
+    auto load = view.getBase().getDefiningOp<tts::LoadOp>();
+    if (!load)
+      return mlir::failure();
+
+    if (!load->hasOneUse())
+      return mlir::failure();
+    if (*load->user_begin() != view.getOperation())
+      return mlir::failure();
+
+    mlir::Location loc = view.getLoc();
+    mlir::Type i64Ty = rewriter.getI64Type();
+
+    llvm::SmallVector<mlir::Value, 4> offsets64;
+    offsets64.reserve(view.getOffsets().size());
+
+    for (mlir::Value off : view.getOffsets()) {
+      mlir::Type ty = off.getType();
+
+      if (ty == i64Ty) {
+        offsets64.push_back(off);
+        continue;
+      }
+
+      if (ty.isInteger(32)) {
+        offsets64.push_back(mlir::arith::ExtSIOp::create(rewriter, loc, i64Ty, off));
+        continue;
+      }
+
+      if (ty.isIndex()) {
+        offsets64.push_back(mlir::arith::IndexCastOp::create(rewriter, loc, i64Ty, off));
+        continue;
+      }
+
+      return mlir::failure();
+    }
+
+    auto shape = view.getShape();
+    auto micro = view.getMicroSize();
+
+    auto fused = xsmt::DescriptorLoadViewOp::create(rewriter, loc,
+        /*resultType=*/view.getResult().getType(),
+        /*base=*/load.getPtr(),
+        /*offsets=*/offsets64,
+        /*shape=*/shape,
+        /*micro_size=*/micro);
+
+    rewriter.replaceOp(view, fused.getResult());
+    rewriter.eraseOp(load);
+
+    return mlir::success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::ViewOpPtrPatternConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<ViewOpPtrPattern>(patterns.getContext());
   patterns.add<FoldAllocViewPtrToAlloc>(patterns.getContext());
+  patterns.add<FuseTTSLoadAndViewToDescriptorLoadView>(patterns.getContext());
 }
 
 void mlir::triton::populateStructuredToMemrefConversionPatterns(

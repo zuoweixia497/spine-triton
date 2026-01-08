@@ -20,7 +20,8 @@ from . import (
     get_llvm_bin_path,
     get_spine_mlir_opt_path,
     extract_kernel_name,
-    get_cpu_name_from_arch_id
+    get_cpu_name_from_arch_id,
+    get_spine_mlir_cc_debug
 )
 
 
@@ -578,6 +579,7 @@ class CPUDriver(DriverBase):
         return
 
     def get_current_target(self):
+        print("self.num_of_stream_threads", self.num_of_stream_threads)
         return AICPUTarget("cpu", self.cpu_arch, 0, self.num_cores,
                            self.num_of_stream_threads,
                            self.current_arch_id,

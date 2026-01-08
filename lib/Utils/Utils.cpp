@@ -1,5 +1,9 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton-shared/Analysis/OpFoldResultUtils.h"
+#include "mlir/IR/PatternMatch.h"          // matchPattern, m_Zero
+#include "mlir/IR/BuiltinAttributes.h"     // IntegerAttr
+#include "mlir/Dialect/Arith/IR/Arith.h"   // arith::ConstantIndexOp
+#include "llvm/ADT/STLExtras.h"            // llvm::all_of
 
 namespace mlir {
 namespace triton {
@@ -45,6 +49,28 @@ Value createCeilDivUI(PatternRewriter &rewriter, Location loc, Value dividend, V
   auto sum = arith::AddIOp::create(rewriter, loc, dividendIndex, divisorIndex);
   auto numerator = arith::SubIOp::create(rewriter, loc, sum, one);
   return arith::DivUIOp::create(rewriter, loc, numerator, divisorIndex);
+}
+
+bool isZeroOFR(mlir::OpFoldResult ofr) {
+  if (auto attr = llvm::dyn_cast<mlir::Attribute>(ofr)) {
+    if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(attr))
+      return intAttr.getValue().isZero();
+    return false;
+  }
+
+  mlir::Value v = llvm::cast<mlir::Value>(ofr);
+
+  if (mlir::matchPattern(v, mlir::m_Zero()))
+    return true;
+
+  if (auto cstIdx = v.getDefiningOp<mlir::arith::ConstantIndexOp>())
+    return cstIdx.value() == 0;
+
+  return false;
+}
+
+bool areAllZeroOFRs(mlir::ArrayRef<mlir::OpFoldResult> ofrs) {
+  return llvm::all_of(ofrs, [](mlir::OpFoldResult x) { return isZeroOFR(x); });
 }
 
 } // namespace triton

@@ -265,6 +265,8 @@ public:
 
     if (auto ViewOp = base.getDefiningOp<xsmt::ViewOp>()) {
         preMicroSize = ViewOp.getMicroSize();
+    } else if (auto loadOp = base.getDefiningOp<xsmt::DescriptorLoadViewOp>()) {
+        preMicroSize = loadOp.getMicroSize();
     }
 
     if(!preMicroSize.empty()){
@@ -466,6 +468,8 @@ private:
     ArrayRef<int32_t> preMicroSize;
     if (auto prevViewOp = base.getDefiningOp<xsmt::ViewOp>()) {
       preMicroSize = prevViewOp.getMicroSize();
+    } else if (auto loadOp = base.getDefiningOp<xsmt::DescriptorLoadViewOp>()) {
+        preMicroSize = loadOp.getMicroSize();
     } else {
       other = true;
     }
@@ -1154,6 +1158,287 @@ struct InsertMBarrierReleasePattern : public mlir::OpRewritePattern<xsmt_async::
   }
 };
 
+struct DescriptorLoadViewOpPattern : public OpRewritePattern<DescriptorLoadViewOp> {
+  DescriptorLoadViewOpPattern(MLIRContext *context)
+      : OpRewritePattern<DescriptorLoadViewOp>(context) {}
+
+  LogicalResult matchAndRewrite(DescriptorLoadViewOp DescriptorLoadViewOp,
+                                PatternRewriter &rewriter) const override {
+    Value result = DescriptorLoadViewOp.getResult();
+
+    bool hasTranspose = false;
+    linalg::TransposeOp transposeOp;
+    for (auto &use : result.getUses()) {
+      if (auto transpose = dyn_cast<linalg::TransposeOp>(use.getOwner())) {
+        if (hasTranspose) {
+          return failure();
+        }
+        hasTranspose = true;
+        transposeOp = transpose;
+      }
+    }
+
+    Value sourcePtr = DescriptorLoadViewOp.getBase();
+    auto unrealizedCast = sourcePtr.getDefiningOp<UnrealizedConversionCastOp>();
+    if (!unrealizedCast) return failure();
+
+    Value reinterpretCast = unrealizedCast.getOperand(0);
+    auto reinterpretCastOp = reinterpretCast.getDefiningOp<memref::ReinterpretCastOp>();
+    if (!reinterpretCastOp){
+      if(auto castop = reinterpretCast.getDefiningOp<memref::CastOp>()){
+        reinterpretCast = castop.getOperand();
+        if(auto reinterpretCastOp1 = reinterpretCast.getDefiningOp<memref::ReinterpretCastOp>()){
+          reinterpretCastOp = reinterpretCastOp1;
+        }else{
+          return failure();
+        }
+      }else{
+        return failure();
+      }
+    }
+
+    auto sizes = reinterpretCastOp.getMixedSizes();
+    if (sizes.size() != 2) {
+      return failure();
+    }
+
+    Location loc = DescriptorLoadViewOp.getLoc();
+    Value dim0Value = ofrToIndexValue(loc, sizes[0], rewriter);
+    Value dim1Value = ofrToIndexValue(loc, sizes[1], rewriter);
+
+    auto microSizeAttr = DescriptorLoadViewOp.getMicroSize();
+    if (microSizeAttr.size() != 2) {
+      return failure();
+    }
+
+    int32_t tile0 = microSizeAttr[0];
+    int32_t tile1 = microSizeAttr[1];
+
+    Value c1 = ConstantIndexOp::create(rewriter, loc, 1);
+    Value tile0Value = ConstantIndexOp::create(rewriter, loc, tile0);
+    Value tile1Value = ConstantIndexOp::create(rewriter, loc, tile1);
+
+    auto offsets = DescriptorLoadViewOp.getOffsets();
+    Value offset0 = offsets[0];
+    Value offset1 = offsets[1];
+    Value rankedMemRef = reinterpretCast;
+
+    Value indexOffset0 = ensureIndexType(loc, offset0, rewriter);
+    Value indexOffset1 = ensureIndexType(loc, offset1, rewriter);
+    Value indexDim0Value = ensureIndexType(loc, dim0Value, rewriter);
+    Value indexDim1Value = ensureIndexType(loc, dim1Value, rewriter);
+
+    auto shapes = DescriptorLoadViewOp.getShape();
+    Value size_m1 = SubIOp::create(rewriter, loc, indexDim0Value, indexOffset0);
+    Value shape0 = ConstantIndexOp::create(rewriter, loc, shapes[0]);
+    Value size_m2 = MinSIOp::create(rewriter, loc, size_m1, shape0);
+
+    Value size_k1 = SubIOp::create(rewriter, loc, indexDim1Value, indexOffset1);
+    Value shape1 = ConstantIndexOp::create(rewriter, loc, shapes[1]);
+    Value size_k2 = MinSIOp::create(rewriter, loc, size_k1, shape1);
+
+    Value subview = SubViewOp::create(rewriter, loc,
+        rankedMemRef,
+        ArrayRef<OpFoldResult>{indexOffset0, indexOffset1},
+        ArrayRef<OpFoldResult>{size_m2, size_k2},
+        ArrayRef<OpFoldResult>{c1, c1});
+
+    auto subviewType = cast<MemRefType>(subview.getType());
+    auto tensorType = RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
+    Value tensor = ToTensorOp::create(rewriter, loc, tensorType, subview,
+                                              /*restrict=*/rewriter.getUnitAttr());
+
+    if (!hasTranspose) {
+      return convertWithoutTranspose(DescriptorLoadViewOp, tensor, size_m2, size_k2, tile0, tile1, rewriter);
+    }
+
+    auto permutation = transposeOp.getPermutation();
+    if (permutation.size() != 4 ||
+        permutation[0] != 1 || permutation[1] != 0 ||
+        permutation[2] != 3 || permutation[3] != 2) {
+      return failure();
+    }
+
+    return convertWithTranspose(DescriptorLoadViewOp, transposeOp, tensor, size_m2, size_k2, tile0, tile1, rewriter);
+  }
+
+private:
+  LogicalResult convertWithoutTranspose(DescriptorLoadViewOp DescriptorLoadViewOp,
+                                        Value tensor,
+                                        Value dim0, Value dim1,
+                                        int32_t tile0, int32_t tile1,
+                                        PatternRewriter &rewriter) const {
+    Location loc = DescriptorLoadViewOp.getLoc();
+    Value tile0Value = ConstantIndexOp::create(rewriter, loc, tile0);
+    Value tile1Value = ConstantIndexOp::create(rewriter, loc, tile1);
+    Value packedRows = createCeilDivUI(rewriter, loc, dim0, tile0Value);
+    Value packedCols = createCeilDivUI(rewriter, loc, dim1, tile1Value);
+
+    SmallVector<int64_t, 4> shapeDims;
+    shapeDims.push_back(ShapedType::kDynamic);
+    shapeDims.push_back(ShapedType::kDynamic);
+    shapeDims.push_back(tile0);
+    shapeDims.push_back(tile1);
+
+    auto tensorType = cast<RankedTensorType>(tensor.getType());
+    Type elementType = tensorType.getElementType();
+
+    auto emptyType = RankedTensorType::get(shapeDims, elementType);
+
+    Value emptyTensor = EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
+    Value paddingValue = createZeroConstant(rewriter, loc, elementType);
+
+    Value packedResult = PackOp::create(rewriter, loc,
+        tensor,
+        emptyTensor,
+        ArrayRef<int64_t>{0, 1},
+        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(tile0), rewriter.getIndexAttr(tile1)},
+        paddingValue,
+        ArrayRef<int64_t>{0, 1}
+    );
+
+    auto originalResultType = cast<RankedTensorType>(DescriptorLoadViewOp.getResult().getType());
+    Value castResult = tensor::CastOp::create(rewriter, loc, originalResultType, packedResult);
+
+    rewriter.replaceOp(DescriptorLoadViewOp, castResult);
+    cleanupUnusedOps(DescriptorLoadViewOp, rewriter);
+
+    return success();
+  }
+
+  LogicalResult convertWithTranspose(DescriptorLoadViewOp DescriptorLoadViewOp,
+                                     linalg::TransposeOp transposeOp,
+                                     Value tensor,
+                                     Value dim0, Value dim1,
+                                     int32_t tile0, int32_t tile1,
+                                     PatternRewriter &rewriter) const {
+    Location loc = DescriptorLoadViewOp.getLoc();
+    Value tile0Value = ConstantIndexOp::create(rewriter, loc, tile0);
+    Value tile1Value = ConstantIndexOp::create(rewriter, loc, tile1);
+    Value packedRows = createCeilDivUI(rewriter, loc, dim1, tile1Value);
+    Value packedCols = createCeilDivUI(rewriter, loc, dim0, tile0Value);
+
+    auto tensorType = cast<RankedTensorType>(tensor.getType());
+    Type elementType = tensorType.getElementType();
+
+    SmallVector<int64_t, 4> shapeDims;
+    shapeDims.push_back(ShapedType::kDynamic);
+    shapeDims.push_back(ShapedType::kDynamic);
+    shapeDims.push_back(tile1);
+    shapeDims.push_back(tile0);
+
+    auto emptyType = RankedTensorType::get(shapeDims, elementType);
+
+    Value emptyTensor = EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
+
+    Value paddingValue = createZeroConstant(rewriter, loc, elementType);
+
+    Value packedResult = PackOp::create(rewriter, loc,
+        tensor,
+        emptyTensor,
+        ArrayRef<int64_t>{1, 0},
+        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(tile1), rewriter.getIndexAttr(tile0)},
+        paddingValue,
+        ArrayRef<int64_t>{1, 0}
+    );
+
+    auto transposeResultType = cast<RankedTensorType>(transposeOp->getResult(0).getType());
+    Value castResult = tensor::CastOp::create(rewriter, loc, transposeResultType , packedResult);
+
+    rewriter.replaceOp(transposeOp, castResult);
+    rewriter.eraseOp(DescriptorLoadViewOp);
+    cleanupUnusedOps(DescriptorLoadViewOp, rewriter);
+
+    return success();
+  }
+
+  void cleanupUnusedOps(DescriptorLoadViewOp DescriptorLoadViewOp,
+                        PatternRewriter &rewriter) const {
+    Value sourcePtr = DescriptorLoadViewOp.getBase();
+    if (auto unrealizedCast = sourcePtr.getDefiningOp<UnrealizedConversionCastOp>()) {
+      Value reinterpretCast = unrealizedCast.getOperand(0);
+      if (unrealizedCast->getUses().empty()) {
+        rewriter.eraseOp(unrealizedCast);
+        if (auto reinterpretCastOp = reinterpretCast.getDefiningOp<memref::ReinterpretCastOp>()) {
+          if (reinterpretCastOp->getUses().empty()) {
+            rewriter.eraseOp(reinterpretCastOp);
+          }
+        }
+      }
+    }
+  }
+};
+
+struct FoldAllocCopyToTensor final
+    : public OpRewritePattern<bufferization::ToTensorOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(bufferization::ToTensorOp toTensor,
+                                PatternRewriter &rewriter) const override {
+
+    Value allocMemref = toTensor->getOperand(0);
+
+    auto alloc = allocMemref.getDefiningOp<memref::AllocOp>();
+    if (!alloc)
+      return failure();
+
+    memref::CopyOp copyOp;
+    memref::DeallocOp deallocOp;
+
+    for (Operation *user : allocMemref.getUsers()) {
+      if (user == toTensor.getOperation())
+        continue;
+
+      if (auto c = dyn_cast<memref::CopyOp>(user)) {
+        if (c.getTarget() != allocMemref) return failure();
+        if (copyOp) return failure();
+        copyOp = c;
+        continue;
+      }
+
+      if (auto d = dyn_cast<memref::DeallocOp>(user)) {
+        if (deallocOp) return failure();
+        deallocOp = d;
+        continue;
+      }
+
+      return failure();
+    }
+
+    if (!copyOp)
+      return failure();
+
+    if (copyOp->getBlock() == toTensor->getBlock()) {
+      if (!copyOp->isBeforeInBlock(toTensor))
+        return failure();
+    } else {
+      DominanceInfo dom(toTensor->getParentOp());
+      if (!dom.dominates(copyOp, toTensor))
+        return failure();
+    }
+
+    Value src = copyOp.getSource();
+
+    auto resTy = dyn_cast<RankedTensorType>(toTensor.getType());
+    auto srcTy = dyn_cast<MemRefType>(src.getType());
+    if (!resTy || !srcTy) return failure();
+    if (srcTy.getRank() != resTy.getRank()) return failure();
+    if (srcTy.getElementType() != resTy.getElementType()) return failure();
+
+    auto newToTensor =
+        bufferization::ToTensorOp::create(rewriter, toTensor.getLoc(), resTy, src);
+
+    newToTensor->setAttrs(toTensor->getAttrs());
+
+    rewriter.replaceOp(toTensor, newToTensor.getResult());
+
+    rewriter.eraseOp(copyOp);
+    if (deallocOp) rewriter.eraseOp(deallocOp);
+    rewriter.eraseOp(alloc);
+
+    return success();
+  }
+};
 
 void mlir::triton::populateXSMTOptimizationAndValidationPatterns(RewritePatternSet &patterns) {
   patterns.add<MMT4DBindFusionPattern>(patterns.getContext());
@@ -1165,6 +1450,7 @@ void mlir::triton::populateXSMTOptimizationAndValidationPatterns(RewritePatternS
 
 void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<FillOpPattern>(patterns.getContext());
+  patterns.add<DescriptorLoadViewOpPattern>(patterns.getContext());
   patterns.add<ViewOpPattern>(patterns.getContext());
   patterns.add<InsertMBarrierReleasePattern>(patterns.getContext());
   patterns.add<GetThreadOpToLLVMCallPattern>(patterns.getContext());
@@ -1187,4 +1473,5 @@ void mlir::triton::LoopParallelizationConversionPatterns(RewritePatternSet &patt
 void mlir::triton::BufferizationCleanupConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<RemoveUnusedAllocPattern>(patterns.getContext());
   patterns.add<RemoveRedundantBufferizationRoundtrip>(patterns.getContext());
+  patterns.add<FoldAllocCopyToTensor>(patterns.getContext());
 }

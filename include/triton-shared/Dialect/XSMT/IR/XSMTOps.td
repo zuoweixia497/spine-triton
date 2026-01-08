@@ -108,6 +108,35 @@ def ViewPtrOp : XSMT_Op<"viewptr", [Pure, MemoryEffects<[MemWrite]>]> {
   let hasVerifier = 1;
 }
 
+def DescriptorLoadViewOp : XSMT_Op<"descriptor_load_view", [Pure, MemoryEffects<[MemWrite]>]> {
+  let summary = "fuse DescriptorLoadOp and ViewOp";
+  let description = [{
+  }];
+
+  let arguments = (ins
+    TT_Ptr:$base,
+    Variadic<I64>:$offsets,
+    DenseI32ArrayAttr:$shape,
+    DenseI32ArrayAttr:$micro_size
+  );
+
+  let results = (outs TT_Tensor:$result);
+
+  let assemblyFormat = [{
+    $base `,` `[` $offsets `]` `,` `[` $shape `]` `,` `[` $micro_size `]` attr-dict `:`
+    type($base) `->` type($result)
+  }];
+
+  let builders = [
+    OpBuilder<(ins
+      "Value":$base,
+      "ValueRange":$offsets,
+      "ArrayRef<int32_t>":$shape,
+      "ArrayRef<int32_t>":$micro_size
+    )>
+  ];
+}
+
 def AllocOp : XSMT_Op<"alloc", [MemoryEffects<[MemAlloc]>]> {
   let summary = "Allocate a tensor in specified memory storage";
   let description = [{
