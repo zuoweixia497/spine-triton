@@ -1,6 +1,7 @@
 add_triton_library(XSMTIR
   XSMTDialect.cpp
   XSMTOps.cpp
+  XSMTTypes.cpp
 
   DEPENDS
   XSMTTableGen

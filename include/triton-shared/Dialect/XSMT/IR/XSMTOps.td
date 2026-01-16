@@ -14,6 +14,7 @@ include "mlir/Interfaces/ViewLikeInterface.td"
 include "triton/Dialect/Triton/IR/TritonOpInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonAttrDefs.td"
 include "mlir/Dialect/Arith/IR/ArithBase.td"
+include "triton-shared/Dialect/XSMT/IR/XSMTTypes.td"
 
 
 class XSMT_Op<string mnemonic, list<Trait> traits = []> :
@@ -37,7 +38,7 @@ def AnnotationOp : XSMT_Op<"annotation", [Pure, MemoryEffects<[MemWrite]>]> {
 }
 
 
-def ViewOp : XSMT_Op<"view", [Pure, MemoryEffects<[MemWrite]>]> {
+def ViewOp : XSMT_Op<"view", [Pure]> {
   let summary = "Create a local view of a tensor with new shape and micro tile size";
   let description = [{
     Creates a local view of a tensor with the specified shape and micro tile size.
@@ -73,7 +74,7 @@ def ViewOp : XSMT_Op<"view", [Pure, MemoryEffects<[MemWrite]>]> {
 }
 
 
-def ViewPtrOp : XSMT_Op<"viewptr", [Pure, MemoryEffects<[MemWrite]>]> {
+def ViewPtrOp : XSMT_Op<"viewptr", [Pure]> {
   let summary = "Create a local view of a tensor with new shape and micro tile size";
   let description = [{
     Creates a local view of a tensor with the specified shape and micro tile size.
@@ -108,7 +109,7 @@ def ViewPtrOp : XSMT_Op<"viewptr", [Pure, MemoryEffects<[MemWrite]>]> {
   let hasVerifier = 1;
 }
 
-def DescriptorLoadViewOp : XSMT_Op<"descriptor_load_view", [Pure, MemoryEffects<[MemWrite]>]> {
+def DescriptorLoadViewOp : XSMT_Op<"descriptor_load_view", [Pure]> {
   let summary = "fuse DescriptorLoadOp and ViewOp";
   let description = [{
   }];
@@ -155,6 +156,48 @@ def AllocOp : XSMT_Op<"alloc", [MemoryEffects<[MemAlloc]>]> {
   }];
 }
 
+def AllocCopiesOp : XSMT_Op<"alloc_copies", [MemoryEffects<[MemAlloc]>]> {
+  let summary = "Allocate a buffer tensor in specified memory storage";
+  let description = [{
+    Allocate a multi-copy tensor. The first dimension of `shape` is the number of copies.
+    i.e. shape = [num, M, N].
+  }];
+
+  let arguments = (ins
+    DenseI64ArrayAttr:$shape,   // shape already includes num: [num, M, N]
+    StrAttr:$storage            // e.g. "l2", "smem"
+  );
+
+  let results = (outs XSMT_BufferType:$result);
+
+  let builders = [
+    OpBuilder<(ins
+      "llvm::ArrayRef<int64_t>":$shape,
+      "mlir::Type":$elementType,
+      "llvm::StringRef":$storage
+    ), [{
+      auto *ctx = $_builder.getContext();
+      if (shape.empty()) {
+        llvm_unreachable("alloc_copies shape cannot be empty");
+      }
+
+      int copies = static_cast<int>(shape.front());
+      auto shapeAttr = $_builder.getDenseI64ArrayAttr(shape);
+      auto storageAttr = ::mlir::StringAttr::get(ctx, storage);
+
+      auto resultTy = ::mlir::xsmt::BufferType::get(
+          ctx, shape, elementType, copies, storageAttr);
+
+      build($_builder, $_state, resultTy, shapeAttr, storageAttr);
+    }]>
+  ];
+
+  let assemblyFormat = [{
+  `[` $shape `]` `storage` `(` $storage `)` attr-dict `:` qualified(type($result))
+  }];
+
+  // let hasVerifier = 1;
+}
 
 def MMT4DOp : XSMT_Op<"mmt4d", [Pure, MemoryEffects<[MemWrite]>]> {
   let summary = "Matrix multiplication with 4D packed tensors";
@@ -335,6 +378,31 @@ def XSMT_BarrierSetEepectOp : XSMT_Op<"barrier_set_expect"> {
     $barrier `,` $exp attr-dict `:` type($barrier)
   }];
 
+}
+
+def XSMT_BufferTensorViewOp : XSMT_Op<"buffer_tensor_view", [Pure]> {
+    let summary = "create a subview of a buffer tensor";
+    let description = [{
+        Creates a subview of a buffer tensor at the specified buffer index.
+        The result type is a tensor pointer to the subview.
+    }];
+
+    let arguments = (ins
+        XSMT_BufferType:$buffer,
+        I32:$bufferIdx
+    );
+
+    let results = (outs
+        TT_TensorPtr:$result
+    );
+
+    let assemblyFormat = [{
+        $buffer `[` $bufferIdx `]` attr-dict `:` type($buffer) `->` type($result)
+    }];
+
+    let builders = [
+        OpBuilder<(ins "Value":$buffer, "Value":$bufferIdx)>
+    ];
 }
 
 #endif

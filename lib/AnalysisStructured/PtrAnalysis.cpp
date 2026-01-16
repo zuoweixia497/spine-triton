@@ -1186,6 +1186,18 @@ LogicalResult PtrAnalysis::visitOperandView(xsmt::ViewPtrOp viewOp,
   return success();
 }
 
+LogicalResult PtrAnalysis::visitOperandBufferTensorViewOp(xsmt::BufferTensorViewOp BufferTensorViewOp,
+                                           PtrState &state,
+                                           const Location loc,
+                                           OpBuilder &builder) {
+  auto result = BufferTensorViewOp.getResult();
+  if(!triton::isTensorPointerType(result.getType())){
+    BufferTensorViewOp->emitRemark("xsmt::BufferTensorViewOp is not TensorPointerType, temporarily not lowering");
+    return failure();
+  }
+  return success();
+}
+
 
 LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
                                         const Location loc,
@@ -1235,7 +1247,9 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
         return success();
       } else if (auto allocOp = dyn_cast<xsmt::AllocOp>(op)) {
         return visitOperandAlloc(allocOp, state, loc, builder);
-      } else if (auto viewOp = dyn_cast<xsmt::ViewPtrOp>(op)) {
+      } else if (auto BufferTensorViewOp = dyn_cast<xsmt::BufferTensorViewOp>(op)) {
+        return visitOperandBufferTensorViewOp(BufferTensorViewOp, state, loc, builder);
+      }else if (auto viewOp = dyn_cast<xsmt::ViewPtrOp>(op)) {
         return visitOperandView(viewOp, state, loc, builder);
       }else {
         op->emitRemark("Unexpected defining op for triton pointer operand");
@@ -1974,6 +1988,16 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
               ptrMap.map(alloc.getResult(), alloc.getResult());
           } else {
             alloc->emitRemark("PtrAnalysis: Failed to analyze xsmt.alloc");
+          }
+          return WalkResult::advance();
+        })
+        .Case<xsmt::BufferTensorViewOp>([&](auto BufferTensorViewOp) {
+          OpBuilder builder(BufferTensorViewOp);
+          PtrState state;
+          if (succeeded(visitOperandBufferTensorViewOp(BufferTensorViewOp, state, BufferTensorViewOp.getLoc(), builder))) {
+              ptrMap.map(BufferTensorViewOp.getResult(), BufferTensorViewOp.getResult());
+          } else {
+            BufferTensorViewOp->emitRemark("PtrAnalysis: Failed to analyze xsmt.buffer_tensor_view");
           }
           return WalkResult::advance();
         })

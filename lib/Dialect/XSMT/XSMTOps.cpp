@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMT/IR/XSMTTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -195,6 +196,38 @@ void DescriptorLoadViewOp::build(OpBuilder &builder, OperationState &state,
                builder.getDenseI32ArrayAttr(shape),
                builder.getDenseI32ArrayAttr(micro_size));
 }
+
+
+void BufferTensorViewOp::build(OpBuilder &builder, OperationState &state,
+                                   Value buffer, Value bufferIdx) {
+    auto bufferType = cast<BufferType>(buffer.getType());
+    auto shape = bufferType.getShape();
+
+    llvm::SmallVector<int64_t> resultShape;
+    if (bufferType.getCopies() == 0) {
+        if (shape.size() == 1) {
+            resultShape = {1};
+        } else {
+            resultShape.assign(shape.begin() + 1, shape.end());
+        }
+    } else {
+        resultShape.assign(shape.begin() + 1, shape.end());
+    }
+
+    auto tensorType = RankedTensorType::get(
+        resultShape,
+        bufferType.getElementType()
+    );
+
+    auto resultType = triton::PointerType::get(
+        tensorType,
+        1
+    );
+
+    state.addTypes(resultType);
+    state.addOperands({buffer, bufferIdx});
+}
+
 
 } // namespace xsmt
 } // namespace mlir

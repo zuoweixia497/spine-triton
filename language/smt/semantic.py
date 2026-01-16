@@ -4,6 +4,7 @@
 from triton.language import core as tl
 from typing import List
 from triton.language import semantic as tl_semantic
+from . import types as smt
 
 from typing import TypeVar
 T = TypeVar('T')
@@ -116,6 +117,21 @@ def alloc(shape, dtype, storage: str, _semantic=None):
 
     return tl.tensor(handle, ptr_type)
 
+
+def alloc_copies(shape, dtype, copies, storage: str, _semantic=None):
+    unwrapped_shape = [tl._unwrap_if_constexpr(dim) for dim in shape]
+    unwrapped_num = tl._unwrap_if_constexpr(copies)
+    storage = storage.value if hasattr(storage, 'value') else storage
+
+    num_val = unwrapped_num.value if isinstance(unwrapped_num, tl.constexpr) else unwrapped_num
+    base_shape = [d.value if isinstance(d, tl.constexpr) else d for d in unwrapped_shape]
+
+    full_shape = [num_val] + base_shape
+
+    element_ty_ir = dtype.to_ir(_semantic.builder)
+
+    handle = _semantic.builder.create_alloc_copies(full_shape, element_ty_ir, storage)
+    return smt.buffered_tensor(handle, dtype, full_shape, num_val, storage, _semantic)
 
 def mmt4d(a_packed: tl.tensor, b_packed: tl.tensor, out_unpacked: tl.tensor, _semantic=None):
     assert len(

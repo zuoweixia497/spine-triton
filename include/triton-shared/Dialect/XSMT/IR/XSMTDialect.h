@@ -5,18 +5,11 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
-
 #include "spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTDialect.h.inc"
-
-#define GET_OP_CLASSES
-#include "spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTOps.h.inc"
-
-namespace mlir {
-namespace xsmt {
-
-} // namespace xsmt
-} // namespace mlir
+#include "spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTTypes.h"
+#include "spine_triton/include/triton-shared/Dialect/XSMT/IR/XSMTOps.h"
 
 #endif // TRITON_DIALECT_XSMT_IR_DIALECT_H_

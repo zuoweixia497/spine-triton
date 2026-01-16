@@ -64,6 +64,17 @@ public:
 
       return UnrankedMemRefType::get(pointeeType, /*memorySpace=*/0);
     });
+    addConversion([](xsmt::BufferType bufTy) -> Type {
+      MLIRContext *ctx = bufTy.getContext();
+      ArrayRef<int64_t> shape = bufTy.getShape();
+      Type elemTy = bufTy.getElementType();
+
+      SmallVector<int64_t> dynStrides(shape.size(), ShapedType::kDynamic);
+      auto layout = StridedLayoutAttr::get(ctx, /*offset=*/ShapedType::kDynamic,
+                                          dynStrides);
+
+      return MemRefType::get(shape, elemTy, layout, /*memorySpace=*/0);
+    });
     addTargetMaterialization([&](OpBuilder &builder,
                                  UnrankedMemRefType resultType,
                                  ValueRange inputs,

@@ -9,6 +9,7 @@ from triton.language.core import (
 )
 from . import semantic as smt_semantic
 from triton.language import core as tl
+from . import types as smt
 
 
 def _constexpr_to_value(v):
@@ -103,6 +104,10 @@ def alloc(shape, type=tl.float32, storage="l2",  _semantic=None):
 
     return smt_semantic.alloc(shape, type, storage, _semantic)
 
+
+@builtin
+def alloc_copies(shape, dtype=tl.float32, storage="l2", copies=1, _semantic=None):
+    return smt_semantic.alloc_copies(shape, dtype, copies, storage, _semantic)
 
 @builtin
 def dot(a_packed, b_packed, out_unpacked=None, _semantic=None):

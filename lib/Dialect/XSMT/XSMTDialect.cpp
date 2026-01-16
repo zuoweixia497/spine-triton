@@ -15,6 +15,7 @@ using namespace mlir;
 using namespace mlir::xsmt;
 
 void mlir::xsmt::XSMTDialect::initialize() {
+  registerTypes();
 
   addOperations<
 #define GET_OP_LIST

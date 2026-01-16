@@ -7,6 +7,7 @@ from .core import (
     descriptor_load,
     view,
     alloc,
+    alloc_copies,
     dot,
     mbarrier,
     barrier_arrive,
@@ -22,6 +23,7 @@ __all__ = [
     "descriptor_load",
     "view",
     "alloc",
+    "alloc_copies",
     "dot",
     "mbarrier",
     "barrier_arrive",
@@ -29,5 +31,6 @@ __all__ = [
     "get_num_of_thread",
     "global_mbarrier",
     "barrier_set_expect",
+    "storage_kind",
 ]
 

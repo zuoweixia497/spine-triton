@@ -340,6 +340,9 @@ public:
   LogicalResult visitOperandView(xsmt::ViewPtrOp viewOp, PtrState &state,
                                     const Location loc, OpBuilder &builder);
 
+  LogicalResult visitOperandBufferTensorViewOp(xsmt::BufferTensorViewOp BufferTensorViewOp, PtrState &state,
+                                    const Location loc, OpBuilder &builder);
+
   // Get the computed PtrState for the forOp's init-arg at the provided index.
   FailureOr<PtrState> getLoopInitArgPtrState(scf::ForOp forOp, size_t index);
 

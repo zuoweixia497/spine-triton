@@ -1368,8 +1368,6 @@ public:
 
     if (auto dense = op->getAttrOfType<mlir::DenseI32ArrayAttr>("pre_micro_size")) {
       preMicroSize = dense.asArrayRef();
-    } else {
-      llvm::errs() << "micro_size missing or not DenseI32ArrayAttr\n";
     }
 
     if(!preMicroSize.empty()){
@@ -1738,6 +1736,98 @@ struct FuseTTSLoadAndViewToDescriptorLoadView
   }
 };
 
+struct AllocCopiesOpLowering final
+    : public OpConversionPattern<xsmt::AllocCopiesOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(xsmt::AllocCopiesOp op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    Type converted = getTypeConverter()->convertType(op.getResult().getType());
+    auto dstTy = dyn_cast<MemRefType>(converted);
+    if (!dstTy)
+      return rewriter.notifyMatchFailure(op, "alloc_copies result not convertible to MemRefType");
+
+    MemRefType allocTy = MemRefType::get(dstTy.getShape(),
+                                         dstTy.getElementType(),
+                                         /*layout=*/MemRefLayoutAttrInterface(),
+                                         /*memorySpace=*/dstTy.getMemorySpace());
+
+    SmallVector<Value> dynSizes;
+    for (int64_t i = 0; i < allocTy.getRank(); ++i) {
+      if (allocTy.isDynamicDim(i)) {
+        return rewriter.notifyMatchFailure(op, "dynamic dims not supported: alloc_copies has no size operands");
+      }
+    }
+
+    Value alloc = memref::AllocOp::create(rewriter, loc, allocTy, dynSizes);
+
+    Value result = alloc;
+    if (allocTy != dstTy) {
+      result = memref::CastOp::create(rewriter, loc, dstTy, alloc);
+    }
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
+struct BufferTensorViewOpLowering final
+    : public OpConversionPattern<xsmt::BufferTensorViewOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(xsmt::BufferTensorViewOp op,
+                                OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    Value buffer = adaptor.getBuffer();
+    Value bufferIdx = adaptor.getBufferIdx();
+
+    auto srcTy = dyn_cast<MemRefType>(buffer.getType());
+    if (!srcTy)
+      return rewriter.notifyMatchFailure(op, "buffer is not a MemRefType after conversion");
+    if (srcTy.getRank() < 1)
+      return rewriter.notifyMatchFailure(op, "buffer rank < 1");
+
+    Type convertedResTy = getTypeConverter()->convertType(op.getResult().getType());
+    auto dstTy = dyn_cast<MemRefType>(convertedResTy);
+    if (!dstTy)
+      return rewriter.notifyMatchFailure(op, "result not convertible to MemRefType");
+
+    if (!isa<IndexType>(bufferIdx.getType()))
+      bufferIdx = arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), bufferIdx);
+
+    int64_t rank = srcTy.getRank();
+    SmallVector<OpFoldResult> offsets, sizes, strides;
+    offsets.reserve(rank);
+    sizes.reserve(rank);
+    strides.reserve(rank);
+
+    offsets.push_back(bufferIdx);
+    sizes.push_back(rewriter.getIndexAttr(1));
+    strides.push_back(rewriter.getIndexAttr(1));
+
+    for (int64_t i = 1; i < rank; ++i) {
+      offsets.push_back(rewriter.getIndexAttr(0));
+      strides.push_back(rewriter.getIndexAttr(1));
+
+      if (srcTy.isDynamicDim(i)) {
+        Value d = memref::DimOp::create(rewriter, loc, buffer, i);
+        sizes.push_back(d);
+      } else {
+        sizes.push_back(rewriter.getIndexAttr(srcTy.getDimSize(i)));
+      }
+    }
+    Value sub = memref::SubViewOp::create(rewriter, loc, dstTy, buffer, offsets, sizes, strides);
+
+    rewriter.replaceOp(op, sub);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::ViewOpPtrPatternConversionPatterns(RewritePatternSet &patterns) {
@@ -1748,7 +1838,9 @@ void mlir::triton::ViewOpPtrPatternConversionPatterns(RewritePatternSet &pattern
 
 void mlir::triton::populateStructuredToMemrefConversionPatterns(
     RewritePatternSet &patterns, TypeConverter &typeConverter) {
-  patterns.add<MakeTensorPtrConverter, MakeGatherScatterTensorPtrConverter, XSMTAllocConverter, XSMTViewConverter>(
-      typeConverter, patterns.getContext());
+  patterns.add<MakeTensorPtrConverter, MakeGatherScatterTensorPtrConverter,
+               XSMTAllocConverter, XSMTViewConverter, AllocCopiesOpLowering,
+               BufferTensorViewOpLowering>(typeConverter,
+                                              patterns.getContext());
   patterns.add<LoadConverter, StoreConverter>(patterns.getContext());
 }

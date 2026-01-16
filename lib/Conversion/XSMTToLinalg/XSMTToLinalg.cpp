@@ -1449,7 +1449,7 @@ void mlir::triton::populateXSMTOptimizationAndValidationPatterns(RewritePatternS
 }
 
 void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &patterns) {
-  patterns.add<FillOpPattern>(patterns.getContext());
+  // patterns.add<FillOpPattern>(patterns.getContext());
   patterns.add<DescriptorLoadViewOpPattern>(patterns.getContext());
   patterns.add<ViewOpPattern>(patterns.getContext());
   patterns.add<InsertMBarrierReleasePattern>(patterns.getContext());

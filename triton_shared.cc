@@ -75,10 +75,19 @@ void init_triton_xsmt_ir(py::module &&m) {
             if (shape.empty()) {
               throw std::runtime_error("alloc shape cannot be empty");
             }
-            auto loc = self.getBuilder().getUnknownLoc();
             auto op = self.create<xsmt::AllocOp>(type, shape, storage);
             return op;
            })
+      .def("create_alloc_copies",
+        [](TritonOpBuilder &self,
+            std::vector<int64_t> &shape,
+            mlir::Type elementType,
+            std::string storage) -> mlir::Value {
+          if (shape.empty())
+            throw std::runtime_error("alloc_copies shape cannot be empty");
+          auto op = self.create<xsmt::AllocCopiesOp>(shape, elementType, storage);
+          return op;
+        })
       .def("create_mmt4d",
      [](TritonOpBuilder &self, Value &a, Value &b, std::optional<Value> c = std::nullopt) -> Value {
        auto aType = cast<RankedTensorType>(a.getType());
@@ -137,7 +146,16 @@ void init_triton_xsmt_ir(py::module &&m) {
            })
       .def("create_barrier_set_expect", [](TritonOpBuilder &self, Value &bar, Value &exp) {
              self.create<xsmt::BarrierSetEepectOp>(bar, exp);
-           });
+           })
+      .def("create_smt_buffer_type",
+      [](TritonOpBuilder &self, std::vector<int64_t> shape,
+          Type &elementType, int copies, std::string storageKind) -> Type {
+          return xsmt::BufferType::get(shape, elementType, copies, storageKind);
+      })
+      .def("create_buffer_tensor_subview",
+      [](TritonOpBuilder &self, Value buffer, Value bufferIdx) -> Value {
+          return self.create<xsmt::BufferTensorViewOp>(buffer, bufferIdx);
+      });
 }
 void init_triton_spine_triton(py::module &&m) {
   // load dialects

@@ -11,10 +11,16 @@ def XSMT_Dialect : Dialect {
     XSMT Dialect.
   }];
 
+  let extraClassDeclaration = [{
+    void registerTypes();
+  }];
+
   let dependentDialects = [
     "mlir::triton::TritonDialect",
     "mlir::xsmt::XSMTDialect",
   ];
+
+  let useDefaultTypePrinterParser = 1;
 }
 
 #endif
