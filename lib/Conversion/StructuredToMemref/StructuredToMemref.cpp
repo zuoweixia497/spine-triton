@@ -11,6 +11,8 @@
 #include "triton-shared/Conversion/StructuredToMemref/StructuredToMemref.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
+#include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
 #include "triton-shared/Utils/Utils.h"
 #include "triton-shared/Analysis/OpFoldResultUtils.h"
 
@@ -1828,6 +1830,72 @@ struct BufferTensorViewOpLowering final
   }
 };
 
+struct MBarrierCopiesOpLowering
+    : public OpConversionPattern<mlir::xsmt::MBarrierCopiesOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(mlir::xsmt::MBarrierCopiesOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    Type newTy = getTypeConverter()->convertType(op.getResult().getType());
+    auto tensorTy = cast<RankedTensorType>(newTy);
+    int64_t n = tensorTy.getShape()[0];
+
+    auto i16 = rewriter.getI16Type();
+    auto cstI16 = [&](int64_t v) -> Value {
+      return arith::ConstantOp::create(rewriter, loc, i16,
+                                       rewriter.getI16IntegerAttr((int16_t)v));
+    };
+
+    Value parity = cstI16(op.getFlag());
+    Value arrCount = cstI16(op.getArriveCount());
+    Value txCount = cstI16(op.getTransactionCount());
+    Value exCount = cstI16(op.getExpectCount());
+
+    SmallVector<Value> handles;
+    handles.reserve(n);
+
+    auto i64 = rewriter.getI64Type();
+    for (int64_t i = 0; i < n; ++i) {
+      Value h = mlir::xsmt_async::MBarrierAllocOp::create(
+          rewriter, loc, i64, parity, arrCount, txCount, exCount);
+      handles.push_back(h);
+    }
+
+    Value packed =
+        tensor::FromElementsOp::create(rewriter, loc, tensorTy, handles);
+
+    rewriter.replaceOp(op, packed);
+    return success();
+  }
+};
+
+struct MBarrierSubviewOpLowering
+    : public OpConversionPattern<mlir::xsmt::MBarrierSubviewOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(mlir::xsmt::MBarrierSubviewOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    Value barsTensor = adaptor.getMbarrier();
+    Value idxVal = adaptor.getIndex();
+
+    if (!idxVal.getType().isIndex()) {
+      idxVal = arith::IndexCastOp::create(rewriter, loc,
+                                          rewriter.getIndexType(), idxVal);
+    }
+
+    Value h = tensor::ExtractOp::create(rewriter, loc, barsTensor,
+                                        ValueRange{idxVal});
+    rewriter.replaceOp(op, h);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::ViewOpPtrPatternConversionPatterns(RewritePatternSet &patterns) {
@@ -1840,7 +1908,7 @@ void mlir::triton::populateStructuredToMemrefConversionPatterns(
     RewritePatternSet &patterns, TypeConverter &typeConverter) {
   patterns.add<MakeTensorPtrConverter, MakeGatherScatterTensorPtrConverter,
                XSMTAllocConverter, XSMTViewConverter, AllocCopiesOpLowering,
-               BufferTensorViewOpLowering>(typeConverter,
-                                              patterns.getContext());
+               BufferTensorViewOpLowering, MBarrierCopiesOpLowering,
+               MBarrierSubviewOpLowering>(typeConverter, patterns.getContext());
   patterns.add<LoadConverter, StoreConverter>(patterns.getContext());
 }

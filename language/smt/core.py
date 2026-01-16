@@ -107,6 +107,7 @@ def alloc(shape, type=tl.float32, storage="l2",  _semantic=None):
 
 @builtin
 def alloc_copies(shape, dtype=tl.float32, storage="l2", copies=1, _semantic=None):
+
     return smt_semantic.alloc_copies(shape, dtype, copies, storage, _semantic)
 
 @builtin
@@ -158,3 +159,17 @@ def global_mbarrier(id, _semantic=None):
 @builtin
 def barrier_set_expect(bar, expect_count = tl.constexpr(1), _semantic=None):
     return smt_semantic.barrier_set_expect(bar, expect_count, _semantic)
+
+@builtin
+def mbarrier_copies(
+    flag=tl.constexpr(0),
+    arrive_count=tl.constexpr(0),
+    transaction_count=tl.constexpr(0),
+    expect_count=tl.constexpr(1),
+    copies=1,
+    _semantic=None,
+):
+
+    return smt_semantic.mbarrier_copies(
+        flag, arrive_count, transaction_count, expect_count, copies, _semantic
+    )

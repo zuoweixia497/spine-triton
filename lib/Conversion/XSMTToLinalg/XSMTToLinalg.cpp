@@ -1117,44 +1117,180 @@ struct GetThreadOpToLLVMCallPattern : public OpRewritePattern<xsmt::GetThreadOp>
   }
 };
 
+struct InsertMBarrierReleasePattern
+    : public mlir::OpRewritePattern<xsmt_async::MBarrierAllocOp> {
+  using OpRewritePattern::OpRewritePattern;
 
-struct InsertMBarrierReleasePattern : public mlir::OpRewritePattern<xsmt_async::MBarrierAllocOp> {
-  using OpRewritePattern<xsmt_async::MBarrierAllocOp>::OpRewritePattern;
+  mlir::LogicalResult
+  matchAndRewrite(xsmt_async::MBarrierAllocOp op,
+                  mlir::PatternRewriter &rewriter) const override {
+    mlir::Value root = op.getResult();
 
-  mlir::LogicalResult matchAndRewrite(xsmt_async::MBarrierAllocOp op,
-                                      mlir::PatternRewriter &rewriter) const override {
-    mlir::Value barrier = op.getResult();
-    mlir::Block *parentBlock = op->getBlock();
-
-    for (mlir::Operation *user : barrier.getUsers()) {
-      if (mlir::isa<xsmt_async::MBarrierReleaseOp>(user)) {
-        return mlir::failure();
-      }
-    }
-
-    mlir::Operation *lastUser = op.getOperation();
-    bool usedInReturn = false;
-
-    for (mlir::Operation *user : barrier.getUsers()) {
-      mlir::Operation *ancestor = parentBlock->findAncestorOpInBlock(*user);
-
-      if (!ancestor || ancestor->hasTrait<mlir::OpTrait::IsTerminator>()) {
-         usedInReturn = true;
-         break;
-      }
-
-      if (lastUser->isBeforeInBlock(ancestor)) {
-        lastUser = ancestor;
-      }
-    }
-
-    if (usedInReturn) {
+    if (hasExistingRelease(root))
       return mlir::failure();
+
+    mlir::Block *allocBlock = op->getBlock();
+
+    llvm::SmallPtrSet<mlir::Value, 16> aliasSet;
+    collectAliasClosure(root, aliasSet);
+
+    mlir::Operation *lastUser = nullptr;
+    bool escaped = false;
+    findLastUser(aliasSet, allocBlock, op.getOperation(), lastUser, escaped);
+
+    if (escaped || !lastUser)
+      return mlir::failure();
+
+    insertRelease(rewriter, op.getLoc(), root, lastUser);
+
+    return mlir::success();
+  }
+
+private:
+  bool hasExistingRelease(mlir::Value barrier) const {
+    for (mlir::Operation *user : barrier.getUsers()) {
+      if (mlir::isa<xsmt_async::MBarrierReleaseOp>(user))
+        return true;
+    }
+    return false;
+  }
+
+  bool
+  isBarrierForwardingOp(mlir::Operation *user, mlir::Value v,
+                        llvm::SmallVectorImpl<mlir::Value> &newAliases) const {
+    if (auto fromElements = dyn_cast<tensor::FromElementsOp>(user)) {
+      for (Value operand : fromElements.getOperands()) {
+        if (operand == v) {
+          newAliases.push_back(fromElements.getResult());
+          return true;
+        }
+      }
     }
 
-    rewriter.setInsertionPointAfter(lastUser);
-    xsmt_async::MBarrierReleaseOp::create(rewriter, op.getLoc(), barrier);
-    return mlir::success();
+    if (auto extract = dyn_cast<tensor::ExtractOp>(user)) {
+      if (extract.getTensor() == v) {
+        newAliases.push_back(extract.getResult());
+        return true;
+      }
+    }
+
+    if (auto cast = dyn_cast<tensor::CastOp>(user)) {
+      if (cast.getSource() == v) {
+        newAliases.push_back(cast.getResult());
+        return true;
+      }
+    }
+
+    if (auto ucc = dyn_cast<UnrealizedConversionCastOp>(user)) {
+      for (Value input : ucc.getInputs()) {
+        if (input == v) {
+          for (Value output : ucc.getOutputs())
+            newAliases.push_back(output);
+          return true;
+        }
+      }
+    }
+
+    if (auto select = dyn_cast<arith::SelectOp>(user)) {
+      if (select.getTrueValue() == v || select.getFalseValue() == v) {
+        newAliases.push_back(select.getResult());
+        return true;
+      }
+    }
+
+    if (auto insert = dyn_cast<tensor::InsertOp>(user)) {
+      if (insert.getScalar() == v || insert.getDest() == v) {
+        newAliases.push_back(insert.getResult());
+        return true;
+      }
+    }
+
+    if (auto ifOp = dyn_cast<scf::IfOp>(user)) {
+      for (auto &region : ifOp->getRegions()) {
+        if (region.empty())
+          continue;
+        auto yield = dyn_cast<scf::YieldOp>(region.front().getTerminator());
+        if (!yield)
+          continue;
+        for (auto [idx, operand] : llvm::enumerate(yield.getOperands())) {
+          if (operand == v && idx < ifOp.getNumResults()) {
+            newAliases.push_back(ifOp.getResult(idx));
+          }
+        }
+      }
+      if (!newAliases.empty())
+        return true;
+    }
+
+    if (auto forOp = dyn_cast<scf::ForOp>(user)) {
+      for (auto [idx, initArg] : llvm::enumerate(forOp.getInitArgs())) {
+        if (initArg == v) {
+          newAliases.push_back(forOp.getRegionIterArg(idx));
+          newAliases.push_back(forOp.getResult(idx));
+        }
+      }
+      if (!newAliases.empty())
+        return true;
+    }
+
+    return false;
+  }
+
+  void collectAliasClosure(mlir::Value root,
+                           llvm::SmallPtrSetImpl<mlir::Value> &aliasSet) const {
+    llvm::SmallVector<mlir::Value, 16> worklist;
+
+    aliasSet.insert(root);
+    worklist.push_back(root);
+
+    while (!worklist.empty()) {
+      mlir::Value current = worklist.pop_back_val();
+
+      for (mlir::Operation *user : current.getUsers()) {
+        llvm::SmallVector<mlir::Value, 4> newAliases;
+        isBarrierForwardingOp(user, current, newAliases);
+
+        for (mlir::Value alias : newAliases) {
+          if (aliasSet.insert(alias).second) {
+            worklist.push_back(alias);
+          }
+        }
+      }
+    }
+  }
+
+  void findLastUser(const llvm::SmallPtrSetImpl<mlir::Value> &aliasSet,
+                    mlir::Block *allocBlock, mlir::Operation *allocOp,
+                    mlir::Operation *&lastUser, bool &escaped) const {
+    lastUser = allocOp;
+    escaped = false;
+
+    for (mlir::Value v : aliasSet) {
+      for (mlir::Operation *user : v.getUsers()) {
+        if (mlir::isa<xsmt_async::MBarrierReleaseOp>(user))
+          continue;
+        mlir::Operation *ancestor = allocBlock->findAncestorOpInBlock(*user);
+
+        if (!ancestor) {
+          escaped = true;
+          return;
+        }
+        if (lastUser->isBeforeInBlock(ancestor)) {
+          lastUser = ancestor;
+        }
+      }
+    }
+  }
+
+  void insertRelease(mlir::PatternRewriter &rewriter, mlir::Location loc,
+                     mlir::Value barrier, mlir::Operation *lastUser) const {
+    if (lastUser->hasTrait<mlir::OpTrait::IsTerminator>()) {
+      rewriter.setInsertionPoint(lastUser);
+    } else {
+      rewriter.setInsertionPointAfter(lastUser);
+    }
+
+    xsmt_async::MBarrierReleaseOp::create(rewriter, loc, barrier);
   }
 };
 

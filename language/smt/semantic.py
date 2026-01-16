@@ -42,7 +42,6 @@ def descriptor_load_to_destination(base: tl.tensor, offsets, destination, _seman
         base.handle, offsets, destination.handle)
 
 
-
 def view(base: tl.tensor, offsets, shape, micro_size, _semantic=None) -> tl.tensor:
     semantic_instance = tl_semantic.TritonSemantic(_semantic.builder)
     offsets = semantic_instance._convert_to_ir_values(offsets, require_i64=False)
@@ -181,6 +180,52 @@ def mbarrier(flag, arrive_count, transaction_count, expect_count, _semantic=None
 
     bar_handle = _semantic.builder.create_mbarrier(flag_val.handle, arrive_count_val.handle, transaction_count_val.handle, exp_val.handle)
     return tl.tensor(bar_handle, tl.int64)
+
+def mbarrier_copies(
+    flag=tl.constexpr(0),
+    arrive_count=tl.constexpr(0),
+    transaction_count=tl.constexpr(0),
+    expect_count=tl.constexpr(1),
+    copies=1,
+    _semantic=None,
+):
+    """
+    Allocate multiple mbarrier copies.
+
+    Args:
+        flag: barrier flag (0 or 1)
+        arrive_count: initial arrive count
+        transaction_count: transaction byte count for async operations
+        expect_count: expected arrive count before barrier can proceed
+        copies: number of barrier copies
+        _semantic: triton semantic context
+
+    Returns:
+        mbarrier: handle to the allocated barriers
+
+    Example:
+        bar = smt.mbarrier_copies(copies=2, transaction_count=1024)
+        bar0 = bar[0]  # I64 handle
+        bar1 = bar[1]  # I64 handle
+    """
+
+    def unwrap(val):
+        v = tl._unwrap_if_constexpr(val)
+        return v.value if isinstance(v, tl.constexpr) else v
+
+    flag_val = unwrap(flag)
+    arrive_val = unwrap(arrive_count)
+    txn_val = unwrap(transaction_count)
+    expect_val = unwrap(expect_count)
+    num_copies = unwrap(copies)
+
+    handle = _semantic.builder.create_mbarrier_copies(
+        num_copies, flag_val, arrive_val, txn_val, expect_val
+    )
+
+    return smt.mbarrier(
+        handle, num_copies, flag_val, arrive_val, txn_val, expect_val, _semantic
+    )
 
 def barrier_arrive(bar: tl.tensor, _semantic=None):
     _semantic.builder.create_barrier_arrive(bar.handle)

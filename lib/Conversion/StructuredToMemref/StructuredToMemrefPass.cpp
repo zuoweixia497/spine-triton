@@ -13,6 +13,8 @@
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
+#include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -75,6 +77,12 @@ public:
 
       return MemRefType::get(shape, elemTy, layout, /*memorySpace=*/0);
     });
+    addConversion([](xsmt::MBarrierType t) -> Type {
+      auto *ctx = t.getContext();
+      auto i64 = IntegerType::get(ctx, 64);
+      int64_t n = t.getNumBarriers();
+      return RankedTensorType::get({n}, i64);
+    });
     addTargetMaterialization([&](OpBuilder &builder,
                                  UnrankedMemRefType resultType,
                                  ValueRange inputs,
@@ -103,7 +111,8 @@ public:
                 math::MathDialect, linalg::LinalgDialect, affine::AffineDialect,
                 scf::SCFDialect, tensor::TensorDialect,
                 bufferization::BufferizationDialect, triton::TritonDialect,
-                ttx::TritonTilingExtDialect, memref::MemRefDialect, xsmt::XSMTDialect>();
+                ttx::TritonTilingExtDialect, memref::MemRefDialect,
+                xsmt::XSMTDialect, xsmt_async::XSMTAsyncDialect>();
   }
 
   void runOnOperation() override {
@@ -123,10 +132,11 @@ public:
         linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
         cf::ControlFlowDialect, tensor::TensorDialect,
         bufferization::BufferizationDialect, ttx::TritonTilingExtDialect,
-        memref::MemRefDialect>();
+        memref::MemRefDialect, xsmt_async::XSMTAsyncDialect>();
 
-    target.addIllegalOp<tts::LoadOp, tts::StoreOp, tts::MakeTensorPtrOp, xsmt::AllocOp, xsmt::ViewPtrOp>();
-
+    target.addIllegalOp<tts::LoadOp, tts::StoreOp, tts::MakeTensorPtrOp,
+                        xsmt::AllocOp, xsmt::ViewPtrOp, xsmt::MBarrierCopiesOp,
+                        xsmt::MBarrierSubviewOp>();
 
     target.addLegalOp<UnrealizedConversionCastOp>();
 

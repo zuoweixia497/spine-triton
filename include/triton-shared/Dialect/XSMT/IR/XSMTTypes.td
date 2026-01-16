@@ -41,3 +41,17 @@ def XSMT_BufferType : XSMT_TypeDef<"Buffer", "buffer", [ShapedTypeInterface]> {
 
   let hasCustomAssemblyFormat = 1;
 }
+
+def XSMT_MBarrierType : XSMT_TypeDef<"MBarrier", "mbarrier"> {
+  let summary = "Multi-copy mbarrier type";
+  let description = [{
+    Represents a handle to multiple mbarrier copies.
+    Used for async copy synchronization with double/triple buffering.
+  }];
+
+  let parameters = (ins
+    "int":$numBarriers
+  );
+
+  let assemblyFormat = "`<` $numBarriers `>`";
+}

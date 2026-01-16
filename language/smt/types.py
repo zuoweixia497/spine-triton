@@ -113,3 +113,93 @@ def buffer_view(
     element_ty = local_allocated_buffers.element_ty
 
     return tl.tensor(view_handle, tl.pointer_type(tl.block_type(element_ty, new_shape)))
+
+
+class mbarrier_type(tl.dtype):
+    """Type for multi-copy mbarrier."""
+
+    def __init__(self, num: int, semantics=None):
+        self.num = num
+        self.semantics = semantics
+
+    def to_ir(self, builder):
+        return builder.get_mbarrier_type(self.num)
+
+    def __repr__(self):
+        return f"mbarrier_type(num={self.num})"
+
+    def __eq__(self, other):
+        if not isinstance(other, mbarrier_type):
+            return False
+        return self.num == other.num
+
+    def __hash__(self):
+        return hash(('mbarrier_type', self.num))
+
+class barrier_view:
+    """
+    A view into a single barrier from mbarrier copies.
+
+    The handle is an I64 value representing the barrier slot/offset.
+    """
+
+    def __init__(self, handle, parent_mbarrier, index: int, semantics=None):
+        """
+        Args:
+            handle: mlir::Value of I64 type (barrier slot)
+            parent_mbarrier: the parent mbarrier object
+            index: the index used to create this view
+            semantics: triton semantic context
+        """
+        self.handle = handle
+        self.parent = parent_mbarrier
+        self.index = index
+        self.semantics = semantics
+
+    def __repr__(self):
+        return f"barrier_view(index={self.index}, parent_num={self.parent.num})"
+
+class mbarrier(tl.tensor):
+    """
+    Handle for multi-copy mbarrier.
+    """
+
+    def __init__(self, handle, num: int,
+                 flag: int = 0,
+                 arrive_count: int = 0,
+                 transaction_count: int = 0,
+                 expect_count: int = 1,
+                 semantics=None):
+        self._type = mbarrier_type(num, semantics)
+        self.handle = handle
+        self.num = num
+        self.flag = flag
+        self.arrive_count = arrive_count
+        self.transaction_count = transaction_count
+        self.expect_count = expect_count
+        self.semantics = semantics
+
+    @property
+    def type(self):
+        return self._type
+
+    def __getitem__(self, index):
+        idx = tl._unwrap_if_constexpr(index)
+        if isinstance(idx, tl.constexpr):
+            idx = idx.value
+        if isinstance(idx, int):
+            if idx < 0 or idx >= self.num:
+                raise IndexError(f"barrier index {idx} out of range [0, {self.num})")
+            idx_handle = self.semantics.builder.create_i64_constant(idx)
+        elif isinstance(idx, tl.tensor):
+            idx_handle = idx.handle
+        elif hasattr(idx, 'handle'):
+            idx_handle = idx.handle
+        else:
+            raise TypeError(f"Unsupported index type: {type(idx)}")
+
+        handle = self.semantics.builder.create_mbarrier_subview(self.handle, idx_handle)
+        return barrier_view(handle, self, idx, self.semantics)
+
+    def __repr__(self):
+        return f"mbarrier(num={self.num}, flag={self.flag}, arrive={self.arrive_count}, txn={self.transaction_count}, expect={self.expect_count})"

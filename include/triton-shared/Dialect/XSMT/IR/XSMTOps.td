@@ -405,4 +405,70 @@ def XSMT_BufferTensorViewOp : XSMT_Op<"buffer_tensor_view", [Pure]> {
     ];
 }
 
+def MBarrierCopiesOp : XSMT_Op<"mbarrier_copies", [MemoryEffects<[MemAlloc]>]> {
+  let summary = "Allocate multiple mbarrier copies";
+  let description = [{
+    Allocates multiple mbarrier instances for use with async operations.
+
+    Parameters:
+    - numCopies: number of barrier copies (e.g., 2 for double buffering)
+    - flag: barrier flag (typically 0 or 1)
+    - arriveCount: initial arrive count
+    - transactionCount: expected transaction bytes (for TMA)
+    - expectCount: number of arrivals before barrier can proceed
+  }];
+
+  let arguments = (ins
+    I64Attr:$numCopies,
+    I64Attr:$flag,
+    I64Attr:$arriveCount,
+    I64Attr:$transactionCount,
+    I64Attr:$expectCount
+  );
+
+  let results = (outs XSMT_MBarrierType:$result);
+
+  let builders = [
+    OpBuilder<(ins
+      "mlir::Type":$resultType,
+      "int":$numCopies,
+      "int":$flag,
+      "int":$arriveCount,
+      "int":$transactionCount,
+      "int":$expectCount
+    ), [{
+      build($_builder, $_state, resultType,
+            $_builder.getI64IntegerAttr(numCopies),
+            $_builder.getI64IntegerAttr(flag),
+            $_builder.getI64IntegerAttr(arriveCount),
+            $_builder.getI64IntegerAttr(transactionCount),
+            $_builder.getI64IntegerAttr(expectCount));
+    }]>
+  ];
+
+  let assemblyFormat = [{
+    `copies` `(` $numCopies `)`
+    `flag` `(` $flag `)`
+    `arrive` `(` $arriveCount `)`
+    `txn` `(` $transactionCount `)`
+    `expect` `(` $expectCount `)`
+    attr-dict `:` type($result)
+  }];
+}
+
+def MBarrierSubviewOp : XSMT_Op<"mbarrier_subview", [Pure]> {
+  let summary = "Get barrier slot from mbarrier at given index";
+
+  let arguments = (ins
+    XSMT_MBarrierType:$mbarrier,
+    AnyTypeOf<[I32, I64, Index]>:$index  // 支持动态索引
+  );
+
+  let results = (outs I64:$result);
+
+  let assemblyFormat = [{
+    $mbarrier `[` $index `]` attr-dict `:` `(` type($mbarrier) `,` type($index) `)` `->` type($result)
+  }];
+}
+
 #endif
