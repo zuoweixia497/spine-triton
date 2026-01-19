@@ -84,9 +84,18 @@ try:
     spine_mlir_opt_path = get_spine_mlir_opt_path()
     if os.path.isfile(spine_mlir_opt_path):
         spine_mlir_lib_dir = os.path.join(SPINE_MLIR_BASE_PATH, "lib")
-        libspeirruntime_path = os.path.join(
-            spine_mlir_lib_dir, "libSpeIRRuntimeLibs.so"
-        )
+        lib_pattern = os.path.join(spine_mlir_lib_dir, "libSpeIRRuntimeLibs.so*")
+        lib_candidates = glob.glob(lib_pattern)
+        lib_candidates = [f for f in lib_candidates if os.path.isfile(f)]
+
+        if not lib_candidates:
+            raise FileNotFoundError(
+                f"Could not find libSpeIRRuntimeLibs in {spine_mlir_lib_dir}. "
+                f"Searched pattern: {lib_pattern}"
+            )
+
+        libspeirruntime_path = lib_candidates[0]
+
         libspeirruntime = CDLL(libspeirruntime_path, mode=RTLD_GLOBAL)
 except Exception as e:
     raise ImportError("can not find libspeirruntime. {}".format(e))

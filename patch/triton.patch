@@ -340,7 +340,7 @@ index fccb4ef17..281895d22
 +            spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR", None)
 +            assert spine_mlir_install_dir is not None
 +            import glob
-+            so_file_list = glob.glob(os.path.join(spine_mlir_install_dir, "lib", "libSpeIR*.so"))
++            so_file_list = glob.glob(os.path.join(spine_mlir_install_dir, "lib", "libSpeIR*.so*"))
 +            for so_file in so_file_list:
 +                shutil.copy(
 +                    so_file,

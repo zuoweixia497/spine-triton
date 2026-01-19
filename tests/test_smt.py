@@ -13,7 +13,7 @@ import os
 @pytest.mark.parametrize(
     "M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICRO_K",
     [
-        (4, 4, 4, 4, 2, 2),
+        (512, 64, 32, 256, 16, 8),
     ]
 )
 def test_descriptor_load(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICRO_K):
@@ -50,7 +50,8 @@ def test_descriptor_load(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICR
                 order=[1, 0],
             )
 
-            a = smt.descriptor_load(a_block_ptr, (0, 0), (SUB_BLK_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
+            a_descriptor_load = smt.descriptor_load(a_block_ptr, (0, 0))
+            a = smt.view(a_descriptor_load, (0, 0), (SUB_BLK_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
 
             output_block_ptr = tl.make_block_ptr(
                 base=output_ptr,
@@ -72,7 +73,7 @@ def test_descriptor_load(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICR
         num_blocks_m = (SUB_BLK_M + MICRO_M - 1) // MICRO_M
         num_blocks_k = (BLOCK_SIZE_K + MICRO_K - 1) // MICRO_K
         output_shape = (num_blocks_m, num_blocks_k, MICRO_M, MICRO_K)
-        output = torch.zeros(output_shape, dtype=torch.float32, device=device)
+        output = torch.zeros(output_shape, dtype=torch.float16, device=device)
 
         grid = (triton.cdiv(M, BLOCK_SIZE_M),)
 
@@ -129,7 +130,7 @@ def test_descriptor_load(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICR
 @pytest.mark.parametrize(
     "M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICRO_K",
     [
-        (4, 4, 4, 4, 2, 2),
+        (512, 64, 32, 256, 16, 8),
     ]
 )
 def test_descriptor_load_transpose(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICRO_K):
@@ -166,7 +167,8 @@ def test_descriptor_load_transpose(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MIC
                 order=[1, 0],
             )
 
-            a = smt.descriptor_load(a_block_ptr, (0, 0), (SUB_BLK_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
+            a_descriptor_load = smt.descriptor_load(a_block_ptr, (0, 0))
+            a = smt.view(a_descriptor_load, (0, 0), (SUB_BLK_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
             a = tl.permute(a, (1, 0, 3, 2))
 
             output_block_ptr = tl.make_block_ptr(
@@ -189,7 +191,7 @@ def test_descriptor_load_transpose(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MIC
         num_blocks_m = (SUB_BLK_M + MICRO_M - 1) // MICRO_M
         num_blocks_k = (BLOCK_SIZE_K + MICRO_K - 1) // MICRO_K
         output_shape = (num_blocks_k, num_blocks_m, MICRO_K, MICRO_M)
-        output = torch.zeros(output_shape, dtype=torch.float32, device=device)
+        output = torch.zeros(output_shape, dtype=torch.float16, device=device)
 
         grid = (triton.cdiv(M, BLOCK_SIZE_M),)
 
