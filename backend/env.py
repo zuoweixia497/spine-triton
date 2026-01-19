@@ -23,6 +23,11 @@ def get_spine_mlir_opt_path() -> str:
     return path
 
 
+def get_spine_mlir_opt_options() -> str:
+    opts = os.getenv("SPINE_TRITON_PIPELINE_OPTION", "")
+    return opts
+
+
 def get_llvm_bin_path(bin_name: str) -> str:
     path = os.getenv("LLVM_BINARY_DIR", "")
     if path == "":

@@ -17,7 +17,8 @@ from . import (
     get_llvm_bin_path,
     get_spine_mlir_opt_path,
     extract_kernel_name,
-    get_cpu_name_from_arch_id
+    get_cpu_name_from_arch_id,
+    get_spine_mlir_opt_options,
 )
 
 
@@ -57,14 +58,17 @@ def _spine_mlir_linalgdir_to_llir_ref(linalgdir: str, metadata):
         Path(linalg_path).write_text(linalgdir)
         # SpineTriton-MLIR to LLVM-MLIR
         spine_mlir_path = get_spine_mlir_opt_path()
+
+        pipeline_option_str = get_spine_mlir_opt_options()
+        if pipeline_option_str == "":
+            pipeline_option_str = "enable-always-tls=1"
+
+        cmd_str = '{} {} --spine-triton-e2e-pipeline="{}" {} -o {}'.format(
+            spine_mlir_path, linalg_path, pipeline_option_str, llmlir_path
+        )
         subprocess.check_call(
-            [
-                spine_mlir_path,
-                linalg_path,
-                "--spine-triton-e2e-ref-pipeline",
-                "-o",
-                llmlir_path,
-            ]
+            cmd_str,
+            shell=True,
         )
 
         # LLVM-MLIR to LLVM-IR
