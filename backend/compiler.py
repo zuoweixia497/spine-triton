@@ -63,7 +63,7 @@ def _spine_mlir_linalgdir_to_llir_ref(linalgdir: str, metadata):
         if pipeline_option_str == "":
             pipeline_option_str = "enable-always-tls={}".format("0" if metadata["smt_parallel_inside"] else "1")
 
-        cmd_str = '{} {} --spine-triton-e2e-pipeline="{}" {} -o {}'.format(
+        cmd_str = '{} {} --spine-triton-e2e-ref-pipeline="{}" -o {}'.format(
             spine_mlir_path, linalg_path, pipeline_option_str, llmlir_path
         )
         subprocess.check_call(
@@ -87,14 +87,17 @@ def _spine_mlir_linalgdir_to_llir(linalgdir: str, metadata):
         llir_path = os.path.join(tmpdir, ".ll")
         Path(linalg_path).write_text(linalgdir)
         spine_mlir_path = get_spine_mlir_opt_path()
+
+        pipeline_option_str = get_spine_mlir_opt_options()
+        if pipeline_option_str == "":
+            pipeline_option_str = "enable-always-tls={}".format("0" if metadata["smt_parallel_inside"] else "1")
+
+        cmd_str = '{} {} --spine-triton-e2e-pipeline="{}" -o {}'.format(
+            spine_mlir_path, linalg_path, pipeline_option_str, llmlir_path
+        )
         subprocess.check_call(
-            [
-                spine_mlir_path,
-                linalg_path,
-                "--spine-triton-e2e-pipeline",
-                "-o",
-                llmlir_path,
-            ]
+            cmd_str,
+            shell=True,
         )
         dump_ir_if_needed([llmlir_path], metadata["name"])
 
