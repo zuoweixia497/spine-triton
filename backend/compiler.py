@@ -61,7 +61,7 @@ def _spine_mlir_linalgdir_to_llir_ref(linalgdir: str, metadata):
 
         pipeline_option_str = get_spine_mlir_opt_options()
         if pipeline_option_str == "":
-            pipeline_option_str = "enable-always-tls=1"
+            pipeline_option_str = "enable-always-tls={}".format("0" if metadata["smt_parallel_inside"] else "1")
 
         cmd_str = '{} {} --spine-triton-e2e-pipeline="{}" {} -o {}'.format(
             spine_mlir_path, linalg_path, pipeline_option_str, llmlir_path
