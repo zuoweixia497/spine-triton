@@ -831,6 +831,12 @@ private:
       }else if (auto subView = ptr.getDefiningOp<memref::SubViewOp>()) {
         for (OpFoldResult ofr : subView.getMixedSizes())
           sizes.push_back(ofr);
+      }else if (auto CastOp = ptr.getDefiningOp<memref::CastOp>()){
+        auto memrefType = CastOp.getType();
+        auto shape = memrefType.getShape();
+        for (int64_t dim : shape) {
+          sizes.push_back(rewriter.getIndexAttr(dim));
+        }
       }
 
       auto paddingAttr = op.getPadding();

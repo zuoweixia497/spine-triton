@@ -1295,213 +1295,229 @@ private:
 };
 
 struct DescriptorLoadViewOpPattern : public OpRewritePattern<DescriptorLoadViewOp> {
-  DescriptorLoadViewOpPattern(MLIRContext *context)
-      : OpRewritePattern<DescriptorLoadViewOp>(context) {}
+  using OpRewritePattern<DescriptorLoadViewOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(DescriptorLoadViewOp DescriptorLoadViewOp,
+  LogicalResult matchAndRewrite(DescriptorLoadViewOp op,
                                 PatternRewriter &rewriter) const override {
-    Value result = DescriptorLoadViewOp.getResult();
-
+    Value result = op.getResult();
     bool hasTranspose = false;
     linalg::TransposeOp transposeOp;
-    for (auto &use : result.getUses()) {
-      if (auto transpose = dyn_cast<linalg::TransposeOp>(use.getOwner())) {
-        if (hasTranspose) {
+
+    for (OpOperand &use : result.getUses()) {
+      if (auto t = dyn_cast<linalg::TransposeOp>(use.getOwner())) {
+        if (hasTranspose)
           return failure();
-        }
         hasTranspose = true;
-        transposeOp = transpose;
+        transposeOp = t;
       }
     }
 
-    Value sourcePtr = DescriptorLoadViewOp.getBase();
-    auto unrealizedCast = sourcePtr.getDefiningOp<UnrealizedConversionCastOp>();
-    if (!unrealizedCast) return failure();
-
-    Value reinterpretCast = unrealizedCast.getOperand(0);
-    auto reinterpretCastOp = reinterpretCast.getDefiningOp<memref::ReinterpretCastOp>();
-    if (!reinterpretCastOp){
-      if(auto castop = reinterpretCast.getDefiningOp<memref::CastOp>()){
-        reinterpretCast = castop.getOperand();
-        if(auto reinterpretCastOp1 = reinterpretCast.getDefiningOp<memref::ReinterpretCastOp>()){
-          reinterpretCastOp = reinterpretCastOp1;
-        }else{
-          return failure();
-        }
-      }else{
+    if (hasTranspose) {
+      if (!result.hasOneUse())
         return failure();
-      }
+      if (transposeOp.getInput() != result)
+        return failure();
     }
-
-    auto sizes = reinterpretCastOp.getMixedSizes();
-    if (sizes.size() != 2) {
+    Value sourcePtr = op.getBase();
+    auto unrealizedCast = sourcePtr.getDefiningOp<UnrealizedConversionCastOp>();
+    if (!unrealizedCast)
       return failure();
-    }
+    Value rankedMemRef = unrealizedCast.getOperand(0);
 
-    Location loc = DescriptorLoadViewOp.getLoc();
-    Value dim0Value = ofrToIndexValue(loc, sizes[0], rewriter);
-    Value dim1Value = ofrToIndexValue(loc, sizes[1], rewriter);
-
-    auto microSizeAttr = DescriptorLoadViewOp.getMicroSize();
-    if (microSizeAttr.size() != 2) {
+    auto memrefTy = dyn_cast<MemRefType>(rankedMemRef.getType());
+    if (!memrefTy || memrefTy.getRank() != 2)
       return failure();
+
+    Location loc = op.getLoc();
+
+    Value dim0Value, dim1Value;
+    if (auto rc = findReinterpretCastThroughCast(rankedMemRef)) {
+      auto sizes = rc.getMixedSizes();
+      if (sizes.size() != 2)
+        return failure();
+      dim0Value = ofrToIndexValue(loc, sizes[0], rewriter);
+      dim1Value = ofrToIndexValue(loc, sizes[1], rewriter);
+    } else {
+      dim0Value = getDimValueFromTypeOrDimOp(loc, rankedMemRef, /*dim=*/0, rewriter);
+      dim1Value = getDimValueFromTypeOrDimOp(loc, rankedMemRef, /*dim=*/1, rewriter);
     }
 
+    auto microSizeAttr = op.getMicroSize();
+    if (microSizeAttr.size() != 2)
+      return failure();
     int32_t tile0 = microSizeAttr[0];
     int32_t tile1 = microSizeAttr[1];
 
-    Value c1 = ConstantIndexOp::create(rewriter, loc, 1);
-    Value tile0Value = ConstantIndexOp::create(rewriter, loc, tile0);
-    Value tile1Value = ConstantIndexOp::create(rewriter, loc, tile1);
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
-    auto offsets = DescriptorLoadViewOp.getOffsets();
+    auto offsets = op.getOffsets();
     Value offset0 = offsets[0];
     Value offset1 = offsets[1];
-    Value rankedMemRef = reinterpretCast;
 
     Value indexOffset0 = ensureIndexType(loc, offset0, rewriter);
     Value indexOffset1 = ensureIndexType(loc, offset1, rewriter);
     Value indexDim0Value = ensureIndexType(loc, dim0Value, rewriter);
     Value indexDim1Value = ensureIndexType(loc, dim1Value, rewriter);
 
-    auto shapes = DescriptorLoadViewOp.getShape();
-    Value size_m1 = SubIOp::create(rewriter, loc, indexDim0Value, indexOffset0);
-    Value shape0 = ConstantIndexOp::create(rewriter, loc, shapes[0]);
-    Value size_m2 = MinSIOp::create(rewriter, loc, size_m1, shape0);
+    auto shapes = op.getShape();
+    Value shape0 = arith::ConstantIndexOp::create(rewriter, loc, shapes[0]);
+    Value shape1 = arith::ConstantIndexOp::create(rewriter, loc, shapes[1]);
 
-    Value size_k1 = SubIOp::create(rewriter, loc, indexDim1Value, indexOffset1);
-    Value shape1 = ConstantIndexOp::create(rewriter, loc, shapes[1]);
-    Value size_k2 = MinSIOp::create(rewriter, loc, size_k1, shape1);
+    Value size_m1 = arith::SubIOp::create(rewriter, loc, indexDim0Value, indexOffset0);
+    Value size_m2 = arith::MinSIOp::create(rewriter, loc, size_m1, shape0);
 
-    Value subview = SubViewOp::create(rewriter, loc,
-        rankedMemRef,
-        ArrayRef<OpFoldResult>{indexOffset0, indexOffset1},
-        ArrayRef<OpFoldResult>{size_m2, size_k2},
-        ArrayRef<OpFoldResult>{c1, c1});
+    Value size_k1 = arith::SubIOp::create(rewriter, loc, indexDim1Value, indexOffset1);
+    Value size_k2 = arith::MinSIOp::create(rewriter, loc, size_k1, shape1);
+
+    // memref.subview
+    Value subview = memref::SubViewOp::create(rewriter, loc, rankedMemRef,
+        /*offsets=*/ArrayRef<OpFoldResult>{indexOffset0, indexOffset1},
+        /*sizes=*/ArrayRef<OpFoldResult>{size_m2, size_k2},
+        /*strides=*/ArrayRef<OpFoldResult>{c1, c1});
 
     auto subviewType = cast<MemRefType>(subview.getType());
-    auto tensorType = RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
-    Value tensor = ToTensorOp::create(rewriter, loc, tensorType, subview,
-                                              /*restrict=*/rewriter.getUnitAttr());
+    auto tensorType =
+        RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
+
+    Value tensor = bufferization::ToTensorOp::create(rewriter, loc, tensorType, subview,
+        /*restrict=*/rewriter.getUnitAttr());
 
     if (!hasTranspose) {
-      return convertWithoutTranspose(DescriptorLoadViewOp, tensor, size_m2, size_k2, tile0, tile1, rewriter);
+      return convertWithoutTranspose(op, tensor, size_m2, size_k2, tile0, tile1, rewriter);
     }
 
     auto permutation = transposeOp.getPermutation();
-    if (permutation.size() != 4 ||
-        permutation[0] != 1 || permutation[1] != 0 ||
+    if (permutation.size() != 4 || permutation[0] != 1 || permutation[1] != 0 ||
         permutation[2] != 3 || permutation[3] != 2) {
       return failure();
     }
 
-    return convertWithTranspose(DescriptorLoadViewOp, transposeOp, tensor, size_m2, size_k2, tile0, tile1, rewriter);
+    return convertWithTranspose(op, transposeOp, tensor, size_m2, size_k2, tile0, tile1, rewriter);
   }
 
 private:
-  LogicalResult convertWithoutTranspose(DescriptorLoadViewOp DescriptorLoadViewOp,
-                                        Value tensor,
-                                        Value dim0, Value dim1,
-                                        int32_t tile0, int32_t tile1,
-                                        PatternRewriter &rewriter) const {
-    Location loc = DescriptorLoadViewOp.getLoc();
-    Value tile0Value = ConstantIndexOp::create(rewriter, loc, tile0);
-    Value tile1Value = ConstantIndexOp::create(rewriter, loc, tile1);
+  memref::ReinterpretCastOp findReinterpretCastThroughCast(Value v) const {
+    while (true) {
+      if (auto rc = v.getDefiningOp<memref::ReinterpretCastOp>())
+        return rc;
+      if (auto c = v.getDefiningOp<memref::CastOp>()) {
+        v = c.getSource();
+        continue;
+      }
+      return nullptr;
+    }
+  }
+
+  Value getDimValueFromTypeOrDimOp(Location loc, Value memref, int64_t dim,
+                                  PatternRewriter &rewriter) const {
+    auto ty = cast<MemRefType>(memref.getType());
+    if (!ty.isDynamicDim(dim)) {
+      return arith::ConstantIndexOp::create(rewriter, loc, ty.getDimSize(dim));
+    }
+    return memref::DimOp::create(rewriter, loc, memref, dim);
+  }
+
+  LogicalResult convertWithoutTranspose(DescriptorLoadViewOp op,
+                                       Value tensor,
+                                       Value dim0, Value dim1,
+                                       int32_t tile0, int32_t tile1,
+                                       PatternRewriter &rewriter) const {
+    Location loc = op.getLoc();
+    Value tile0Value = arith::ConstantIndexOp::create(rewriter, loc, tile0);
+    Value tile1Value = arith::ConstantIndexOp::create(rewriter, loc, tile1);
+
     Value packedRows = createCeilDivUI(rewriter, loc, dim0, tile0Value);
     Value packedCols = createCeilDivUI(rewriter, loc, dim1, tile1Value);
 
-    SmallVector<int64_t, 4> shapeDims;
-    shapeDims.push_back(ShapedType::kDynamic);
-    shapeDims.push_back(ShapedType::kDynamic);
-    shapeDims.push_back(tile0);
-    shapeDims.push_back(tile1);
+    SmallVector<int64_t, 4> shapeDims = {
+        ShapedType::kDynamic, ShapedType::kDynamic, tile0, tile1};
 
     auto tensorType = cast<RankedTensorType>(tensor.getType());
     Type elementType = tensorType.getElementType();
-
     auto emptyType = RankedTensorType::get(shapeDims, elementType);
 
-    Value emptyTensor = EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
+    Value emptyTensor = tensor::EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
     Value paddingValue = createZeroConstant(rewriter, loc, elementType);
 
-    Value packedResult = PackOp::create(rewriter, loc,
-        tensor,
-        emptyTensor,
-        ArrayRef<int64_t>{0, 1},
-        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(tile0), rewriter.getIndexAttr(tile1)},
-        paddingValue,
-        ArrayRef<int64_t>{0, 1}
-    );
+    Value packedResult = linalg::PackOp::create(rewriter, loc, tensor, emptyTensor,
+        /*innerDimsPos=*/ArrayRef<int64_t>{0, 1},
+        /*innerTiles=*/ArrayRef<OpFoldResult>{
+            rewriter.getIndexAttr(tile0), rewriter.getIndexAttr(tile1)},
+        /*paddingValue=*/paddingValue,
+        /*outerDimsPerm=*/ArrayRef<int64_t>{0, 1});
 
-    auto originalResultType = cast<RankedTensorType>(DescriptorLoadViewOp.getResult().getType());
-    Value castResult = tensor::CastOp::create(rewriter, loc, originalResultType, packedResult);
+    auto originalResultType = cast<RankedTensorType>(op.getResult().getType());
+    Value castResult =
+        tensor::CastOp::create(rewriter, loc, originalResultType, packedResult);
 
-    rewriter.replaceOp(DescriptorLoadViewOp, castResult);
-    cleanupUnusedOps(DescriptorLoadViewOp, rewriter);
-
+    rewriter.replaceOp(op, castResult);
+    cleanupUnusedOps(op, rewriter);
     return success();
   }
 
-  LogicalResult convertWithTranspose(DescriptorLoadViewOp DescriptorLoadViewOp,
-                                     linalg::TransposeOp transposeOp,
-                                     Value tensor,
-                                     Value dim0, Value dim1,
-                                     int32_t tile0, int32_t tile1,
-                                     PatternRewriter &rewriter) const {
-    Location loc = DescriptorLoadViewOp.getLoc();
-    Value tile0Value = ConstantIndexOp::create(rewriter, loc, tile0);
-    Value tile1Value = ConstantIndexOp::create(rewriter, loc, tile1);
+  LogicalResult convertWithTranspose(DescriptorLoadViewOp op,
+                                    linalg::TransposeOp transposeOp,
+                                    Value tensor,
+                                    Value dim0, Value dim1,
+                                    int32_t tile0, int32_t tile1,
+                                    PatternRewriter &rewriter) const {
+    Location loc = op.getLoc();
+    Value tile0Value = arith::ConstantIndexOp::create(rewriter, loc, tile0);
+    Value tile1Value = arith::ConstantIndexOp::create(rewriter, loc, tile1);
+
     Value packedRows = createCeilDivUI(rewriter, loc, dim1, tile1Value);
     Value packedCols = createCeilDivUI(rewriter, loc, dim0, tile0Value);
 
     auto tensorType = cast<RankedTensorType>(tensor.getType());
     Type elementType = tensorType.getElementType();
 
-    SmallVector<int64_t, 4> shapeDims;
-    shapeDims.push_back(ShapedType::kDynamic);
-    shapeDims.push_back(ShapedType::kDynamic);
-    shapeDims.push_back(tile1);
-    shapeDims.push_back(tile0);
+    SmallVector<int64_t, 4> shapeDims = {
+        ShapedType::kDynamic, ShapedType::kDynamic, tile1, tile0};
 
     auto emptyType = RankedTensorType::get(shapeDims, elementType);
 
-    Value emptyTensor = EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
-
+    Value emptyTensor = tensor::EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
     Value paddingValue = createZeroConstant(rewriter, loc, elementType);
 
-    Value packedResult = PackOp::create(rewriter, loc,
-        tensor,
-        emptyTensor,
-        ArrayRef<int64_t>{1, 0},
-        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(tile1), rewriter.getIndexAttr(tile0)},
-        paddingValue,
-        ArrayRef<int64_t>{1, 0}
-    );
+    Value packedResult = linalg::PackOp::create(rewriter, loc, tensor, emptyTensor,
+        /*innerDimsPos=*/ArrayRef<int64_t>{1, 0},
+        /*innerTiles=*/ArrayRef<OpFoldResult>{
+            rewriter.getIndexAttr(tile1), rewriter.getIndexAttr(tile0)},
+        /*paddingValue=*/paddingValue,
+        /*outerDimsPerm=*/ArrayRef<int64_t>{1, 0});
 
-    auto transposeResultType = cast<RankedTensorType>(transposeOp->getResult(0).getType());
-    Value castResult = tensor::CastOp::create(rewriter, loc, transposeResultType , packedResult);
+    auto transposeResultType =
+        cast<RankedTensorType>(transposeOp->getResult(0).getType());
+    Value castResult =
+        tensor::CastOp::create(rewriter, loc, transposeResultType, packedResult);
 
     rewriter.replaceOp(transposeOp, castResult);
-    rewriter.eraseOp(DescriptorLoadViewOp);
-    cleanupUnusedOps(DescriptorLoadViewOp, rewriter);
-
+    rewriter.eraseOp(op);
+    cleanupUnusedOps(op, rewriter);
     return success();
   }
 
-  void cleanupUnusedOps(DescriptorLoadViewOp DescriptorLoadViewOp,
+  void cleanupUnusedOps(DescriptorLoadViewOp op,
                         PatternRewriter &rewriter) const {
-    Value sourcePtr = DescriptorLoadViewOp.getBase();
-    if (auto unrealizedCast = sourcePtr.getDefiningOp<UnrealizedConversionCastOp>()) {
-      Value reinterpretCast = unrealizedCast.getOperand(0);
-      if (unrealizedCast->getUses().empty()) {
-        rewriter.eraseOp(unrealizedCast);
-        if (auto reinterpretCastOp = reinterpretCast.getDefiningOp<memref::ReinterpretCastOp>()) {
-          if (reinterpretCastOp->getUses().empty()) {
-            rewriter.eraseOp(reinterpretCastOp);
-          }
-        }
-      }
-    }
+    Value sourcePtr = op.getBase();
+    auto unrealized = sourcePtr.getDefiningOp<UnrealizedConversionCastOp>();
+    if (!unrealized)
+      return;
+
+    Value v = unrealized.getOperand(0);
+    memref::CastOp castOp = v.getDefiningOp<memref::CastOp>();
+    if (castOp)
+      v = castOp.getSource();
+    memref::ReinterpretCastOp rcOp = v.getDefiningOp<memref::ReinterpretCastOp>();
+
+    if (unrealized->use_empty())
+      rewriter.eraseOp(unrealized);
+
+    if (castOp && castOp->use_empty())
+      rewriter.eraseOp(castOp);
+
+    if (rcOp && rcOp->use_empty())
+      rewriter.eraseOp(rcOp);
   }
 };
 

@@ -111,6 +111,7 @@ def alloc(shape, dtype, storage: str, _semantic=None):
 
     ptr_type = tl.pointer_type(tl.block_type(dtype, shape))
     dtype_ir = ptr_type.to_ir(_semantic.builder)
+    storage = storage.value if hasattr(storage, 'value') else storage
 
     handle = _semantic.builder.create_alloc(shape, dtype_ir, storage)
 

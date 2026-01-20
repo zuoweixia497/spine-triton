@@ -7,6 +7,7 @@ import re
 from ctypes import CDLL, RTLD_GLOBAL
 import triton
 import os
+import glob
 
 SPINE_MLIR_BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 
