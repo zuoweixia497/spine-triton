@@ -67,7 +67,7 @@ def test_descriptor_load(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MICRO_M, MICR
         torch.manual_seed(42)
         K = BLOCK_SIZE_K
         device = "cpu"
-        a = torch.randn((M, K), dtype=torch.float32, device=device)
+        a = torch.randn((M, K), dtype=torch.float16, device=device)
         print("a", a)
 
         num_blocks_m = (SUB_BLK_M + MICRO_M - 1) // MICRO_M
@@ -185,7 +185,7 @@ def test_descriptor_load_transpose(M, SUB_BLK_M, BLOCK_SIZE_M, BLOCK_SIZE_K, MIC
         torch.manual_seed(42)
         K = BLOCK_SIZE_K
         device = "cpu"
-        a = torch.randn((M, K), dtype=torch.float32, device=device)
+        a = torch.randn((M, K), dtype=torch.float16, device=device)
         print("a", a)
 
         num_blocks_m = (SUB_BLK_M + MICRO_M - 1) // MICRO_M
@@ -278,8 +278,8 @@ def test_mbarrier(BLOCK_SIZE):
         torch.manual_seed(42)
         device = "cpu"
         N = BLOCK_SIZE * 2
-        input_data = torch.randn((N,), dtype=torch.float32, device=device)
-        output = torch.zeros((N,), dtype=torch.float32, device=device)
+        input_data = torch.randn((N,), dtype=torch.float16, device=device)
+        output = torch.zeros((N,), dtype=torch.float16, device=device)
 
         grid = (triton.cdiv(N, BLOCK_SIZE),)
 
@@ -336,8 +336,8 @@ def test_global_mbarrier(BLOCK_SIZE):
         torch.manual_seed(42)
         device = "cpu"
         N = BLOCK_SIZE * 2
-        input_data = torch.randn((N,), dtype=torch.float32, device=device)
-        output = torch.zeros((N,), dtype=torch.float32, device=device)
+        input_data = torch.randn((N,), dtype=torch.float16, device=device)
+        output = torch.zeros((N,), dtype=torch.float16, device=device)
 
         grid = (triton.cdiv(N, BLOCK_SIZE),)
 
@@ -360,3 +360,144 @@ def test_global_mbarrier(BLOCK_SIZE):
         "Output doesn't match expected"
 
     print(f"\n✅ global_mbarrier and barrier_set_expect test passed! (BLOCK_SIZE={BLOCK_SIZE})")
+
+
+
+@pytest.mark.parametrize(
+    "M, N, K, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, MICRO_M, MICRO_N, MICRO_K",
+    [
+        (512, 256, 256, 32, 32, 512, 16, 32, 8),
+    ]
+)
+def test_mmt4d(M, N, K, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, MICRO_M, MICRO_N, MICRO_K):
+
+    def run_mmt4d():
+        @triton.jit
+        def mmt4d(
+            a_ptr,
+            b_ptr,
+            c_ptr,
+            M,
+            N,
+            K,
+            stride_am,
+            stride_ak,
+            stride_bk,
+            stride_bn,
+            stride_cm,
+            stride_cn,
+            BLOCK_SIZE_M: tl.constexpr,
+            BLOCK_SIZE_N: tl.constexpr,
+            BLOCK_SIZE_K: tl.constexpr,
+            MICRO_M: tl.constexpr,
+            MICRO_K: tl.constexpr,
+            MICRO_N: tl.constexpr,
+        ):
+            pid_m = tl.program_id(0)
+            pid_n = tl.program_id(1)
+
+            a_block_ptr = tl.make_block_ptr(
+                base=a_ptr,
+                shape=[M, K],
+                strides=[stride_am, stride_ak],
+                offsets=[pid_m * BLOCK_SIZE_M, 0],
+                block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_K],
+                order=[1, 0],
+            )
+
+            a_view = smt.view(a_block_ptr, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
+
+            b_block_ptr = tl.make_block_ptr(
+                base=b_ptr,
+                shape=[K, N],
+                strides=[stride_bk, stride_bn],
+                offsets=[0, pid_n * BLOCK_SIZE_N],
+                block_shape=[BLOCK_SIZE_K, BLOCK_SIZE_N],
+                order=[1, 0],
+            )
+
+            b_view = smt.view(b_block_ptr, (0, 0), (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N))
+
+            a = tl.load(a_view)
+            b = tl.load(b_view)
+
+            c = smt.dot(a, b)
+            c = smt.view(c, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 1))
+            c_block_ptr = tl.make_block_ptr(
+                base=c_ptr,
+                shape=[M, N],
+                strides=[stride_cm, stride_cn],
+                offsets=[pid_m * BLOCK_SIZE_M, pid_n * BLOCK_SIZE_N],
+                block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_N],
+                order=[1, 0],
+            )
+            tl.store(c_block_ptr, c, boundary_check=(0, 1))
+
+        torch.manual_seed(42)
+        # K = BLOCK_SIZE_K
+        device = "cpu"
+        a = torch.randn((M, K), dtype=torch.float16, device=device)
+        b = torch.randn((K, N), dtype=torch.float16, device=device)
+
+        c = torch.empty((M, N), device=a.device, dtype=a.dtype)
+        # launch kernel
+        grid = lambda META: (
+            triton.cdiv(M, META["BLOCK_SIZE_M"]),
+            triton.cdiv(N, META["BLOCK_SIZE_N"]),
+        )
+        # BLOCK_SIZE_K = triton.next_power_of_2(K)
+
+        mmt4d[grid](
+        a,
+        b,
+        c,
+        M,
+        N,
+        K,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        c.stride(0),
+        c.stride(1),
+        BLOCK_SIZE_M=128,
+        BLOCK_SIZE_N=128,
+        BLOCK_SIZE_K=BLOCK_SIZE_K,
+        MICRO_M=MICRO_M,
+        MICRO_N=MICRO_N,
+        MICRO_K=MICRO_K,
+        )
+        return c
+
+
+    os.environ['SPINE_TRITON_USE_REF_PIPELINE'] = '1'
+    os.environ['TRITON_ALWAYS_COMPILE'] = '1'
+    output_ref = run_mmt4d()
+    print("=== set SPINE_TRITON_USE_REF_PIPELINE ===")
+    print("output_ref shape:", output_ref.shape)
+    print("output_ref sum:", output_ref.sum().item())
+    print("output_ref mean:", output_ref.mean().item())
+    print("output_ref:", output_ref)
+
+    del os.environ['SPINE_TRITON_USE_REF_PIPELINE']
+    output = run_mmt4d()
+    print("\n=== unset SPINE_TRITON_USE_REF_PIPELINE ===")
+    print("Output shape:", output.shape)
+    print("Output sum:", output.sum().item())
+    print("Output mean:", output.mean().item())
+    print("Output:", output)
+
+    print("\n=== Result Comparison ===")
+    print("Shapes are identical:", output_ref.shape == output.shape)
+    print("Values are exactly the same:", torch.allclose(output_ref, output))
+    print("Maximum absolute difference:", torch.max(torch.abs(output_ref - output)).item())
+    print("Mean absolute difference:", torch.mean(torch.abs(output_ref - output)).item())
+
+    assert output_ref.shape == output.shape, "Shapes are not identical"
+    assert torch.allclose(output_ref, output, rtol=1e-5, atol=1e-8), "Values are not exactly the same"
+
+    max_diff = torch.max(torch.abs(output_ref - output)).item()
+    mean_diff = torch.mean(torch.abs(output_ref - output)).item()
+
+    print(f"✅ All checks passed! Max diff: {max_diff:.2e}, Mean diff: {mean_diff:.2e}")
+    print("✅ Continuing execution...")

@@ -496,7 +496,7 @@ private:
     return success();
   }
 
-  LogicalResult rewritePtr(ArrayRef<int64_t> resultShape, bool isBlockPtr,
+    LogicalResult rewritePtr(ArrayRef<int64_t> resultShape, bool isBlockPtr,
                            tts::MakeTensorPtrOp op, OpAdaptor adaptor,
                            ConversionPatternRewriter &rewriter) const {
 
@@ -542,8 +542,6 @@ private:
       }
       castOp = memref::ReinterpretCastOp::create(rewriter, op.getLoc(), resultType, adaptor.getBase(), targetOffset,
           actualSizes, mixedStrides);
-      // std::cout << "castOp: " << std::endl;
-      // castOp.dump();
     }else{
       auto resultType = getResultMemrefType(
         op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
@@ -552,7 +550,30 @@ private:
         mixSizes, mixedStrides);
     }
 
-    rewriter.replaceOp(op, castOp);
+    Value result = castOp.getResult();
+    auto resultTy = cast<MemRefType>(result.getType());
+    bool needsCast = false;
+    if (resultTy.getRank() == static_cast<int64_t>(resultShape.size())) {
+      for (size_t i = 0; i < resultShape.size(); ++i) {
+        if (resultShape[i] != ShapedType::kDynamic && resultTy.isDynamicDim(i)) {
+          needsCast = true;
+          break;
+        }
+      }
+    }
+
+    if (needsCast) {
+      auto staticType = MemRefType::get(
+          resultShape,
+          resultTy.getElementType(),
+          resultTy.getLayout(),
+          resultTy.getMemorySpace());
+
+      auto cast = memref::CastOp::create(rewriter, op.getLoc(), staticType, result);
+      rewriter.replaceOp(op, cast);
+    } else {
+      rewriter.replaceOp(op, castOp);
+    }
 
     return success();
   }
@@ -1248,7 +1269,14 @@ public:
       }else if (auto subView = ptr.getDefiningOp<memref::SubViewOp>()) {
         for (OpFoldResult ofr : subView.getMixedSizes())
           sizes.push_back(ofr);
+      }else if (auto CastOp = ptr.getDefiningOp<memref::CastOp>()){
+        auto memrefType = CastOp.getType();
+        auto shape = memrefType.getShape();
+        for (int64_t dim : shape) {
+          sizes.push_back(rewriter.getIndexAttr(dim));
+        }
       }
+      ptr.getDefiningOp()->dump();
       auto srcSlice =
         getExtractSlice(rank, sizes, storeValue, loc, rewriter);
       auto dstSubview = getSubview(rank, sizes, ptr, loc, rewriter);

@@ -329,7 +329,7 @@ class CPUBackend(BaseBackend):
             _ttir_to_linalgdir(src, metadata)
         )
 
-        use_ref_pipeline = os.getenv("SPINE_TRITON_USE_REF_PIPELINE", "")
+        use_ref_pipeline = int(os.getenv("SPINE_TRITON_USE_REF_PIPELINE", "0")) > 0
         spine_mlir_path = get_spine_mlir_opt_path()
 
         if not use_ref_pipeline:
@@ -391,65 +391,3 @@ def get_cache_sizes():
         results.append(bytes_per_instance)
 
     return results  # Format: [L1_size, L2_size, L3_size] in bytes
-
-
-def remove_transform_code(mlir_code):
-    lines = mlir_code.split("\n")
-    result_lines = []
-
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if line.strip() == "module {":
-            i += 1
-            continue
-
-        if "transform.with_named_sequence" in line:
-            brace_count = 1
-            i += 1
-            while i < len(lines) and brace_count > 0:
-                current_line = lines[i]
-                brace_count += current_line.count("{")
-                brace_count -= current_line.count("}")
-                i += 1
-            continue
-
-        if line.strip() == "} loc(#loc)":
-            i += 1
-            continue
-
-        result_lines.append(line)
-        i += 1
-
-    return "\n".join(result_lines)
-
-
-def remove_transform_code(mlir_code):
-    lines = mlir_code.split("\n")
-    result_lines = []
-
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if line.strip() == "module {":
-            i += 1
-            continue
-
-        if "transform.with_named_sequence" in line:
-            brace_count = 1
-            i += 1
-            while i < len(lines) and brace_count > 0:
-                current_line = lines[i]
-                brace_count += current_line.count("{")
-                brace_count -= current_line.count("}")
-                i += 1
-            continue
-
-        if line.strip() == "} loc(#loc)":
-            i += 1
-            continue
-
-        result_lines.append(line)
-        i += 1
-
-    return "\n".join(result_lines)

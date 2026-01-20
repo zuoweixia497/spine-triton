@@ -2004,11 +2004,27 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
         .Case<xsmt::ViewPtrOp>([&](auto viewop) {
           OpBuilder builder(viewop);
           PtrState state;
-          if (succeeded(visitOperandView(viewop, state, viewop.getLoc(), builder))) {
-              ptrMap.map(viewop.getResult(), viewop.getResult());
-          } else {
+          if (failed(visitOperandView(viewop, state, viewop.getLoc(), builder))) {
             viewop->emitRemark("PtrAnalysis: Failed to analyze xsmt.view");
+            return WalkResult::advance();
           }
+
+          Value originalBase = viewop.getBase();
+          Value rewrittenBase = ptrMap.lookupOrNull(originalBase);
+
+          if (rewrittenBase) {
+            Operation* newViewOp = builder.clone(*viewop.getOperation());
+            newViewOp->setOperand(0, rewrittenBase);
+
+            LLVM_DEBUG({
+                llvm::dbgs() << "rewriting xsmt.viewptr to use new base:\n";
+                newViewOp->dump();
+            });
+            ptrMap.map(viewop.getResult(), newViewOp->getResult(0));
+          } else {
+            ptrMap.map(viewop.getResult(), viewop.getResult());
+          }
+
           return WalkResult::advance();
         })
         .Case<tts::GetStructuredStateOp>(
