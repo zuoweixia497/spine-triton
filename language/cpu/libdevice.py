@@ -11,6 +11,7 @@ def abs(arg0, _semantic=None):
             (core.dtype("int64"), ): ("linalg.abs", core.dtype("int64")),
             (core.dtype("fp32"), ): ("linalg.abs", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.abs", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("linalg.abs", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -19,6 +20,7 @@ def ceil(arg0, _semantic=None):
         "", "", [arg0], {
             (core.dtype("fp64"), ): ("linalg.ceil", core.dtype("fp64")),
             (core.dtype("fp32"), ): ("linalg.ceil", core.dtype("fp32")),
+            (core.dtype("fp16"), ): ("linalg.ceil", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -27,6 +29,7 @@ def exp(arg0, _semantic=None):
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("linalg.exp", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.exp", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("linalg.exp", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -35,6 +38,7 @@ def floor(arg0, _semantic=None):
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("linalg.floor", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.floor", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("linalg.floor", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -43,6 +47,7 @@ def log(arg0, _semantic=None):
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("linalg.log", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.log", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("linalg.log", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -51,6 +56,7 @@ def round(arg0, _semantic=None):
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("linalg.round", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.round", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("linalg.round", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -59,6 +65,7 @@ def rsqrt(arg0, _semantic=None):
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("linalg.rsqrt", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.rsqrt", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("linalg.rsqrt", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -67,6 +74,7 @@ def sqrt(arg0, _semantic=None):
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("linalg.sqrt", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.sqrt", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("linalg.sqrt", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -75,6 +83,7 @@ def tanh(arg0, _semantic=None):
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("linalg.tanh", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.tanh", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("linalg.tanh", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -83,6 +92,7 @@ def erf(arg0, _semantic=None):
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("linalg.erf", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.erf", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("linalg.erf", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -91,6 +101,7 @@ def pow(arg0, arg1, _semantic=None):
         "", "", [arg0, arg1], {
             (core.dtype("fp32"), core.dtype("fp32")): ("linalg.powf", core.dtype("fp32")),
             (core.dtype("fp64"), core.dtype("fp64")): ("linalg.powf", core.dtype("fp64")),
+            (core.dtype("fp16"), core.dtype("fp16")): ("linalg.powf", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -99,6 +110,7 @@ def gelu_tanh(arg0, _semantic=None):
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("linalg.gelu_tanh", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.gelu_tanh", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("linalg.gelu_tanh", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -107,6 +119,7 @@ def gelu_none(arg0, _semantic=None):
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("linalg.gelu_none", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.gelu_none", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("linalg.gelu_none", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
@@ -115,6 +128,7 @@ def silu(arg0, _semantic=None):
         "", "", [arg0], {
             (core.dtype("fp32"), ): ("linalg.silu", core.dtype("fp32")),
             (core.dtype("fp64"), ): ("linalg.silu", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("linalg.silu", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 # TODO: the following lower implementation

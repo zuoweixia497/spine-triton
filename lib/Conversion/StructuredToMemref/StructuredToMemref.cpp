@@ -1282,7 +1282,6 @@ public:
           sizes.push_back(rewriter.getIndexAttr(dim));
         }
       }
-      ptr.getDefiningOp()->dump();
       auto srcSlice =
         getExtractSlice(rank, sizes, storeValue, loc, rewriter);
       auto dstSubview = getSubview(rank, sizes, ptr, loc, rewriter);
