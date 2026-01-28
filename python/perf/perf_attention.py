@@ -126,18 +126,18 @@ def _attn_fwd(
     num_m_tiles: tl.constexpr,
     num_n_tiles: tl.constexpr,
     num_k_tiles: tl.constexpr,
-    num_cores: tl.constexpr,
+    num_ctas: tl.constexpr,
 ):
 
     NUM_BLOCKS_M = N_CTX // BLOCK_M
     NUM_BLOCKS = NUM_BLOCKS_M * Z * H
 
     pid = tl.program_id(0)
-    sub_num = tl.cdiv(max(NUM_BLOCKS - pid, 0), num_cores)
+    sub_num = tl.cdiv(max(NUM_BLOCKS - pid, 0), num_ctas)
 
-    for block_idx in smt.parallel(0, sub_num):
-        task_hz_idx = (pid + num_cores * block_idx) // NUM_BLOCKS_M
-        task_m_idx = (pid + num_cores * block_idx) % NUM_BLOCKS_M
+    for block_idx in tl.range(0, sub_num):
+        task_hz_idx = (pid + num_ctas * block_idx) // NUM_BLOCKS_M
+        task_m_idx = (pid + num_ctas * block_idx) % NUM_BLOCKS_M
         off_z = task_hz_idx // H
         off_h = task_hz_idx % H
         qvk_offset = off_z.to(tl.int64) * stride_qz + off_h.to(tl.int64) * stride_qh
@@ -247,7 +247,7 @@ def _attn_fwd(
         tl.store(O_block_ptr, accumulator.to(Out.type.element_ty))
 
 
-def flash_attention_forward(q, k, v, sm_scale, is_causal=False, num_cores=20):
+def flash_attention_forward(q, k, v, sm_scale, is_causal=False, num_ctas=16):
     """
     Flash Attention forward pass with dynamic MICRO block size support.
     """
@@ -289,7 +289,7 @@ def flash_attention_forward(q, k, v, sm_scale, is_causal=False, num_cores=20):
     num_n_tiles = BLOCK_N // MICRO_N
     num_k_tiles = HEAD_DIM_K // MICRO_N
 
-    _attn_fwd[(num_cores,)](
+    _attn_fwd[(num_ctas,)](
         q,
         k,
         v,
@@ -314,7 +314,7 @@ def flash_attention_forward(q, k, v, sm_scale, is_causal=False, num_cores=20):
         num_m_tiles=num_m_tiles,
         num_n_tiles=num_n_tiles,
         num_k_tiles=num_k_tiles,
-        num_cores=num_cores,
+        num_ctas=num_ctas,
     )
 
     return o
@@ -341,7 +341,7 @@ def pytorch_attention(q, k, v, sm_scale, is_causal=False):
 if __name__ == "__main__":
     test_warm_up = 5
     test_iterations = 20
-    num_cores = 20
+    num_ctas = 16
 
     # Test configurations
     test_shape_list = [
@@ -373,12 +373,12 @@ if __name__ == "__main__":
 
                     # Warm up
                     for _ in range(test_warm_up):
-                        out = flash_attention_forward(q, k, v, sm_scale, is_causal, num_cores)
+                        out = flash_attention_forward(q, k, v, sm_scale, is_causal, num_ctas)
 
                     # Benchmark triton kernel
                     start = time.time()
                     for _ in range(test_iterations):
-                        out = flash_attention_forward(q, k, v, sm_scale, is_causal, num_cores)
+                        out = flash_attention_forward(q, k, v, sm_scale, is_causal, num_ctas)
                     end = time.time()
                     triton_time = 1000 * (end - start) / test_iterations
 
