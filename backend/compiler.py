@@ -156,6 +156,7 @@ def _llir_to_so(llir: str, metadata):
                 "--march=riscv64",
                 "-mcpu={}".format(ai_cpu_arch) if ai_cpu_arch is not None else "",
                 "-passes=loop-vectorize",
+                "-passes=loop-vectorize",
                 "-force-vector-width=32",
                 "-force-vector-interleave=2"
             ])
