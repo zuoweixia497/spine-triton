@@ -832,10 +832,17 @@ private:
         for (OpFoldResult ofr : subView.getMixedSizes())
           sizes.push_back(ofr);
       }else if (auto CastOp = ptr.getDefiningOp<memref::CastOp>()){
-        auto memrefType = CastOp.getType();
-        auto shape = memrefType.getShape();
-        for (int64_t dim : shape) {
-          sizes.push_back(rewriter.getIndexAttr(dim));
+        // CastOp may cast from dynamic size to static size, we need to get
+        // the actual dynamic sizes from the source operation
+        auto source = CastOp.getSource();
+        if (auto srcReinterpretCast = source.getDefiningOp<memref::ReinterpretCastOp>()) {
+          sizes = srcReinterpretCast.getMixedSizes();
+        } else {
+          auto memrefType = CastOp.getType();
+          auto shape = memrefType.getShape();
+          for (int64_t dim : shape) {
+            sizes.push_back(rewriter.getIndexAttr(dim));
+          }
         }
       }
 
@@ -1276,10 +1283,17 @@ public:
         for (OpFoldResult ofr : subView.getMixedSizes())
           sizes.push_back(ofr);
       }else if (auto CastOp = ptr.getDefiningOp<memref::CastOp>()){
-        auto memrefType = CastOp.getType();
-        auto shape = memrefType.getShape();
-        for (int64_t dim : shape) {
-          sizes.push_back(rewriter.getIndexAttr(dim));
+        // CastOp may cast from dynamic size to static size, we need to get
+        // the actual dynamic sizes from the source operation
+        auto source = CastOp.getSource();
+        if (auto srcReinterpretCast = source.getDefiningOp<memref::ReinterpretCastOp>()) {
+          sizes = srcReinterpretCast.getMixedSizes();
+        } else {
+          auto memrefType = CastOp.getType();
+          auto shape = memrefType.getShape();
+          for (int64_t dim : shape) {
+            sizes.push_back(rewriter.getIndexAttr(dim));
+          }
         }
       }
       auto srcSlice =

@@ -51,8 +51,13 @@ public:
     int32_t num_threads = numThreadsAttr.getInt();
     StringRef arch_id = archAttr.getValue();
 
+    auto forceVectorInterleaveAttr =
+        moduleOp->getAttrOfType<mlir::IntegerAttr>("tt.force_vector_interleave");
+
     moduleOp->removeAttr("tt.num_threads");
     moduleOp->removeAttr("tt.arch_id");
+    if (forceVectorInterleaveAttr)
+      moduleOp->removeAttr("tt.force_vector_interleave");
 
     SmallVector<mlir::DataLayoutEntryInterface> dlEntries;
     dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
@@ -60,6 +65,13 @@ public:
     dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
         mlir::StringAttr::get(ctx, "num_threads"),
         mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32), num_threads)));
+    if (forceVectorInterleaveAttr) {
+      int32_t forceVectorInterleave = forceVectorInterleaveAttr.getInt();
+      dlEntries.push_back(mlir::DataLayoutEntryAttr::get(
+          mlir::StringAttr::get(ctx, "force_vector_interleave"),
+          mlir::IntegerAttr::get(mlir::IntegerType::get(ctx, 32),
+                                 forceVectorInterleave)));
+    }
 
     auto deviceSpec = mlir::TargetDeviceSpecAttr::get(ctx, dlEntries);
 

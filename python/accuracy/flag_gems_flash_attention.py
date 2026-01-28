@@ -41,7 +41,7 @@ if __name__ == "__main__":
 
 
     import flag_gems.runtime.backend._spacemit.ops as sp
-    flaggem_result = sp.flash_attention(q, k, v, sm_scale, is_causal)
+    flaggem_result = sp.flash_attention(q, k, v, scale=sm_scale, is_causal=is_causal)
 
     print("flaggem_result", flaggem_result)
     print("torch_result", torch_result)

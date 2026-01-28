@@ -23,12 +23,27 @@ def exp_kernel(
     """Exponential function: exp(x)"""
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
 
-    x = tl.load(in_ptr + offsets, mask=mask)
+    in_block_ptr = tl.make_block_ptr(
+        base=in_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+    out_block_ptr = tl.make_block_ptr(
+        base=out_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+
+    x = tl.load(in_block_ptr, boundary_check=(0,))
     y = tl_extra_shim.exp(x)
-    tl.store(out_ptr + offsets, y, mask=mask)
+    tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
 @triton.jit
@@ -41,12 +56,27 @@ def cos_kernel(
     """Cosine function: cos(x)"""
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
 
-    x = tl.load(in_ptr + offsets, mask=mask)
+    in_block_ptr = tl.make_block_ptr(
+        base=in_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+    out_block_ptr = tl.make_block_ptr(
+        base=out_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+
+    x = tl.load(in_block_ptr, boundary_check=(0,))
     y = tl.cos(x)
-    tl.store(out_ptr + offsets, y, mask=mask)
+    tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
 @triton.jit
@@ -59,12 +89,27 @@ def sin_kernel(
     """Sine function: sin(x)"""
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
 
-    x = tl.load(in_ptr + offsets, mask=mask)
+    in_block_ptr = tl.make_block_ptr(
+        base=in_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+    out_block_ptr = tl.make_block_ptr(
+        base=out_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+
+    x = tl.load(in_block_ptr, boundary_check=(0,))
     y = tl.sin(x)
-    tl.store(out_ptr + offsets, y, mask=mask)
+    tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
 @triton.jit
@@ -77,12 +122,27 @@ def tanh_kernel(
     """Hyperbolic tangent function: tanh(x)"""
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
 
-    x = tl.load(in_ptr + offsets, mask=mask)
+    in_block_ptr = tl.make_block_ptr(
+        base=in_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+    out_block_ptr = tl.make_block_ptr(
+        base=out_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+
+    x = tl.load(in_block_ptr, boundary_check=(0,))
     y = tl_extra_shim.tanh(x)
-    tl.store(out_ptr + offsets, y, mask=mask)
+    tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
 @triton.jit
@@ -95,12 +155,27 @@ def erf_kernel(
     """Error function: erf(x)"""
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
 
-    x = tl.load(in_ptr + offsets, mask=mask)
+    in_block_ptr = tl.make_block_ptr(
+        base=in_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+    out_block_ptr = tl.make_block_ptr(
+        base=out_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+
+    x = tl.load(in_block_ptr, boundary_check=(0,))
     y = tl_extra_shim.erf(x)
-    tl.store(out_ptr + offsets, y, mask=mask)
+    tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
 # ============================================================================

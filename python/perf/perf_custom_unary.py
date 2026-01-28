@@ -18,19 +18,32 @@ def silu_kernel(
     """SiLU: x * sigmoid(x)"""
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
 
-    x = tl.load(in_ptr + offsets, mask=mask)
+    in_block_ptr = tl.make_block_ptr(
+        base=in_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+    out_block_ptr = tl.make_block_ptr(
+        base=out_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+
+    x = tl.load(in_block_ptr, boundary_check=(0,))
 
     # SiLU = x / (1 + exp(-x))
-    # Optimized to match FlagGems:
-    # x_fp32 = x.to(tl.float32)
-    # y = tl.fdiv(x_fp32, (1.0 + tl.exp(-x_fp32)))
     x_fp32 = x.to(tl.float32)
     y = x_fp32 / (1.0 + tl.exp(-x_fp32))
+    y = y.to(x.dtype)  # Convert back to original dtype
 
-    tl.store(out_ptr + offsets, y, mask=mask)
+    tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
 @triton.jit
@@ -43,15 +56,30 @@ def relu_kernel(
     """ReLU: max(0, x)"""
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
 
-    x = tl.load(in_ptr + offsets, mask=mask)
+    in_block_ptr = tl.make_block_ptr(
+        base=in_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+    out_block_ptr = tl.make_block_ptr(
+        base=out_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
 
-    # ReLU = max(0, x) - optimizing using tl.where as seen in FlagGems
+    x = tl.load(in_block_ptr, boundary_check=(0,))
+
+    # ReLU = max(0, x)
     y = tl.where(x > 0, x, 0)
 
-    tl.store(out_ptr + offsets, y, mask=mask)
+    tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
 @triton.jit
@@ -64,16 +92,31 @@ def gelu_none_kernel(
     """GeLU using erf: 0.5 * x * (1 + erf(x / sqrt(2)))"""
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
 
-    x = tl.load(in_ptr + offsets, mask=mask)
+    in_block_ptr = tl.make_block_ptr(
+        base=in_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+    out_block_ptr = tl.make_block_ptr(
+        base=out_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+
+    x = tl.load(in_block_ptr)
 
     # GeLU formula: 0.5 * x * (1 + erf(x / sqrt(2)))
     scale: tl.constexpr = 0.7071067811  # 1 / sqrt(2)
     y = 0.5 * x * (1.0 + tl_extra_shim.erf(x * scale))
 
-    tl.store(out_ptr + offsets, y, mask=mask)
+    tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
 @triton.jit
@@ -86,26 +129,39 @@ def gelu_tanh_kernel(
     """GeLU using tanh approximation"""
     pid = tl.program_id(0)
     block_start = pid * BLOCK_SIZE
-    offsets = block_start + tl.arange(0, BLOCK_SIZE)
-    mask = offsets < n_elements
 
-    x = tl.load(in_ptr + offsets, mask=mask)
+    in_block_ptr = tl.make_block_ptr(
+        base=in_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
+    out_block_ptr = tl.make_block_ptr(
+        base=out_ptr,
+        shape=(n_elements,),
+        strides=(1,),
+        offsets=(block_start,),
+        block_shape=(BLOCK_SIZE,),
+        order=(0,),
+    )
 
-    # FlagGems optimized implementation:
+    x = tl.load(in_block_ptr, boundary_check=(0,))
+
+    # GeLU tanh approximation:
     # 0.5 * x * (1 + tanh(x * 0.79788456 * (1 + 0.044715 * x^2)))
-
     sqrt_2_over_pi: tl.constexpr = 0.79788456
     coeff: tl.constexpr = 0.044715
 
     x_fp32 = x.to(tl.float32)
     x_sq = x_fp32 * x_fp32
-
-    # x * 0.79788456 * (1 + 0.044715 * x^2)
     inner = x_fp32 * sqrt_2_over_pi * (1.0 + coeff * x_sq)
 
-    y = 0.5 * x * (1.0 + tl_extra_shim.tanh(inner))
+    y = 0.5 * x_fp32 * (1.0 + tl_extra_shim.tanh(inner))
+    y = y.to(x.dtype)  # Convert back to original dtype
 
-    tl.store(out_ptr + offsets, y, mask=mask)
+    tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
 def validate_op(kernel, op_func, test_name, atol=1e-4, dtype=torch.float32, size=64*64):
@@ -174,18 +230,29 @@ if __name__ == "__main__":
         "gelu_tanh": (gelu_tanh_kernel, lambda x: torch.nn.functional.gelu(x, approximate="tanh"), 1e-3),
     }
 
+    print("=" * 100)
+    print("Custom Unary Operations - Triton vs PyTorch Benchmark")
+    print("=" * 100)
+
     for op_name, (kernel, op_func, atol) in test_op_list.items():
-        print(f"############ {op_name} ############")
+        print(f"\n{'#' * 100}")
+        print(f"{'#':^100}")
+        print(f"# {op_name.upper():^96} #")
+        print(f"{'#':^100}")
+        print(f"{'#' * 100}\n")
 
         for test_dtype in test_dtype_list:
+            print(f"  dtype: {test_dtype}")
+            print(f"  {'-' * 96}")
+            print(f"  {'Size':20} | {'Triton (ms)':20} | {'PyTorch (ms)':20} | {'Speedup':15}")
+            print(f"  {'-' * 96}")
+
             for test_size in test_size_list:
                 x = torch.randn(test_size, dtype=test_dtype, device="cpu")
 
                 # Triton benchmark
                 output_triton = torch.empty_like(x)
                 n_elements = x.numel()
-                # FlagGems uses dynamic BLOCK_SIZE (MAX_TILE_SIZE=1024 for Spacemit)
-                # Increasing BLOCK_SIZE from 128 to 1024 to match optimization
                 BLOCK_SIZE = 1024
                 grid = (triton.cdiv(n_elements, BLOCK_SIZE),)
 
@@ -196,10 +263,7 @@ if __name__ == "__main__":
                 for _ in range(test_iterations):
                     kernel[grid](x, output_triton, n_elements, BLOCK_SIZE=BLOCK_SIZE)
                 end = time.time()
-
-                print(
-                    f"triton: dtype {test_dtype} size {test_size}, cost {1000 * (end - start) / test_iterations:.3f} ms"
-                )
+                triton_time = 1000 * (end - start) / test_iterations
 
                 # PyTorch benchmark
                 for _ in range(test_warm_up):
@@ -209,7 +273,14 @@ if __name__ == "__main__":
                 for _ in range(test_iterations):
                     _ = op_func(x)
                 end = time.time()
+                torch_time = 1000 * (end - start) / test_iterations
+
+                speedup = torch_time / triton_time if triton_time > 0 else 0
 
                 print(
-                    f"torch:  dtype {test_dtype} size {test_size}, cost {1000 * (end - start) / test_iterations:.3f} ms"
+                    f"  {str(test_size):20} | {triton_time:20.4f} | {torch_time:20.4f} | {speedup:15.2f}x"
                 )
+
+            print()
+
+    print("=" * 100)

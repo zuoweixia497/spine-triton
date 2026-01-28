@@ -314,9 +314,12 @@ class CPUBackend(BaseBackend):
         attrs.append(num_threads)
         arch_id = metadata['target'].arch_id
         attrs.append(arch_id)
+        force_vector_interleave = metadata['target'].force_vector_interleave
+        attrs.append(force_vector_interleave)
         builder = ir.builder(mod.context)
         mod.set_attr("tt.num_threads", builder.get_int32_attr(num_threads))
         mod.set_attr("tt.arch_id", builder.get_string_attr(arch_id))
+        mod.set_attr("tt.force_vector_interleave", builder.get_int32_attr(force_vector_interleave))
         tt_pattern = r"tt\.func\s+public\s+@(\w+)\s*\("
         kernel_name = extract_kernel_name(tt_pattern, str(mod))
         metadata["name"] = kernel_name

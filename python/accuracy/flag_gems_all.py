@@ -15,8 +15,8 @@ else:
 
 ref_out = torch.all(inp)
 
-import flag_gems.runtime.backend._spacemit.ops as sp
-res_out = sp.all(inp)
+with flag_gems.use_gems():
+    res_out = torch.all(inp)
 
 torch.testing.assert_close(ref_out, res_out, atol=1e-2, rtol=0)
 

@@ -425,6 +425,7 @@ class AICPUTarget(GPUTarget):
     ai_core: int
     arch_id: str
     num_threads: int
+    force_vector_interleave: int
 
 
 class CPUUtils(object):
@@ -551,6 +552,7 @@ class CPUDriver(DriverBase):
         self.cpu_arch = get_cpu_name_from_arch_id(self.current_arch_id)
         self.num_cores = self.utils.get_num_cores()
         self.num_of_stream_threads = self.utils.get_stream_threads()
+        self.force_vector_interleave = 2
 
     # CPU driver won't be automatically chosen unless explicitly set through
     # triton.runtime.driver.set_active(CPUDriver())
@@ -582,7 +584,8 @@ class CPUDriver(DriverBase):
         return AICPUTarget("cpu", self.cpu_arch, 0, self.num_cores,
                            self.num_of_stream_threads,
                            self.current_arch_id,
-                           self.num_of_stream_threads)
+                           self.num_of_stream_threads,
+                           self.force_vector_interleave)
 
     def get_active_torch_device(self):
         import torch
