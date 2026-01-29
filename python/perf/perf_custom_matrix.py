@@ -8,6 +8,8 @@ from triton.backends.spine_triton.driver import CPUDriver
 triton.runtime.driver.set_active(CPUDriver())
 
 
+ARCH_ID = triton.runtime.driver.active.current_arch_id
+
 # ==================== MM Kernel ====================
 @triton.jit
 def mm_kernel(
@@ -387,14 +389,24 @@ def triton_mm(a, b, block_size_m=256, block_size_n=256, micro_m=None, micro_n=No
     _, N = b.shape
 
     # Set MICRO parameters based on dtype
-    if a.dtype == torch.float32:
+    if a.dtype == torch.float32 and ARCH_ID == "0xA064":
         micro_m = micro_m if micro_m is not None else 8
         micro_n = micro_n if micro_n is not None else 32
         micro_k = micro_k if micro_k is not None else 32
-    else:  # float16
+    elif a.dtype == torch.float16 and ARCH_ID == "0xA064":  # float16
         micro_m = micro_m if micro_m is not None else 16
         micro_n = micro_n if micro_n is not None else 32
         micro_k = micro_k if micro_k is not None else 8
+    elif a.dtype == torch.float32 and ARCH_ID == "0xA03C":
+        micro_m = micro_m if micro_m is not None else 8
+        micro_n = micro_n if micro_n is not None else 16
+        micro_k = micro_k if micro_k is not None else 8
+    elif a.dtype == torch.float16 and ARCH_ID == "0xA03C":  # float16
+        micro_m = micro_m if micro_m is not None else 8
+        micro_n = micro_n if micro_n is not None else 16
+        micro_k = micro_k if micro_k is not None else 16
+    else:
+        print("Unsupported arch_id or dtype, using default MICRO parameters")
 
     c = torch.empty((M, N), device=a.device, dtype=a.dtype)
 
@@ -433,14 +445,24 @@ def triton_addmm(bias, a, b, block_size_m=256, block_size_n=256, micro_m=None, m
     _, N = b.shape
 
     # Set MICRO parameters based on dtype
-    if a.dtype == torch.float32:
+    if a.dtype == torch.float32 and ARCH_ID == "0xA064":
         micro_m = micro_m if micro_m is not None else 8
         micro_n = micro_n if micro_n is not None else 32
         micro_k = micro_k if micro_k is not None else 32
-    else:  # float16
+    elif a.dtype == torch.float16 and ARCH_ID == "0xA064":  # float16
         micro_m = micro_m if micro_m is not None else 16
         micro_n = micro_n if micro_n is not None else 32
         micro_k = micro_k if micro_k is not None else 8
+    elif a.dtype == torch.float32 and ARCH_ID == "0xA03C":
+        micro_m = micro_m if micro_m is not None else 8
+        micro_n = micro_n if micro_n is not None else 16
+        micro_k = micro_k if micro_k is not None else 8
+    elif a.dtype == torch.float16 and ARCH_ID == "0xA03C":  # float16
+        micro_m = micro_m if micro_m is not None else 8
+        micro_n = micro_n if micro_n is not None else 16
+        micro_k = micro_k if micro_k is not None else 16
+    else:
+        print("Unsupported arch_id or dtype, using default MICRO parameters")
 
     c = torch.empty((M, N), device=a.device, dtype=a.dtype)
 
@@ -480,14 +502,24 @@ def triton_bmm(a, b, block_size_m=256, block_size_n=256, micro_m=None, micro_n=N
     _, _, N = b.shape
 
     # Set MICRO parameters based on dtype
-    if a.dtype == torch.float32:
+    if a.dtype == torch.float32 and ARCH_ID  == "0xA064":
         micro_m = micro_m if micro_m is not None else 8
         micro_n = micro_n if micro_n is not None else 32
         micro_k = micro_k if micro_k is not None else 32
-    else:  # float16
+    elif a.dtype == torch.float16 and ARCH_ID == "0xA064":  # float16
         micro_m = micro_m if micro_m is not None else 16
         micro_n = micro_n if micro_n is not None else 32
         micro_k = micro_k if micro_k is not None else 8
+    elif a.dtype == torch.float32 and ARCH_ID == "0xA03C":
+        micro_m = micro_m if micro_m is not None else 8
+        micro_n = micro_n if micro_n is not None else 16
+        micro_k = micro_k if micro_k is not None else 8
+    elif a.dtype == torch.float16 and ARCH_ID == "0xA03C":  # float16
+        micro_m = micro_m if micro_m is not None else 8
+        micro_n = micro_n if micro_n is not None else 16
+        micro_k = micro_k if micro_k is not None else 16
+    else:
+        print("Unsupported arch_id or dtype, using default MICRO parameters")
 
     c = torch.empty((B, M, N), device=a.device, dtype=a.dtype)
 
