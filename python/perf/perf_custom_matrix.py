@@ -250,6 +250,7 @@ def mv_kernel(
     stride_cn,
     BLOCK_N: tl.constexpr,
     BLOCK_M: tl.constexpr,
+    num_ctas: tl.constexpr,
 ):
     """mv: matrix-vector multiplication, C = A @ B
     A: [N, M] matrix
@@ -257,50 +258,56 @@ def mv_kernel(
     C: [N] output vector
     """
     pid = tl.program_id(0)
+    num_blocks_n = tl.cdiv(N, BLOCK_N)
+    sub_num = tl.cdiv(max(num_blocks_n - pid, 0), num_ctas)
 
-    # Initialize accumulator [BLOCK_N, BLOCK_M]
-    acc = tl.zeros((BLOCK_N, BLOCK_M), dtype=tl.float32)
+    for block_idx in tl.range(0, sub_num):
+        task_idx = pid + num_ctas * block_idx
+        block_start_n = task_idx * BLOCK_N
 
-    # Loop over M dimension
-    for m in range(0, M, BLOCK_M):
-        # Load matrix block [BLOCK_N, BLOCK_M]
-        A_block_ptr = tl.make_block_ptr(
-            base=A,
-            shape=[N, M],
-            strides=[stride_an, stride_am],
-            offsets=[pid * BLOCK_N, m],
-            block_shape=[BLOCK_N, BLOCK_M],
-            order=[1, 0],
-        )
-        a = tl.load(A_block_ptr, boundary_check=(0, 1)).to(tl.float32)
+        # Initialize accumulator [BLOCK_N, BLOCK_M]
+        acc = tl.zeros((BLOCK_N, BLOCK_M), dtype=tl.float32)
 
-        # Load vector block [BLOCK_M]
-        B_block_ptr = tl.make_block_ptr(
-            base=B,
-            shape=[M],
-            strides=[stride_bm],
-            offsets=[m],
-            block_shape=[BLOCK_M],
+        # Loop over M dimension
+        for m in range(0, M, BLOCK_M):
+            # Load matrix block [BLOCK_N, BLOCK_M]
+            A_block_ptr = tl.make_block_ptr(
+                base=A,
+                shape=[N, M],
+                strides=[stride_an, stride_am],
+                offsets=[block_start_n, m],
+                block_shape=[BLOCK_N, BLOCK_M],
+                order=[1, 0],
+            )
+            a = tl.load(A_block_ptr, boundary_check=(0, 1)).to(tl.float32)
+
+            # Load vector block [BLOCK_M]
+            B_block_ptr = tl.make_block_ptr(
+                base=B,
+                shape=[M],
+                strides=[stride_bm],
+                offsets=[m],
+                block_shape=[BLOCK_M],
+                order=[0],
+            )
+            b = tl.load(B_block_ptr, boundary_check=(0,)).to(tl.float32)
+
+            # Accumulate: a * b (broadcast b to [BLOCK_N, BLOCK_M])
+            acc += a * b[None, :]
+
+        # Sum over M dimension to get [BLOCK_N]
+        result = tl.sum(acc, axis=1)
+
+        # Store output [BLOCK_N]
+        C_block_ptr = tl.make_block_ptr(
+            base=C,
+            shape=[N],
+            strides=[stride_cn],
+            offsets=[block_start_n],
+            block_shape=[BLOCK_N],
             order=[0],
         )
-        b = tl.load(B_block_ptr, boundary_check=(0,)).to(tl.float32)
-
-        # Accumulate: a * b (broadcast b to [BLOCK_N, BLOCK_M])
-        acc += a * b[None, :]
-
-    # Sum over M dimension to get [BLOCK_N]
-    acc = tl.sum(acc, axis=1)
-
-    # Store output [BLOCK_N, 1]
-    C_block_ptr = tl.make_block_ptr(
-        base=C,
-        shape=[N, 1],
-        strides=[stride_cn, 1],
-        offsets=[pid * BLOCK_N, 0],
-        block_shape=[BLOCK_N, 1],
-        order=[1, 0],
-    )
-    tl.store(C_block_ptr, acc[:, None].to(C.dtype.element_ty), boundary_check=(0, 1))
+        tl.store(C_block_ptr, result.to(C.dtype.element_ty), boundary_check=(0,))
 
 
 # ==================== Outer Kernel ====================
@@ -315,46 +322,55 @@ def outer_kernel(
     stride_cn,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
+    num_ctas: tl.constexpr,
 ):
     """outer: outer product, c[i,j] = a[i] * b[j]"""
-    pid_m = tl.program_id(0)
-    pid_n = tl.program_id(1)
+    pid = tl.program_id(0)
+    num_blocks_m = tl.cdiv(M, BLOCK_SIZE_M)
+    num_blocks_n = tl.cdiv(N, BLOCK_SIZE_N)
+    num_blocks = num_blocks_m * num_blocks_n
+    sub_num = tl.cdiv(max(num_blocks - pid, 0), num_ctas)
 
-    # Load a block [BLOCK_SIZE_M]
-    a_block_ptr = tl.make_block_ptr(
-        base=a_ptr,
-        shape=[M],
-        strides=[1],
-        offsets=[pid_m * BLOCK_SIZE_M],
-        block_shape=[BLOCK_SIZE_M],
-        order=[0],
-    )
-    a = tl.load(a_block_ptr, boundary_check=(0,))
+    for block_idx in tl.range(0, sub_num):
+        task_idx = pid + num_ctas * block_idx
+        pid_m = task_idx // num_blocks_n
+        pid_n = task_idx % num_blocks_n
 
-    # Load b block [BLOCK_SIZE_N]
-    b_block_ptr = tl.make_block_ptr(
-        base=b_ptr,
-        shape=[N],
-        strides=[1],
-        offsets=[pid_n * BLOCK_SIZE_N],
-        block_shape=[BLOCK_SIZE_N],
-        order=[0],
-    )
-    b = tl.load(b_block_ptr, boundary_check=(0,))
+        # Load a block [BLOCK_SIZE_M]
+        a_block_ptr = tl.make_block_ptr(
+            base=a_ptr,
+            shape=[M],
+            strides=[1],
+            offsets=[pid_m * BLOCK_SIZE_M],
+            block_shape=[BLOCK_SIZE_M],
+            order=[0],
+        )
+        a = tl.load(a_block_ptr, boundary_check=(0,))
 
-    # Compute outer product: a[:, None] * b[None, :] -> [BLOCK_SIZE_M, BLOCK_SIZE_N]
-    c = a[:, None] * b[None, :]
+        # Load b block [BLOCK_SIZE_N]
+        b_block_ptr = tl.make_block_ptr(
+            base=b_ptr,
+            shape=[N],
+            strides=[1],
+            offsets=[pid_n * BLOCK_SIZE_N],
+            block_shape=[BLOCK_SIZE_N],
+            order=[0],
+        )
+        b = tl.load(b_block_ptr, boundary_check=(0,))
 
-    # Store output
-    c_block_ptr = tl.make_block_ptr(
-        base=c_ptr,
-        shape=[M, N],
-        strides=[stride_cm, stride_cn],
-        offsets=[pid_m * BLOCK_SIZE_M, pid_n * BLOCK_SIZE_N],
-        block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_N],
-        order=[1, 0],
-    )
-    tl.store(c_block_ptr, c, boundary_check=(0, 1))
+        # Compute outer product: a[:, None] * b[None, :] -> [BLOCK_SIZE_M, BLOCK_SIZE_N]
+        c = a[:, None] * b[None, :]
+
+        # Store output
+        c_block_ptr = tl.make_block_ptr(
+            base=c_ptr,
+            shape=[M, N],
+            strides=[stride_cm, stride_cn],
+            offsets=[pid_m * BLOCK_SIZE_M, pid_n * BLOCK_SIZE_N],
+            block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_N],
+            order=[1, 0],
+        )
+        tl.store(c_block_ptr, c, boundary_check=(0, 1))
 
 
 # ==================== Wrapper Functions ====================
@@ -499,7 +515,7 @@ def triton_bmm(a, b, block_size_m=256, block_size_n=256, micro_m=None, micro_n=N
     return c
 
 
-def triton_mv(mat, vec, block_n=128, block_m=64):
+def triton_mv(mat, vec, block_n=128, block_m=64, num_ctas=16):
     """Matrix-vector multiplication using Triton kernel: out = mat @ vec
     mat: [N, M] matrix
     vec: [M] vector
@@ -513,9 +529,7 @@ def triton_mv(mat, vec, block_n=128, block_m=64):
 
     out = torch.empty((N,), device=mat.device, dtype=mat.dtype)
 
-    grid = (triton.cdiv(N, block_n),)
-
-    mv_kernel[grid](
+    mv_kernel[(num_ctas,)](
         mat, vec, out,
         N, M,
         mat.stride(0), mat.stride(1),
@@ -523,28 +537,24 @@ def triton_mv(mat, vec, block_n=128, block_m=64):
         out.stride(0),
         BLOCK_N=block_n,
         BLOCK_M=block_m,
+        num_ctas=num_ctas,
     )
     return out
 
 
-def triton_outer(a, b, block_size_m=128, block_size_n=128):
+def triton_outer(a, b, block_size_m=128, block_size_n=128, num_ctas=16):
     """Outer product using Triton kernel: C[i,j] = a[i] * b[j]"""
     M = a.shape[0]
     N = b.shape[0]
 
     c = torch.empty((M, N), device=a.device, dtype=a.dtype)
 
-    def grid(META):
-        return (
-            triton.cdiv(M, META["BLOCK_SIZE_M"]),
-            triton.cdiv(N, META["BLOCK_SIZE_N"]),
-        )
-
-    outer_kernel[grid](
+    outer_kernel[(num_ctas,)](
         a, b, c, M, N,
         c.stride(0), c.stride(1),
         BLOCK_SIZE_M=block_size_m,
         BLOCK_SIZE_N=block_size_n,
+        num_ctas=num_ctas,
     )
     return c
 
