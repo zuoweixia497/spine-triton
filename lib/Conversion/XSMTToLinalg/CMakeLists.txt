@@ -21,4 +21,5 @@ add_triton_library(XSMTToLinalg
   TritonTilingExtIR
   TritonStructuredIR
   TritonSharedUtils
+  ProtonIR
 )

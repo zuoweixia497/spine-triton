@@ -7,6 +7,7 @@ include_directories(
 
 set(RUNTIME_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/include/ExecutionEngine/CRunnerUtils.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/ExecutionEngine/CpuProtonRuntime.cpp
 )
 
 add_library(SpineTritonRuntime SHARED ${RUNTIME_SOURCES})

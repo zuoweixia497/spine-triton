@@ -26,6 +26,7 @@
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ConvertScanOp.h"
 #include "triton-shared/Conversion/XSMTToLinalg/XSMTToLinalg.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
+#include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -59,7 +60,8 @@ public:
                 bufferization::BufferizationDialect, memref::MemRefDialect,
                 ttx::TritonTilingExtDialect, tts::TritonStructuredDialect,
                 tptr::TPtrDialect, ptr::PtrDialect, DLTIDialect, LLVM::LLVMDialect,
-                vector::VectorDialect, xsmt::XSMTDialect>();
+                vector::VectorDialect, xsmt::XSMTDialect,
+                triton::proton::ProtonDialect>();
   }
 
   void runOnOperation() override {

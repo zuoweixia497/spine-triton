@@ -1,6 +1,8 @@
 ﻿#include "include/triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
+#include "include/triton-shared/Dialect/XSMT/IR/XSMTOps.h"
 #include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
 #include "include/triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
+#include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 #include "ir.h"
 #include "mlir/Pass/PassManager.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -213,7 +215,8 @@ void init_triton_spine_triton(py::module &&m) {
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
     registry.insert<mlir::xsmt::XSMTDialect, mlir::xsmt_async::XSMTAsyncDialect,
-                    tensor::TensorDialect>();
+                    tensor::TensorDialect,
+                    mlir::triton::proton::ProtonDialect>();
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });

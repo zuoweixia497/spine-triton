@@ -193,10 +193,18 @@ index 499dd9e8a..9c863e6fa
 diff --git a/python/triton/compiler/code_generator.py b/python/triton/compiler/code_generator.py
 old mode 100644
 new mode 100755
-index 3ffb90457..39b4b0984
+index 3ffb90457..49bf2c31f
 --- a/python/triton/compiler/code_generator.py
 +++ b/python/triton/compiler/code_generator.py
-@@ -1150,7 +1150,15 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -383,6 +383,7 @@ class CodeGenerator(ast.NodeVisitor):
+                     getattr(val, "__triton_aggregate__", False),  #
+                     getattr(val, "__module__", "").startswith("triton.language"),  #
+                     getattr(val, "__module__", "").startswith("triton.experimental.gluon.language"),  #
++                    getattr(val, "__module__", "").startswith("proton.language"),  #
+                     isinstance(val, language.dtype),  #
+                     is_namedtuple(val),
+                     self._is_constexpr_global(name),  #
+@@ -1150,7 +1151,15 @@ class CodeGenerator(ast.NodeVisitor):
          return lhs[slices]
  
      def visit_Subscript_Store(self, node, value):
@@ -213,7 +221,7 @@ index 3ffb90457..39b4b0984
  
      def visit_Subscript(self, node):
          return self.visit_Subscript_Load(node)
-@@ -1176,8 +1184,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1176,8 +1185,8 @@ class CodeGenerator(ast.NodeVisitor):
          disallow_acc_multi_buffer = False
          flatten = False
          warp_specialize = False
@@ -224,7 +232,7 @@ index 3ffb90457..39b4b0984
              iterator = IteratorClass(*iter_args, **iter_kwargs)
              # visit iterator arguments
              # note: only `range` iterator is supported now
-@@ -1190,7 +1198,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1190,7 +1199,8 @@ class CodeGenerator(ast.NodeVisitor):
              disallow_acc_multi_buffer = iterator.disallow_acc_multi_buffer
              flatten = iterator.flatten
              warp_specialize = iterator.warp_specialize
@@ -234,7 +242,7 @@ index 3ffb90457..39b4b0984
          elif IteratorClass is range:
              # visit iterator arguments
              # note: only `range` iterator is supported now
-@@ -1253,8 +1262,8 @@ class CodeGenerator(ast.NodeVisitor):
+@@ -1253,8 +1263,8 @@ class CodeGenerator(ast.NodeVisitor):
                  for_op.set_attr("tt.flatten", self.builder.get_unit_attr())
              if warp_specialize:
                  for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
@@ -436,3 +444,773 @@ index fccb4ef17..3cc36f844
      install_requires=[
          "importlib-metadata; python_version < '3.10'",
      ],
+diff --git a/third_party/proton/CMakeLists.txt b/third_party/proton/CMakeLists.txt
+index abd90d689..281d1cdb8 100644
+--- a/third_party/proton/CMakeLists.txt
++++ b/third_party/proton/CMakeLists.txt
+@@ -4,12 +4,33 @@ set(PROTON_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/csrc")
+ set(PROTON_COMMON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/common")
+ 
+ # ============ Check for includes =============
+-if(NOT CUPTI_INCLUDE_DIR)
+-  message(FATAL_ERROR "CUPTI include directory not defined")
++# Use TRITON_PROTON_BUILD_CUPTI and TRITON_PROTON_BUILD_ROCTRACER to control GPU support
++# These are set by build.sh via TRITON_APPEND_CMAKE_ARGS
++
++# Default to OFF if not explicitly set
++if(NOT DEFINED TRITON_PROTON_BUILD_CUPTI)
++  set(TRITON_PROTON_BUILD_CUPTI OFF)
++endif()
++if(NOT DEFINED TRITON_PROTON_BUILD_ROCTRACER)
++  set(TRITON_PROTON_BUILD_ROCTRACER OFF)
+ endif()
+-if(NOT ROCTRACER_INCLUDE_DIR)
+-  message(FATAL_ERROR "ROCTRACER include directory not defined")
++
++if(TRITON_PROTON_BUILD_CUPTI AND CUPTI_INCLUDE_DIR)
++  set(PROTON_ENABLE_CUDA ON)
++  message(STATUS "Proton: CUDA/CUPTI support enabled")
++else()
++  set(PROTON_ENABLE_CUDA OFF)
++  message(STATUS "Proton: CUDA/CUPTI support disabled")
++endif()
++
++if(TRITON_PROTON_BUILD_ROCTRACER AND ROCTRACER_INCLUDE_DIR)
++  set(PROTON_ENABLE_ROCTRACER ON)
++  message(STATUS "Proton: ROCTracer support enabled")
++else()
++  set(PROTON_ENABLE_ROCTRACER OFF)
++  message(STATUS "Proton: ROCTracer support disabled")
+ endif()
++
+ if(NOT JSON_INCLUDE_DIR)
+   message(FATAL_ERROR "JSON include directory not defined")
+ endif()
+@@ -28,21 +49,30 @@ function(add_proton_library name)
+   target_link_libraries(${name} PRIVATE Python3::Module pybind11::headers)
+ 
+   # Use system to skip warnings caused by legacy clang compilers
+-  target_include_directories(${name}
+-    SYSTEM PRIVATE
+-      "${ROCTRACER_INCLUDE_DIR}"
+-  )
++  if(PROTON_ENABLE_ROCTRACER)
++    target_include_directories(${name}
++      SYSTEM PRIVATE
++        "${ROCTRACER_INCLUDE_DIR}"
++    )
++    target_compile_definitions(${name} PRIVATE PROTON_ENABLE_ROCTRACER)
++  endif()
+ 
+   target_include_directories(${name}
+     PRIVATE
+-      "${CUPTI_INCLUDE_DIR}"
+       "${JSON_INCLUDE_DIR}"
+       "${PROTON_COMMON_DIR}/include"
+       "${PROTON_SRC_DIR}/include"
+   )
+ 
++  if(PROTON_ENABLE_CUDA)
++    target_include_directories(${name} PRIVATE "${CUPTI_INCLUDE_DIR}")
++    target_compile_definitions(${name} PRIVATE PROTON_ENABLE_CUDA)
++  endif()
++
+   # If HIP is AMD-based
+-  target_compile_definitions(${name} PRIVATE __HIP_PLATFORM_AMD__)
++  if(PROTON_ENABLE_ROCTRACER)
++    target_compile_definitions(${name} PRIVATE __HIP_PLATFORM_AMD__)
++  endif()
+ 
+   # Append this library name to the GLOBAL property "PROTON_LIBS"
+   set_property(GLOBAL APPEND PROPERTY PROTON_LIBS ${name})
+diff --git a/third_party/proton/common/include/Device.h b/third_party/proton/common/include/Device.h
+index 2c02f2b9b..676b7aedf 100644
+--- a/third_party/proton/common/include/Device.h
++++ b/third_party/proton/common/include/Device.h
+@@ -6,7 +6,7 @@
+ 
+ namespace proton {
+ 
+-enum class DeviceType { HIP, CUDA, COUNT };
++enum class DeviceType { HIP, CUDA, CPU, COUNT };
+ 
+ template <DeviceType T> struct DeviceTraits;
+ 
+@@ -20,6 +20,11 @@ template <> struct DeviceTraits<DeviceType::HIP> {
+   constexpr static const char *name = "HIP";
+ };
+ 
++template <> struct DeviceTraits<DeviceType::CPU> {
++  constexpr static DeviceType type = DeviceType::CPU;
++  constexpr static const char *name = "CPU";
++};
++
+ struct Device {
+   DeviceType type;
+   uint64_t id;
+diff --git a/third_party/proton/csrc/include/Profiler/Cpu/CpuProfiler.h b/third_party/proton/csrc/include/Profiler/Cpu/CpuProfiler.h
+new file mode 100644
+index 000000000..208c9572a
+--- /dev/null
++++ b/third_party/proton/csrc/include/Profiler/Cpu/CpuProfiler.h
+@@ -0,0 +1,65 @@
++#ifndef PROTON_PROFILER_CPU_PROFILER_H_
++#define PROTON_PROFILER_CPU_PROFILER_H_
++
++#include "Context/Context.h"
++#include "Profiler/Profiler.h"
++#include "Utility/Singleton.h"
++#include <map>
++#include <stack>
++#include <vector>
++
++namespace proton {
++
++// CpuProfiler directly inherits from Profiler, OpInterface, and ScopeInterface
++// It does NOT depend on InstrumentationProfiler (which requires CUDA)
++class CpuProfiler : public Profiler,
++                    public OpInterface,
++                    public ScopeInterface,
++                    public Singleton<CpuProfiler> {
++public:
++  using Singleton<CpuProfiler>::instance;
++  CpuProfiler();
++  virtual ~CpuProfiler();
++
++protected:
++  // Profiler interface
++  void doStart() override;
++  void doStop() override;
++  void doFlush() override;
++  void doSetMode(const std::vector<std::string> &modeAndOptions) override;
++  void doAddMetrics(
++      size_t scopeId,
++      const std::map<std::string, MetricValueType> &scalarMetrics,
++      const std::map<std::string, TensorMetric> &tensorMetrics) override;
++
++  // Op Interface for user scopes (proton.scope)
++  void startOp(const Scope &scope) override;
++  void stopOp(const Scope &scope) override;
++
++  // Scope Interface for nested scopes (proton.scope context manager)
++  void enterScope(const Scope &scope) override;
++  void exitScope(const Scope &scope) override;
++
++private:
++  void setupCounters();
++  void readCounters(std::map<std::string, uint64_t> &values);
++
++  struct PerfCounter {
++      int fd = -1;
++      std::string name;
++  };
++  std::vector<PerfCounter> counters;
++
++  // Nested scope support using stack
++  struct ScopeState {
++    size_t scopeId;
++    std::string name;
++    std::map<std::string, uint64_t> startValues;
++    std::map<Data *, size_t> dataScopeIdMap;
++  };
++  std::stack<ScopeState> scopeStack;
++};
++
++} // namespace proton
++
++#endif // PROTON_PROFILER_CPU_PROFILER_H_
+diff --git a/third_party/proton/csrc/include/Profiler/Instrumentation/InstrumentationProfiler.h b/third_party/proton/csrc/include/Profiler/Instrumentation/InstrumentationProfiler.h
+index 1dfdae5a5..c8d79c4cf 100644
+--- a/third_party/proton/csrc/include/Profiler/Instrumentation/InstrumentationProfiler.h
++++ b/third_party/proton/csrc/include/Profiler/Instrumentation/InstrumentationProfiler.h
+@@ -51,7 +51,7 @@ protected:
+   }
+   void stopOp(const Scope &scope) override { dataScopeIdMap.clear(); }
+ 
+-private:
++protected:
+   std::shared_ptr<ParserConfig> getParserConfig(uint64_t functionId,
+                                                 size_t bufferSize) const;
+ 
+diff --git a/third_party/proton/csrc/include/Runtime/CpuRuntime.h b/third_party/proton/csrc/include/Runtime/CpuRuntime.h
+new file mode 100644
+index 000000000..473711567
+--- /dev/null
++++ b/third_party/proton/csrc/include/Runtime/CpuRuntime.h
+@@ -0,0 +1,74 @@
++#ifndef PROTON_RUNTIME_CPU_RUNTIME_H_
++#define PROTON_RUNTIME_CPU_RUNTIME_H_
++
++#include "Runtime/Runtime.h"
++#include <vector>
++#include <cstring>
++#include <cstdlib>
++
++namespace proton {
++
++class CpuRuntime : public Runtime {
++public:
++  CpuRuntime() : Runtime(DeviceType::CPU) {}
++  virtual ~CpuRuntime() = default;
++
++  static CpuRuntime &instance() {
++    static CpuRuntime instance;
++    return instance;
++  }
++
++  void launchKernel(void *kernel, unsigned int gridDimX, unsigned int gridDimY,
++                    unsigned int gridDimZ, unsigned int blockDimX,
++                    unsigned int blockDimY, unsigned int blockDimZ,
++                    unsigned int sharedMemBytes, void *stream,
++                    void **kernelParams, void **extra) override {
++      // No-op for CPU profiling currently
++  }
++
++  void memset(void *devicePtr, uint32_t value, size_t size,
++              void *stream) override {
++     std::memset(devicePtr, value, size);
++  }
++
++  void allocateHostBuffer(uint8_t **buffer, size_t size) override {
++     *buffer = (uint8_t *)std::malloc(size);
++  }
++
++  void freeHostBuffer(uint8_t *buffer) override {
++     std::free(buffer);
++  }
++
++  void allocateDeviceBuffer(uint8_t **buffer, size_t size) override {
++      // Unified memory on CPU
++      allocateHostBuffer(buffer, size);
++  }
++
++  void freeDeviceBuffer(uint8_t *buffer) override {
++      freeHostBuffer(buffer);
++  }
++
++  void copyDeviceToHostAsync(void *dst, const void *src, size_t size,
++                             void *stream) override {
++      std::memcpy(dst, src, size);
++  }
++
++  void *getDevice() override { return nullptr; }
++
++  void *getPriorityStream() override { return nullptr; }
++
++  void destroyStream(void *stream) override {}
++
++  void synchronizeStream(void *stream) override {}
++
++  void synchronizeDevice() override {}
++
++  void processHostBuffer(uint8_t *hostBuffer, size_t hostBufferSize,
++                         uint8_t *deviceBuffer, size_t deviceBufferSize,
++                         void *stream,
++                         std::function<void(uint8_t *, size_t)> callback) override {}
++};
++
++} // namespace proton
++
++#endif // PROTON_RUNTIME_CPU_RUNTIME_H_
+diff --git a/third_party/proton/csrc/lib/Data/TreeData.cpp b/third_party/proton/csrc/lib/Data/TreeData.cpp
+index e72b7bd1e..53ba1164a 100644
+--- a/third_party/proton/csrc/lib/Data/TreeData.cpp
++++ b/third_party/proton/csrc/lib/Data/TreeData.cpp
+@@ -103,6 +103,32 @@ private:
+   std::map<size_t, TreeNode> treeNodeMap;
+ };
+ 
++// Helper function to recursively filter out nodes with empty metrics
++static void filterEmptyMetricsNodes(json &node) {
++  if (!node.contains("children") || !node["children"].is_array()) {
++    return;
++  }
++
++  json filteredChildren = json::array();
++  for (auto &child : node["children"]) {
++    // Recursively filter children first
++    filterEmptyMetricsNodes(child);
++
++    // Keep the child if it has non-empty metrics OR has non-empty children
++    bool hasMetrics = child.contains("metrics") &&
++                      child["metrics"].is_object() &&
++                      !child["metrics"].empty();
++    bool hasChildren = child.contains("children") &&
++                       child["children"].is_array() &&
++                       !child["children"].empty();
++
++    if (hasMetrics || hasChildren) {
++      filteredChildren.push_back(std::move(child));
++    }
++  }
++  node["children"] = std::move(filteredChildren);
++}
++
+ json TreeData::buildHatchetJson(TreeData::Tree *tree) const {
+   std::map<size_t, json *> jsonNodes;
+   json output = json::array();
+@@ -228,6 +254,10 @@ json TreeData::buildHatchetJson(TreeData::Tree *tree) const {
+           {"num_sms", device.numSms}};
+     }
+   }
++  // Filter out nodes with empty metrics
++  if (!output.empty() && output[0].is_object()) {
++    filterEmptyMetricsNodes(output[0]);
++  }
+   return output;
+ }
+ 
+diff --git a/third_party/proton/csrc/lib/Driver/CMakeLists.txt b/third_party/proton/csrc/lib/Driver/CMakeLists.txt
+index 438f24f49..079face44 100644
+--- a/third_party/proton/csrc/lib/Driver/CMakeLists.txt
++++ b/third_party/proton/csrc/lib/Driver/CMakeLists.txt
+@@ -1,9 +1,24 @@
+-add_proton_library(ProtonDriver
++# Base driver sources (always compiled)
++set(DRIVER_SOURCES
+   Device.cpp
+-  GPU/CudaApi.cpp
+-  GPU/CuptiApi.cpp
+-  GPU/HipApi.cpp
+-  GPU/HsaApi.cpp
+-  GPU/RoctracerApi.cpp
+-  GPU/NvtxApi.cpp
+ )
++
++# Add CUDA/CUPTI sources only if CUDA is enabled
++if(PROTON_ENABLE_CUDA)
++  list(APPEND DRIVER_SOURCES
++    GPU/CudaApi.cpp
++    GPU/CuptiApi.cpp
++    GPU/NvtxApi.cpp
++  )
++endif()
++
++# Add ROCTracer/HIP sources only if ROCTracer is enabled
++if(PROTON_ENABLE_ROCTRACER)
++  list(APPEND DRIVER_SOURCES
++    GPU/HipApi.cpp
++    GPU/HsaApi.cpp
++    GPU/RoctracerApi.cpp
++  )
++endif()
++
++add_proton_library(ProtonDriver ${DRIVER_SOURCES})
+diff --git a/third_party/proton/csrc/lib/Driver/Device.cpp b/third_party/proton/csrc/lib/Driver/Device.cpp
+index 24f4d1612..a7d587e91 100644
+--- a/third_party/proton/csrc/lib/Driver/Device.cpp
++++ b/third_party/proton/csrc/lib/Driver/Device.cpp
+@@ -1,27 +1,57 @@
+ #include "Device.h"
++
++#ifdef PROTON_ENABLE_CUDA
+ #include "Driver/GPU/CudaApi.h"
++#endif
++
++#ifdef PROTON_ENABLE_ROCTRACER
+ #include "Driver/GPU/HipApi.h"
++#endif
+ 
+ #include "Utility/Errors.h"
+ 
+ namespace proton {
+ 
+ Device getDevice(DeviceType type, uint64_t index) {
++#ifdef PROTON_ENABLE_CUDA
+   if (type == DeviceType::CUDA) {
+     return cuda::getDevice(index);
+   }
++#endif
++#ifdef PROTON_ENABLE_ROCTRACER
+   if (type == DeviceType::HIP) {
+     return hip::getDevice(index);
+   }
++#endif
++  if (type == DeviceType::CPU) {
++    // CPU doesn't have device-specific info like GPU
++    Device dev;
++    dev.type = DeviceType::CPU;
++    dev.id = 0;
++    dev.clockRate = 0;
++    dev.memoryClockRate = 0;
++    dev.busWidth = 0;
++    dev.numSms = 0;
++    dev.arch = "cpu";
++    return dev;
++  }
+   throw std::runtime_error("DeviceType not supported");
+ }
+ 
+ const std::string getDeviceTypeString(DeviceType type) {
++#ifdef PROTON_ENABLE_CUDA
+   if (type == DeviceType::CUDA) {
+     return DeviceTraits<DeviceType::CUDA>::name;
+-  } else if (type == DeviceType::HIP) {
++  }
++#endif
++#ifdef PROTON_ENABLE_ROCTRACER
++  if (type == DeviceType::HIP) {
+     return DeviceTraits<DeviceType::HIP>::name;
+   }
++#endif
++  if (type == DeviceType::CPU) {
++    return DeviceTraits<DeviceType::CPU>::name;
++  }
+   throw std::runtime_error("DeviceType not supported");
+ }
+ 
+diff --git a/third_party/proton/csrc/lib/Profiler/CMakeLists.txt b/third_party/proton/csrc/lib/Profiler/CMakeLists.txt
+index 22c311fe2..9ffd0ebde 100644
+--- a/third_party/proton/csrc/lib/Profiler/CMakeLists.txt
++++ b/third_party/proton/csrc/lib/Profiler/CMakeLists.txt
+@@ -1,8 +1,30 @@
+-add_proton_library(ProtonProfiler
++# Base profiler sources (always compiled)
++set(PROFILER_SOURCES
+   Profiler.cpp
+-  Cupti/CuptiPCSampling.cpp
+-  Cupti/CuptiProfiler.cpp
+-  RocTracer/RoctracerProfiler.cpp
+-  Instrumentation/InstrumentationProfiler.cpp
+-  Instrumentation/Metadata.cpp
++  Cpu/CpuProfiler.cpp
+ )
++
++# Add Instrumentation sources only if CUDA is enabled (it depends on CUDA runtime)
++if(PROTON_ENABLE_CUDA)
++  list(APPEND PROFILER_SOURCES
++    Instrumentation/InstrumentationProfiler.cpp
++    Instrumentation/Metadata.cpp
++  )
++endif()
++
++# Add CUPTI sources only if CUDA is enabled
++if(PROTON_ENABLE_CUDA)
++  list(APPEND PROFILER_SOURCES
++    Cupti/CuptiPCSampling.cpp
++    Cupti/CuptiProfiler.cpp
++  )
++endif()
++
++# Add ROCTracer sources only if ROCTracer is enabled
++if(PROTON_ENABLE_ROCTRACER)
++  list(APPEND PROFILER_SOURCES
++    RocTracer/RoctracerProfiler.cpp
++  )
++endif()
++
++add_proton_library(ProtonProfiler ${PROFILER_SOURCES})
+diff --git a/third_party/proton/csrc/lib/Profiler/Cpu/CpuProfiler.cpp b/third_party/proton/csrc/lib/Profiler/Cpu/CpuProfiler.cpp
+new file mode 100644
+index 000000000..61d2928cf
+--- /dev/null
++++ b/third_party/proton/csrc/lib/Profiler/Cpu/CpuProfiler.cpp
+@@ -0,0 +1,208 @@
++#include "Profiler/Cpu/CpuProfiler.h"
++#include <asm/unistd.h>
++#include <cerrno>
++#include <cstring>
++#include <iostream>
++#include <linux/perf_event.h>
++#include <sys/ioctl.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++namespace proton {
++
++static long perf_event_open(struct perf_event_attr *hw_event, pid_t pid,
++                            int cpu, int group_fd, unsigned long flags) {
++  return syscall(__NR_perf_event_open, hw_event, pid, cpu, group_fd, flags);
++}
++
++CpuProfiler::CpuProfiler() {
++  std::cout << "[Proton] CpuProfiler constructed" << std::endl;
++}
++
++CpuProfiler::~CpuProfiler() {
++  // Close all perf event file descriptors
++  for (auto &c : counters) {
++    if (c.fd >= 0) {
++      close(c.fd);
++    }
++  }
++  counters.clear();
++}
++
++void CpuProfiler::setupCounters() {
++  struct perf_event_attr pe;
++  std::memset(&pe, 0, sizeof(struct perf_event_attr));
++  pe.type = PERF_TYPE_HARDWARE;
++  pe.size = sizeof(struct perf_event_attr);
++  pe.disabled = 1;
++  pe.exclude_kernel = 1;
++  pe.exclude_hv = 1;
++
++  // Cycles
++  pe.config = PERF_COUNT_HW_CPU_CYCLES;
++  int fd_cycles = perf_event_open(&pe, 0, -1, -1, 0);
++  if (fd_cycles != -1) {
++    std::cout << "[Proton] Successfully opened CPU Cycle counter." << std::endl;
++    counters.push_back({fd_cycles, "cycle"});
++  } else {
++    std::cerr << "[Proton] Warning: Failed to open cycles counter. Errno: "
++              << strerror(errno) << std::endl;
++  }
++
++  // Instructions
++  pe.config = PERF_COUNT_HW_INSTRUCTIONS;
++  int fd_inst = perf_event_open(&pe, 0, -1, -1, 0);
++  if (fd_inst != -1) {
++    std::cout << "[Proton] Successfully opened Instruction counter." << std::endl;
++    counters.push_back({fd_inst, "instruction"});
++  } else {
++    std::cerr << "[Proton] Warning: Failed to open instruction counter. Errno: "
++              << strerror(errno) << std::endl;
++  }
++}
++
++void CpuProfiler::doStart() {
++  std::cout << "[Proton] CpuProfiler::doStart()" << std::endl;
++  if (counters.empty()) {
++    setupCounters();
++  }
++  for (auto &c : counters) {
++    ioctl(c.fd, PERF_EVENT_IOC_RESET, 0);
++    ioctl(c.fd, PERF_EVENT_IOC_ENABLE, 0);
++  }
++}
++
++void CpuProfiler::doStop() {
++  std::cout << "[Proton] CpuProfiler::doStop()" << std::endl;
++  for (auto &c : counters) {
++    ioctl(c.fd, PERF_EVENT_IOC_DISABLE, 0);
++  }
++}
++
++void CpuProfiler::doFlush() {
++  // Nothing special to flush for CPU profiler
++}
++
++void CpuProfiler::doSetMode(const std::vector<std::string> &modeAndOptions) {
++  // CPU profiler doesn't need special mode configuration
++}
++
++void CpuProfiler::readCounters(std::map<std::string, uint64_t> &values) {
++  for (auto &c : counters) {
++    long long count;
++    int ret = read(c.fd, &count, sizeof(long long));
++    if (ret == sizeof(long long)) {
++      values[c.name] = count;
++    } else {
++      std::cerr << "[Proton Error] Failed to read " << c.name
++                << " ret=" << ret << " errno=" << strerror(errno) << std::endl;
++    }
++  }
++}
++
++// OpInterface implementation
++void CpuProfiler::startOp(const Scope &scope) {
++  // Delegate to enterScope for consistency
++  enterScope(scope);
++}
++
++void CpuProfiler::stopOp(const Scope &scope) {
++  // Delegate to exitScope for consistency
++  exitScope(scope);
++}
++
++void CpuProfiler::doAddMetrics(
++    size_t scopeId,
++    const std::map<std::string, MetricValueType> &scalarMetrics,
++    const std::map<std::string, TensorMetric> &tensorMetrics) {
++  // Add metrics to all registered data objects
++  for (auto *data : getDataSet()) {
++    data->addMetrics(scopeId, scalarMetrics);
++  }
++}
++
++// ScopeInterface implementation - supports nested scopes using stack
++void CpuProfiler::enterScope(const Scope &scope) {
++  std::cout << "[Proton Debug] enterScope: " << scope.name << " (scopeId="
++            << scope.scopeId << ", stack depth=" << scopeStack.size() << ")" << std::endl;
++
++  // Create new scope state
++  ScopeState state;
++  state.scopeId = scope.scopeId;
++  state.name = scope.name;
++
++  // Register this scope with all data objects
++  for (auto data : getDataSet()) {
++    auto internalScopeId = data->addOp(scope.scopeId, scope.name);
++    state.dataScopeIdMap[data] = internalScopeId;
++    std::cout << "[Proton Debug] Registered scope with data, internalScopeId="
++              << internalScopeId << std::endl;
++  }
++
++  // Read current counter values as start values
++  readCounters(state.startValues);
++
++  // Push state onto stack
++  scopeStack.push(std::move(state));
++
++  std::cout << "[Proton Debug] Start values recorded, stack depth now="
++            << scopeStack.size() << std::endl;
++}
++
++void CpuProfiler::exitScope(const Scope &scope) {
++  std::cout << "[Proton Debug] exitScope: " << scope.name << " (scopeId="
++            << scope.scopeId << ", stack depth=" << scopeStack.size() << ")" << std::endl;
++
++  if (scopeStack.empty()) {
++    std::cerr << "[Proton Error] exitScope called but stack is empty!" << std::endl;
++    return;
++  }
++
++  // Pop the top state from stack
++  ScopeState state = std::move(scopeStack.top());
++  scopeStack.pop();
++
++  // Verify scope matches (optional safety check)
++  if (state.scopeId != scope.scopeId) {
++    std::cerr << "[Proton Warning] Scope mismatch: expected " << state.scopeId
++              << " but got " << scope.scopeId << std::endl;
++  }
++
++  // Read end counter values
++  std::map<std::string, uint64_t> endValues;
++  readCounters(endValues);
++
++  // Calculate metrics (difference between end and start)
++  std::map<std::string, MetricValueType> metrics;
++  for (auto &c : counters) {
++    if (endValues.count(c.name) && state.startValues.count(c.name)) {
++      uint64_t diff = endValues[c.name] - state.startValues[c.name];
++      metrics[c.name] = static_cast<double>(diff);
++      std::cout << "[Proton Debug] Scope " << scope.name << " " << c.name
++                << ": " << diff << std::endl;
++    }
++  }
++
++  // Report metrics to all data objects using the saved dataScopeIdMap
++  if (!metrics.empty()) {
++    std::cout << "[Proton] Reporting metrics for scope " << scope.name
++              << " (dataScopeIdMap size: " << state.dataScopeIdMap.size() << ")"
++              << std::endl;
++    // Use current valid DataSet instead of saved pointers to avoid dangling pointers
++    for (auto *data : getDataSet()) {
++      auto it = state.dataScopeIdMap.find(data);
++      if (it != state.dataScopeIdMap.end()) {
++        std::cout << "[Proton Debug] Adding metrics to data for internalScopeId="
++                  << it->second << std::endl;
++        data->addMetrics(it->second, metrics);
++      }
++    }
++  } else {
++    std::cerr << "[Proton] No metrics recorded for scope " << scope.name << std::endl;
++  }
++
++  std::cout << "[Proton Debug] exitScope done, stack depth now="
++            << scopeStack.size() << std::endl;
++}
++
++} // namespace proton
+diff --git a/third_party/proton/csrc/lib/Runtime/CMakeLists.txt b/third_party/proton/csrc/lib/Runtime/CMakeLists.txt
+index 8c8e93e35..513052068 100644
+--- a/third_party/proton/csrc/lib/Runtime/CMakeLists.txt
++++ b/third_party/proton/csrc/lib/Runtime/CMakeLists.txt
+@@ -1,4 +1,18 @@
+-add_proton_library(ProtonRuntime
+-  CudaRuntime.cpp
+-  HipRuntime.cpp
+-)
++# Runtime sources - conditionally compiled based on GPU support
++set(RUNTIME_SOURCES)
++
++if(PROTON_ENABLE_CUDA)
++  list(APPEND RUNTIME_SOURCES CudaRuntime.cpp)
++endif()
++
++if(PROTON_ENABLE_ROCTRACER)
++  list(APPEND RUNTIME_SOURCES HipRuntime.cpp)
++endif()
++
++# Only create library if there are sources
++if(RUNTIME_SOURCES)
++  add_proton_library(ProtonRuntime ${RUNTIME_SOURCES})
++else()
++  # Create an empty interface library when no GPU support
++  add_library(ProtonRuntime INTERFACE)
++endif()
+diff --git a/third_party/proton/csrc/lib/Runtime/CpuRuntime.cpp b/third_party/proton/csrc/lib/Runtime/CpuRuntime.cpp
+new file mode 100644
+index 000000000..010c507d4
+--- /dev/null
++++ b/third_party/proton/csrc/lib/Runtime/CpuRuntime.cpp
+@@ -0,0 +1,5 @@
++#include "Runtime/CpuRuntime.h"
++
++namespace proton {
++// Instantiation
++}
+diff --git a/third_party/proton/csrc/lib/Session/Session.cpp b/third_party/proton/csrc/lib/Session/Session.cpp
+index f73a0f184..0cec77129 100644
+--- a/third_party/proton/csrc/lib/Session/Session.cpp
++++ b/third_party/proton/csrc/lib/Session/Session.cpp
+@@ -3,9 +3,14 @@
+ #include "Context/Shadow.h"
+ #include "Data/TraceData.h"
+ #include "Data/TreeData.h"
++#ifdef PROTON_ENABLE_CUDA
+ #include "Profiler/Cupti/CuptiProfiler.h"
+ #include "Profiler/Instrumentation/InstrumentationProfiler.h"
++#endif
++#ifdef PROTON_ENABLE_ROCTRACER
+ #include "Profiler/Roctracer/RoctracerProfiler.h"
++#endif
++#include "Profiler/Cpu/CpuProfiler.h"
+ #include "Utility/String.h"
+ 
+ namespace proton {
+@@ -13,13 +18,21 @@ namespace proton {
+ namespace {
+ 
+ Profiler *makeProfiler(const std::string &name) {
++#ifdef PROTON_ENABLE_CUDA
+   if (proton::toLower(name) == "cupti") {
+     return &CuptiProfiler::instance();
+-  } else if (proton::toLower(name) == "roctracer") {
+-    return &RoctracerProfiler::instance();
+   } else if (proton::toLower(name) == "instrumentation") {
+     return &InstrumentationProfiler::instance();
+   }
++#endif
++#ifdef PROTON_ENABLE_ROCTRACER
++  if (proton::toLower(name) == "roctracer") {
++    return &RoctracerProfiler::instance();
++  }
++#endif
++  if (proton::toLower(name) == "cpu") {
++    return &CpuProfiler::instance();
++  }
+   throw std::runtime_error("Unknown profiler: " + name);
+ }
+ 
+diff --git a/third_party/proton/proton/language.py b/third_party/proton/proton/language.py
+index 278593819..4638b4173 100644
+--- a/third_party/proton/proton/language.py
++++ b/third_party/proton/proton/language.py
+@@ -34,11 +34,14 @@ def disable_semantic(semantic_name: str):
+ 
+ 
+ def record(is_start: tl.constexpr, scope_name: tl.constexpr, semantic):
++    print(f"[DEBUG] record called: is_start={is_start}, scope_name={scope_name}, instrumentation_on={flags.instrumentation_on}")
+     if not flags.instrumentation_on:
++        print(f"[DEBUG] instrumentation_on is False, skipping")
+         return
+     _check_supported_semantic(semantic)
+     is_start = tl._unwrap_if_constexpr(is_start)
+     scope_name = tl._unwrap_if_constexpr(scope_name)
++    print(f"[DEBUG] creating proton record op")
+     return tl.tensor(triton_proton.create_proton_record(semantic.builder, is_start, scope_name), tl.void)
+ 
+ 

@@ -39,6 +39,7 @@
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 #include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
 #include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncOps.h"
+#include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -1117,6 +1118,103 @@ struct GetThreadOpToLLVMCallPattern : public OpRewritePattern<xsmt::GetThreadOp>
   }
 };
 
+// Pattern to convert proton::RecordOp to RISC-V rdtime inline assembly + runtime call
+// Note: rdcycle is disabled in user mode on many RISC-V systems, so we use rdtime instead
+struct ProtonRecordOpPattern : public OpRewritePattern<proton::RecordOp> {
+  using OpRewritePattern<proton::RecordOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(proton::RecordOp recordOp,
+                                PatternRewriter &rewriter) const override {
+    Location loc = recordOp.getLoc();
+    MLIRContext *ctx = rewriter.getContext();
+
+    auto moduleOp = recordOp->getParentOfType<ModuleOp>();
+    if (!moduleOp) {
+      return failure();
+    }
+
+    // 1. Create rdtime inline assembly to read time counter
+    // Note: rdcycle is often disabled in user mode, rdtime is more portable
+    Type i64Type = rewriter.getI64Type();
+
+    // RISC-V rdtime instruction: reads the time CSR (available in user mode)
+    auto asmDialectAttr = LLVM::AsmDialectAttr::get(ctx, LLVM::AsmDialect::AD_ATT);
+
+    auto inlineAsmOp = LLVM::InlineAsmOp::create(rewriter, loc,
+        /*resultTypes=*/i64Type,
+        /*operands=*/ValueRange{},
+        /*asm_string=*/"rdtime $0",
+        /*constraints=*/"=r",
+        /*has_side_effects=*/true,
+        /*is_align_stack=*/false,
+        /*tail_call_kind=*/LLVM::tailcallkind::TailCallKind::None,
+        /*asm_dialect=*/asmDialectAttr,
+        /*operand_attrs=*/ArrayAttr{});
+
+    Value cycleValue = inlineAsmOp.getResult(0);
+
+    // 2. Declare and call runtime function: proton_record(const char* name, int64_t cycle, int is_start)
+    StringRef funcName = "proton_record";
+
+    // Get or create the runtime function declaration
+    auto llvmFuncOp = moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(funcName);
+    if (!llvmFuncOp) {
+      // Function signature: void proton_record(const char* name, int64_t cycle, int32_t is_start)
+      Type voidType = LLVM::LLVMVoidType::get(ctx);
+      Type ptrType = LLVM::LLVMPointerType::get(ctx);
+      Type i32Type = rewriter.getI32Type();
+
+      auto funcType = LLVM::LLVMFunctionType::get(voidType,
+          {ptrType, i64Type, i32Type}, /*isVarArg=*/false);
+
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+      llvmFuncOp = LLVM::LLVMFuncOp::create(rewriter, loc, funcName, funcType);
+      llvmFuncOp.setLinkage(LLVM::Linkage::External);
+    }
+
+    // 3. Create global string constant for the scope name
+    std::string scopeName = recordOp.getName().str();
+    std::string globalName = "proton_scope_" + scopeName;
+
+    // Check if global already exists
+    auto globalOp = moduleOp.lookupSymbol<LLVM::GlobalOp>(globalName);
+    if (!globalOp) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      // Create null-terminated string
+      std::string strWithNull = scopeName + '\0';
+      auto strAttr = rewriter.getStringAttr(strWithNull);
+      auto arrayType = LLVM::LLVMArrayType::get(
+          IntegerType::get(ctx, 8), strWithNull.size());
+
+      globalOp = LLVM::GlobalOp::create(rewriter, loc, arrayType,
+          /*isConstant=*/true, LLVM::Linkage::Internal, globalName, strAttr);
+    }
+
+    // 4. Get pointer to the global string
+    Type ptrType = LLVM::LLVMPointerType::get(ctx);
+    auto addrOp = LLVM::AddressOfOp::create(rewriter, loc, ptrType, globalName);
+
+    // 5. Create is_start constant (1 for start, 0 for end)
+    int32_t isStartVal = recordOp.getIsStart() ? 1 : 0;
+    auto isStartConst = LLVM::ConstantOp::create(rewriter, loc,
+        rewriter.getI32Type(), rewriter.getI32IntegerAttr(isStartVal));
+
+    // 6. Call the runtime function
+    LLVM::CallOp::create(rewriter, loc,
+        TypeRange{},
+        funcName,
+        ValueRange{addrOp.getResult(), cycleValue, isStartConst.getResult()});
+
+    // 7. Erase the original op
+    rewriter.eraseOp(recordOp);
+
+    return success();
+  }
+};
+
 struct InsertMBarrierReleasePattern
     : public mlir::OpRewritePattern<xsmt_async::MBarrierAllocOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -1606,7 +1704,8 @@ void mlir::triton::populateXSMTToLinalgConversionPatterns(RewritePatternSet &pat
   patterns.add<ViewOpPattern>(patterns.getContext());
   patterns.add<InsertMBarrierReleasePattern>(patterns.getContext());
   patterns.add<GetThreadOpToLLVMCallPattern>(patterns.getContext());
-  }
+  patterns.add<ProtonRecordOpPattern>(patterns.getContext());
+}
 
 void mlir::triton::ConvertMMT4DAddConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<ConvertMMT4DAddPattern>(patterns.getContext());

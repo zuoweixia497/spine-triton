@@ -32,6 +32,7 @@
 #include "triton-shared/Transform/AddLLVMDebugInfo/Passes.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 #include "triton-shared/Dialect/XSMTAsync/IR/XSMTAsyncDialect.h"
+#include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
 
 #include "mlir/InitAllPasses.h"
 
@@ -66,5 +67,6 @@ inline void registerSpineTritonDialects(mlir::DialectRegistry &registry) {
       mlir::func::FuncDialect, mlir::tensor::TensorDialect,
       mlir::memref::MemRefDialect, mlir::bufferization::BufferizationDialect,
       mlir::DLTIDialect, mlir::vector::VectorDialect, mlir::xsmt::XSMTDialect,
-      mlir::xsmt_async::XSMTAsyncDialect>();
+      mlir::xsmt_async::XSMTAsyncDialect,
+      mlir::triton::proton::ProtonDialect>();
 }
