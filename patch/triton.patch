@@ -304,7 +304,7 @@ index def96711a..e4cf4fec6 100644
 diff --git a/setup.py b/setup.py
 old mode 100644
 new mode 100755
-index fccb4ef17..da73e1eb9
+index fccb4ef17..3cc36f844
 --- a/setup.py
 +++ b/setup.py
 @@ -60,6 +60,8 @@ class Backend:
@@ -316,7 +316,7 @@ index fccb4ef17..da73e1eb9
  
  
  class BackendInstaller:
-@@ -94,13 +96,51 @@ class BackendInstaller:
+@@ -94,13 +96,49 @@ class BackendInstaller:
          if not os.path.exists(tools_dir):
              tools_dir = None
  
@@ -340,23 +340,21 @@ index fccb4ef17..da73e1eb9
 +            spine_mlir_install_dir = os.environ.get("SPINE_MLIR_INSTALL_DIR", None)
 +            assert spine_mlir_install_dir is not None
 +            import glob
++            from collections import defaultdict
 +            so_file_list = glob.glob(os.path.join(spine_mlir_install_dir, "lib", "libSpeIR*.so*"))
-+            symlink_info = {}
++            # Group files by base library name (e.g., libSpeIRRuntimeLibs)
++            lib_groups = defaultdict(list)
 +            for so_file in so_file_list:
 +                basename = os.path.basename(so_file)
++                # Extract base name before .so (e.g., libSpeIRRuntimeLibs from libSpeIRRuntimeLibs.so.0.5.2)
++                base_name = basename.split('.so')[0]
++                lib_groups[base_name].append(so_file)
++            # Copy only the longest-named file from each group (the versioned real file)
++            for base_name, files in lib_groups.items():
++                longest_file = max(files, key=lambda f: len(os.path.basename(f)))
++                basename = os.path.basename(longest_file)
 +                dst_path = os.path.join(lib_dir, basename)
-+                if os.path.islink(so_file):
-+                    symlink_info[basename] = os.readlink(so_file)
-+                else:
-+                    shutil.copy(so_file, dst_path)
-+            for link_name, target in symlink_info.items():
-+                link_path = os.path.join(lib_dir, link_name)
-+                if os.path.exists(link_path) or os.path.islink(link_path):
-+                    os.remove(link_path)
-+                os.symlink(target, link_path)
-+            symlink_info_file = os.path.join(lib_dir, ".symlink_info.json")
-+            with open(symlink_info_file, "w") as f:
-+                json.dump(symlink_info, f)
++                shutil.copy(longest_file, dst_path)
 +
          for file in ["compiler.py", "driver.py"]:
              assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
@@ -369,41 +367,16 @@ index fccb4ef17..da73e1eb9
  
      # Copy all in-tree backends under triton/third_party.
      @staticmethod
-@@ -377,11 +417,32 @@ class CMakeClean(clean):
-         self.build_temp = get_cmake_dir()
- 
- 
-+def fix_spine_triton_symlinks(lib_dir):
-+    symlink_info_file = os.path.join(lib_dir, ".symlink_info.json")
-+    if not os.path.exists(symlink_info_file):
-+        return
-+    with open(symlink_info_file, "r") as f:
-+        symlink_info = json.load(f)
-+    for link_name, target in symlink_info.items():
-+        link_path = os.path.join(lib_dir, link_name)
-+        if os.path.exists(link_path) and not os.path.islink(link_path):
-+            os.remove(link_path)
-+        if os.path.islink(link_path):
-+            os.remove(link_path)
-+        os.symlink(target, link_path)
-+    print(f"Fixed symlinks in {lib_dir}")
-+
-+
- class CMakeBuildPy(build_py):
+@@ -381,7 +419,7 @@ class CMakeBuildPy(build_py):
  
      def run(self) -> None:
          self.run_command('build_ext')
 -        return super().run()
 +        super().run()
-+        for backend in backends:
-+            if backend.name == "spine_triton" and backend.lib_dir:
-+                build_lib_dir = os.path.join(self.build_lib, "triton", "backends", "spine_triton", "lib")
-+                if os.path.exists(build_lib_dir):
-+                    fix_spine_triton_symlinks(build_lib_dir)
  
  
  class CMakeExtension(Extension):
-@@ -446,7 +507,8 @@ class CMakeBuild(build_ext):
+@@ -446,7 +484,8 @@ class CMakeBuild(build_ext):
          lit_dir = shutil.which('lit')
          ninja_dir = shutil.which('ninja')
          # lit is used by the test suite
@@ -413,7 +386,7 @@ index fccb4ef17..da73e1eb9
          thirdparty_cmake_args += self.get_pybind11_cmake_args()
          extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.path)))
          wheeldir = os.path.dirname(extdir)
-@@ -536,9 +598,18 @@ class CMakeBuild(build_ext):
+@@ -536,9 +575,18 @@ class CMakeBuild(build_ext):
          update_symlink(Path(self.base_dir) / "compile_commands.json", cmake_dir / "compile_commands.json")
          subprocess.check_call(["cmake", "--build", "."] + build_args, cwd=cmake_dir)
          subprocess.check_call(["cmake", "--build", ".", "--target", "mlir-doc"], cwd=cmake_dir)
@@ -432,7 +405,7 @@ index fccb4ef17..da73e1eb9
      nvidia_version_path = os.path.join(get_base_dir(), "cmake", "nvidia-toolchain-version.json")
      with open(nvidia_version_path, "r") as nvidia_version_file:
          # parse this json file to get the version of the nvidia toolchain
-@@ -672,6 +743,12 @@ def get_packages():
+@@ -672,6 +720,12 @@ def get_packages():
              for x in os.listdir(backend.tools_dir):
                  yield f"triton.tools.extra.{x}"
  
@@ -445,19 +418,7 @@ index fccb4ef17..da73e1eb9
      if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
          yield "triton.profiler"
  
-@@ -748,6 +825,11 @@ class plugin_install(install):
-     def run(self):
-         add_links(external_only=True)
-         super().run()
-+        for backend in backends:
-+            if backend.name == "spine_triton" and backend.lib_dir:
-+                install_lib_dir = os.path.join(self.install_lib, "triton", "backends", "spine_triton", "lib")
-+                if os.path.exists(install_lib_dir):
-+                    fix_spine_triton_symlinks(install_lib_dir)
- 
- 
- class plugin_sdist(sdist):
-@@ -808,7 +890,7 @@ def get_triton_version_suffix():
+@@ -808,7 +862,7 @@ def get_triton_version_suffix():
  
  
  # keep it separate for easy substitution
@@ -466,7 +427,7 @@ index fccb4ef17..da73e1eb9
  
  # Dynamically define supported Python versions and classifiers
  MIN_PYTHON = (3, 10)
-@@ -832,7 +914,7 @@ setup(
+@@ -832,7 +886,7 @@ setup(
      author="Philippe Tillet",
      author_email="phil@openai.com",
      description="A language and compiler for custom Deep Learning operations",
