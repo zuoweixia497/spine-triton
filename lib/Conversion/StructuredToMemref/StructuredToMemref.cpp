@@ -33,7 +33,9 @@
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR//MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/AffineMap.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -521,6 +523,8 @@ private:
       }
     memref::ReinterpretCastOp castOp;
 
+    // Track whether we used actualSizes (which may be smaller than resultShape due to boundary)
+    bool usedActualSizes = false;
     if(!isBlockPtr1 && mixSizes.size() == mixOffsets.size() && mixShapes.size() == mixOffsets.size() && mixSizes.size() == mixShapes.size()){
       for(int32_t i=0; i<mixSizes.size(); i++){
         auto offset = mixOffsets[i];
@@ -542,6 +546,7 @@ private:
       }
       castOp = memref::ReinterpretCastOp::create(rewriter, op.getLoc(), resultType, adaptor.getBase(), targetOffset,
           actualSizes, mixedStrides);
+      usedActualSizes = true;
     }else{
       auto resultType = getResultMemrefType(
         op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
@@ -553,7 +558,10 @@ private:
     Value result = castOp.getResult();
     auto resultTy = cast<MemRefType>(result.getType());
     bool needsCast = false;
-    if (resultTy.getRank() == static_cast<int64_t>(resultShape.size())) {
+    // When usedActualSizes is true, the actual size may be smaller than resultShape
+    // (e.g., boundary case where tensor dim < block size), so we should NOT cast
+    // to static resultShape which would cause cast incompatibility error.
+    if (!usedActualSizes && resultTy.getRank() == static_cast<int64_t>(resultShape.size())) {
       for (size_t i = 0; i < resultShape.size(); ++i) {
         if (resultShape[i] != ShapedType::kDynamic && resultTy.isDynamicDim(i)) {
           needsCast = true;
@@ -844,6 +852,39 @@ private:
             sizes.push_back(rewriter.getIndexAttr(dim));
           }
         }
+      }else if (auto unrealizedCast = ptr.getDefiningOp<UnrealizedConversionCastOp>()){
+        // Handle unrealized_conversion_cast - get sizes from the source memref
+        auto source = unrealizedCast.getInputs()[0];
+        if (auto srcReinterpretCast = source.getDefiningOp<memref::ReinterpretCastOp>()) {
+          sizes = srcReinterpretCast.getMixedSizes();
+        } else {
+          // Get sizes from the source memref type, using dim ops for dynamic dims
+          auto srcMemrefType = cast<MemRefType>(source.getType());
+          auto shape = srcMemrefType.getShape();
+          for (size_t i = 0; i < shape.size(); ++i) {
+            if (shape[i] == ShapedType::kDynamic) {
+              Value dimVal = memref::DimOp::create(rewriter, loc, source, i);
+              sizes.push_back(dimVal);
+            } else {
+              sizes.push_back(rewriter.getIndexAttr(shape[i]));
+            }
+          }
+        }
+        // Use the source memref directly instead of the cast result
+        ptr = source;
+      } else {
+        // Default: get sizes from the memref type
+        auto memrefType = cast<MemRefType>(ptr.getType());
+        auto shape = memrefType.getShape();
+        for (size_t i = 0; i < shape.size(); ++i) {
+          if (shape[i] == ShapedType::kDynamic) {
+            // For dynamic dimensions, use memref.dim
+            Value dimVal = memref::DimOp::create(rewriter, loc, ptr, i);
+            sizes.push_back(dimVal);
+          } else {
+            sizes.push_back(rewriter.getIndexAttr(shape[i]));
+          }
+        }
       }
 
       auto paddingAttr = op.getPadding();
@@ -1105,7 +1146,9 @@ public:
     auto ptr = op.getPtr();
     if (auto gatherScatterPtr =
             ptr.getDefiningOp<tts::MakeGatherScatterTensorPtrOp>()) {
-      return rewriteGather(gatherScatterPtr, op, adaptor.getPtr(), rewriter);
+      // Get the remapped base pointer (converted to memref)
+      Value baseMemref = rewriter.getRemappedValue(gatherScatterPtr.getBase());
+      return rewriteGather(gatherScatterPtr, op, baseMemref, rewriter);
     }
 
     if (op.hasMask()) {
@@ -1245,14 +1288,102 @@ public:
 
     if (auto gatherScatterPtr =
             op.getPtr().getDefiningOp<tts::MakeGatherScatterTensorPtrOp>()) {
-      return rewriteScatter(gatherScatterPtr, op, adaptor.getPtr(),
+      // Get the remapped base pointer (converted to memref)
+      Value baseMemref = rewriter.getRemappedValue(gatherScatterPtr.getBase());
+      return rewriteScatter(gatherScatterPtr, op, baseMemref,
       adaptor.getValue(),
                                rewriter);
     }
 
     auto ptr = adaptor.getPtr();
-    auto storeValue = op.getValue();
-    auto rank = cast<RankedTensorType>(storeValue.getType()).getRank();
+    Value storeValue = op.getValue();
+    auto storeValueType = cast<RankedTensorType>(storeValue.getType());
+    auto rank = storeValueType.getRank();
+
+    // Handle element type mismatch due to tt.bitcast on pointer tensors.
+    // When tt.bitcast changes the pointee type (e.g., !tt.ptr<i1> -> !tt.ptr<i8>),
+    // the store value type may differ from the memref element type.
+    // We need to convert the store value to match the memref's element type.
+    auto ptrMemRefType = cast<MemRefType>(ptr.getType());
+    Type storeElemType = storeValueType.getElementType();
+    Type ptrElemType = ptrMemRefType.getElementType();
+
+    if (storeElemType != ptrElemType) {
+      // Convert the store value to match the memref's element type
+      auto storeElemBitWidth = storeElemType.getIntOrFloatBitWidth();
+      auto ptrElemBitWidth = ptrElemType.getIntOrFloatBitWidth();
+
+      Value convertedValue;
+      auto newTensorType = RankedTensorType::get(storeValueType.getShape(), ptrElemType);
+
+      if (isa<IntegerType>(storeElemType) && isa<IntegerType>(ptrElemType)) {
+        if (storeElemBitWidth > ptrElemBitWidth) {
+          // Truncate: e.g., i8 -> i1
+          convertedValue = linalg::GenericOp::create(rewriter, loc,
+              /*resultTypes=*/TypeRange{newTensorType},
+              /*inputs=*/ValueRange{storeValue},
+              /*outputs=*/ValueRange{tensor::EmptyOp::create(rewriter, loc, newTensorType.getShape(), ptrElemType)},
+              /*indexingMaps=*/SmallVector<AffineMap>{
+                  rewriter.getMultiDimIdentityMap(rank),
+                  rewriter.getMultiDimIdentityMap(rank)},
+              /*iteratorTypes=*/SmallVector<utils::IteratorType>(rank, utils::IteratorType::parallel),
+              /*bodyBuilder=*/[&](OpBuilder &b, Location loc, ValueRange args) {
+                Value truncated = arith::TruncIOp::create(b, loc, ptrElemType, args[0]);
+                linalg::YieldOp::create(b, loc, truncated);
+              }).getResult(0);
+        } else {
+          // Extend: e.g., i1 -> i8
+          convertedValue = linalg::GenericOp::create(rewriter, loc,
+              /*resultTypes=*/TypeRange{newTensorType},
+              /*inputs=*/ValueRange{storeValue},
+              /*outputs=*/ValueRange{tensor::EmptyOp::create(rewriter, loc, newTensorType.getShape(), ptrElemType)},
+              /*indexingMaps=*/SmallVector<AffineMap>{
+                  rewriter.getMultiDimIdentityMap(rank),
+                  rewriter.getMultiDimIdentityMap(rank)},
+              /*iteratorTypes=*/SmallVector<utils::IteratorType>(rank, utils::IteratorType::parallel),
+              /*bodyBuilder=*/[&](OpBuilder &b, Location loc, ValueRange args) {
+                Value extended = arith::ExtUIOp::create(b, loc, ptrElemType, args[0]);
+                linalg::YieldOp::create(b, loc, extended);
+              }).getResult(0);
+        }
+      } else if (isa<FloatType>(storeElemType) && isa<FloatType>(ptrElemType)) {
+        if (storeElemBitWidth > ptrElemBitWidth) {
+          // Truncate float
+          convertedValue = linalg::GenericOp::create(rewriter, loc,
+              /*resultTypes=*/TypeRange{newTensorType},
+              /*inputs=*/ValueRange{storeValue},
+              /*outputs=*/ValueRange{tensor::EmptyOp::create(rewriter, loc, newTensorType.getShape(), ptrElemType)},
+              /*indexingMaps=*/SmallVector<AffineMap>{
+                  rewriter.getMultiDimIdentityMap(rank),
+                  rewriter.getMultiDimIdentityMap(rank)},
+              /*iteratorTypes=*/SmallVector<utils::IteratorType>(rank, utils::IteratorType::parallel),
+              /*bodyBuilder=*/[&](OpBuilder &b, Location loc, ValueRange args) {
+                Value truncated = arith::TruncFOp::create(b, loc, ptrElemType, args[0]);
+                linalg::YieldOp::create(b, loc, truncated);
+              }).getResult(0);
+        } else {
+          // Extend float
+          convertedValue = linalg::GenericOp::create(rewriter, loc,
+              /*resultTypes=*/TypeRange{newTensorType},
+              /*inputs=*/ValueRange{storeValue},
+              /*outputs=*/ValueRange{tensor::EmptyOp::create(rewriter, loc, newTensorType.getShape(), ptrElemType)},
+              /*indexingMaps=*/SmallVector<AffineMap>{
+                  rewriter.getMultiDimIdentityMap(rank),
+                  rewriter.getMultiDimIdentityMap(rank)},
+              /*iteratorTypes=*/SmallVector<utils::IteratorType>(rank, utils::IteratorType::parallel),
+              /*bodyBuilder=*/[&](OpBuilder &b, Location loc, ValueRange args) {
+                Value extended = arith::ExtFOp::create(b, loc, ptrElemType, args[0]);
+                linalg::YieldOp::create(b, loc, extended);
+              }).getResult(0);
+        }
+      } else {
+        // For other type combinations, use bitcast semantics
+        // This is a fallback and may not be correct for all cases
+        convertedValue = storeValue;
+      }
+
+      storeValue = convertedValue;
+    }
 
     if (op.hasMask()) {
       auto mixedDims = op.getMixedMaskDims();
@@ -1293,6 +1424,39 @@ public:
           auto shape = memrefType.getShape();
           for (int64_t dim : shape) {
             sizes.push_back(rewriter.getIndexAttr(dim));
+          }
+        }
+      }else if (auto unrealizedCast = ptr.getDefiningOp<UnrealizedConversionCastOp>()){
+        // Handle unrealized_conversion_cast - get sizes from the source memref
+        auto source = unrealizedCast.getInputs()[0];
+        if (auto srcReinterpretCast = source.getDefiningOp<memref::ReinterpretCastOp>()) {
+          sizes = srcReinterpretCast.getMixedSizes();
+        } else {
+          // Get sizes from the source memref type, using dim ops for dynamic dims
+          auto srcMemrefType = cast<MemRefType>(source.getType());
+          auto shape = srcMemrefType.getShape();
+          for (size_t i = 0; i < shape.size(); ++i) {
+            if (shape[i] == ShapedType::kDynamic) {
+              Value dimVal = memref::DimOp::create(rewriter, loc, source, i);
+              sizes.push_back(dimVal);
+            } else {
+              sizes.push_back(rewriter.getIndexAttr(shape[i]));
+            }
+          }
+        }
+        // Use the source memref directly instead of the cast result
+        ptr = source;
+      } else {
+        // Default: get sizes from the memref type
+        auto memrefType = cast<MemRefType>(ptr.getType());
+        auto shape = memrefType.getShape();
+        for (size_t i = 0; i < shape.size(); ++i) {
+          if (shape[i] == ShapedType::kDynamic) {
+            // For dynamic dimensions, use memref.dim
+            Value dimVal = memref::DimOp::create(rewriter, loc, ptr, i);
+            sizes.push_back(dimVal);
+          } else {
+            sizes.push_back(rewriter.getIndexAttr(shape[i]));
           }
         }
       }
@@ -1953,9 +2117,9 @@ void mlir::triton::ViewOpPtrPatternConversionPatterns(RewritePatternSet &pattern
 
 void mlir::triton::populateStructuredToMemrefConversionPatterns(
     RewritePatternSet &patterns, TypeConverter &typeConverter) {
-  patterns.add<MakeTensorPtrConverter, MakeGatherScatterTensorPtrConverter,
+  patterns.add<MakeTensorPtrConverter,
                XSMTAllocConverter, XSMTViewConverter, AllocCopiesOpLowering,
                BufferTensorViewOpLowering, MBarrierCopiesOpLowering,
                MBarrierSubviewOpLowering>(typeConverter, patterns.getContext());
-  patterns.add<LoadConverter, StoreConverter>(patterns.getContext());
+  patterns.add<LoadConverter, StoreConverter>(typeConverter, patterns.getContext());
 }

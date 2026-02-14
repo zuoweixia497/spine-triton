@@ -109,7 +109,12 @@ public:
 
 private:
   CpuProtonProfiler() = default;
-  ~CpuProtonProfiler() = default;
+  ~CpuProtonProfiler() {
+    // Auto-dump on program exit if there are records
+    if (!records_.empty()) {
+      dump();
+    }
+  }
   CpuProtonProfiler(const CpuProtonProfiler &) = delete;
   CpuProtonProfiler &operator=(const CpuProtonProfiler &) = delete;
 
@@ -427,6 +432,68 @@ __attribute__((visibility("default"))) void proton_dump() noexcept {
 // Reset all profiling data
 __attribute__((visibility("default"))) void proton_reset() noexcept {
   CpuProtonProfiler::getInstance().reset();
+}
+
+// ============================================================================
+// Kernel-level profiling APIs for automatic kernel capture
+// These are called from the launcher's _launch function to automatically
+// record kernel execution without modifying user code.
+//
+// NOTE: These functions are only called when PROTON_KERNEL_CAPTURE=1 is set
+// at compile time. The decision is made in driver.py when generating the
+// launcher code, so there's no runtime overhead when profiling is disabled.
+// ============================================================================
+
+// Get current cycle count (platform-specific)
+static inline int64_t get_current_cycle() {
+#if defined(__riscv)
+  int64_t cycle;
+  asm volatile("rdtime %0" : "=r"(cycle));
+  return cycle;
+#elif defined(__x86_64__) || defined(_M_X64)
+  unsigned int lo, hi;
+  asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+  return ((int64_t)hi << 32) | lo;
+#elif defined(__aarch64__)
+  int64_t cycle;
+  asm volatile("mrs %0, cntvct_el0" : "=r"(cycle));
+  return cycle;
+#else
+  // Fallback: use clock_gettime
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec * 1000000000LL + ts.tv_nsec;
+#endif
+}
+
+// Enter kernel scope - called at the beginning of _launch
+// Parameters:
+//   kernel_name: name of the kernel function
+//   gridX, gridY, gridZ: grid dimensions
+__attribute__((visibility("default"))) void proton_enter_kernel(
+    const char *kernel_name, int gridX, int gridY, int gridZ) noexcept {
+  // Create a scope name that includes grid info
+  char scope_name[256];
+  snprintf(scope_name, sizeof(scope_name), "%s[%d,%d,%d]",
+           kernel_name, gridX, gridY, gridZ);
+
+  int64_t cycle = get_current_cycle();
+  CpuProtonProfiler::getInstance().record(scope_name, cycle, 1);
+}
+
+// Exit kernel scope - called at the end of _launch
+// Parameters:
+//   kernel_name: name of the kernel function
+//   gridX, gridY, gridZ: grid dimensions (must match enter call)
+__attribute__((visibility("default"))) void proton_exit_kernel(
+    const char *kernel_name, int gridX, int gridY, int gridZ) noexcept {
+  // Create the same scope name as enter
+  char scope_name[256];
+  snprintf(scope_name, sizeof(scope_name), "%s[%d,%d,%d]",
+           kernel_name, gridX, gridY, gridZ);
+
+  int64_t cycle = get_current_cycle();
+  CpuProtonProfiler::getInstance().record(scope_name, cycle, 0);
 }
 
 } // extern "C"

@@ -145,6 +145,8 @@ struct SelectOpConverter : public OpConversionPattern<arith::SelectOp> {
 
 // Convert bitcast which is a no-op because !ptr.ptr is opaque with no pointee
 // type.
+// Convert bitcast which is a no-op because !ptr.ptr is opaque with no pointee
+// type. This applies to both scalar pointers and tensors of pointers.
 struct BitCastConverter : public OpConversionPattern<triton::BitcastOp> {
   using OpConversionPattern<triton::BitcastOp>::OpConversionPattern;
 
@@ -154,10 +156,16 @@ struct BitCastConverter : public OpConversionPattern<triton::BitcastOp> {
   LogicalResult
   matchAndRewrite(triton::BitcastOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (isa<ShapedType>(op.getType())) {
+    // Check if this is a pointer-related bitcast (scalar or tensor of pointers)
+    Type srcType = op.getSrc().getType();
+    Type dstType = op.getType();
+
+    // For non-pointer types, let other passes handle it
+    if (!triton::isPtrTypeLike(srcType) && !triton::isPtrTypeLike(dstType)) {
       return failure();
     }
-    // Bitcast is a no-op, simply forward the src
+
+    // Bitcast is a no-op for pointers, simply forward the converted src
     rewriter.replaceOp(op, adaptor.getSrc());
     return success();
   }

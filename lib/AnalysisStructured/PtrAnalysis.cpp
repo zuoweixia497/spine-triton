@@ -1944,6 +1944,18 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
           }
           return WalkResult::advance();
         })
+        .Case<triton::BitcastOp>([&](auto bitcast) {
+          // For tensor of pointers bitcast, propagate the ptrMap from source
+          // to result. This allows subsequent load/store ops to find the
+          // rewritten pointer.
+          if (isa<ShapedType>(bitcast.getType())) {
+            Value src = bitcast.getSrc();
+            if (Value rewrittenSrc = ptrMap.lookupOrNull(src)) {
+              ptrMap.map(bitcast.getResult(), rewrittenSrc);
+            }
+          }
+          return WalkResult::advance();
+        })
         .Case<triton::MakeTensorPtrOp>([&](auto maketptr) {
           if (rewriteMakeTensorPtrOp(maketptr, offsetMap).failed()) {
             maketptr->emitRemark(

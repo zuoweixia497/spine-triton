@@ -50,6 +50,22 @@ class PtrToMemrefConverter : public TypeConverter {
 public:
   PtrToMemrefConverter() {
     addConversion([](Type type) { return type; });
+    // Handle tensor<NxM...x!tt.ptr<elemType>> -> memref<NxM...xelemType>
+    // This is for structured pointers like tensor<512x!tt.ptr<i64>>
+    addConversion([](RankedTensorType tensorType) -> std::optional<Type> {
+      auto ptrType = dyn_cast<triton::PointerType>(tensorType.getElementType());
+      if (!ptrType)
+        return std::nullopt;
+
+      MLIRContext *ctx = tensorType.getContext();
+      Type pointeeType = ptrType.getPointeeType();
+      SmallVector<int64_t> shape(tensorType.getShape());
+
+      SmallVector<int64_t> dynStrides(tensorType.getRank(), ShapedType::kDynamic);
+      auto layout = StridedLayoutAttr::get(ctx, /*offset=*/ShapedType::kDynamic, dynStrides);
+
+      return MemRefType::get(shape, pointeeType, layout, /*memorySpace=*/0);
+    });
     addConversion([](triton::PointerType ptrType) -> Type {
       MLIRContext *ctx = ptrType.getContext();
       Type pointeeType = ptrType.getPointeeType();
@@ -89,6 +105,24 @@ public:
                                  Location loc) -> Value {
       return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
           .getResult(0);
+    });
+
+    // Handle memref type conversions where strides differ (static vs dynamic)
+    addTargetMaterialization([&](OpBuilder &builder,
+                                 MemRefType resultType,
+                                 ValueRange inputs,
+                                 Location loc) -> Value {
+      if (inputs.size() != 1)
+        return nullptr;
+      auto inputType = dyn_cast<MemRefType>(inputs[0].getType());
+      if (!inputType)
+        return nullptr;
+      // If shapes and element types match, use memref.cast for layout conversion
+      if (inputType.getShape() == resultType.getShape() &&
+          inputType.getElementType() == resultType.getElementType()) {
+        return memref::CastOp::create(builder, loc, resultType, inputs[0]).getResult();
+      }
+      return nullptr;
     });
 
     addSourceMaterialization([&](OpBuilder &builder, Type resultType,

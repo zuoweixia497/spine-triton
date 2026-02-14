@@ -595,6 +595,31 @@ LogicalResult MaskState::parseSplat(triton::SplatOp splatOp, const Location loc,
     return failure();
   }
 
+  // Special handling for i1 (bool) splat: the mask represents an "all or
+  // nothing" condition. Generate: dim[i] = select(bool, shape[i], 0)
+  //
+  // This ensures correct semantics when combined with another mask via AND:
+  //   result[i] = min(select(bool, shape[i], 0), other[i])
+  //
+  // When bool=true:  min(shape[i], other[i]) = other[i] (since other[i] <= shape[i])
+  // When bool=false: min(0, other[i]) = 0
+  //
+  // This is the correct "all or nothing" behavior for row masks.
+  auto srcType = cast<IntegerType>(src.getType());
+  if (srcType.getWidth() == 1) {
+    auto zeroAttr = builder.getIndexAttr(0);
+    for (auto s : dstShape) {
+      auto shapeAttr = builder.getIndexAttr(s);
+      // Create: select(src, shape[i], 0)
+      auto selectOp = arith::SelectOp::create(
+          builder, loc, src,
+          ofrToIndexValue(shapeAttr, loc, builder),
+          ofrToIndexValue(zeroAttr, loc, builder));
+      this->dims.push_back(selectOp.getResult());
+    }
+    return success();
+  }
+
   if (failed(this->parse(src, loc, builder)))
     return failure();
 

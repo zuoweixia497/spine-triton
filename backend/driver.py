@@ -81,7 +81,10 @@ def _format_of(ty):
     }[ty]
 
 
-def _generate_launcher(constants, signature, smt_parallel_inside=False):
+def _generate_launcher(constants, signature, smt_parallel_inside=False, kernel_name="unknown_kernel"):
+    # Check if kernel-level proton capture is enabled at compile time
+    enable_proton_kernel_capture = os.environ.get("PROTON_KERNEL_CAPTURE", "0") != "0"
+
     arg_decls = ", ".join(
         f"{_ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
     args_format = "".join(
@@ -150,6 +153,9 @@ extern "C" {{
 int64_t spine_get_stream_threads();
 int64_t spine_require_stream();
 void spine_release_stream(int64_t);
+{'''// Proton kernel-level profiling APIs
+void proton_enter_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);
+void proton_exit_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);''' if enable_proton_kernel_capture else ''}
 }}
 
 using kernel_ptr_t = void(*)({kernel_arg_decls} int, int, int, int, int, int);
@@ -196,9 +202,13 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
 }}
 
 
+{f'static constexpr const char* KERNEL_NAME = "{kernel_name}";' if enable_proton_kernel_capture else ''}
+
 static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_t kernel_ptr, {arg_decls}) {{
   {smt_parallel_inside_arg}
   if (gridX*gridY*gridZ <= 0) return;
+  {'// Auto kernel capture: record kernel entry' if enable_proton_kernel_capture else ''}
+  {'proton_enter_kernel(KERNEL_NAME, gridX, gridY, gridZ);' if enable_proton_kernel_capture else ''}
   int64_t stream_threads = spine_get_stream_threads();
   int64_t gridX_out = (gridX + stream_threads - 1) / stream_threads;
   {' '.join(f'StridedMemRefType<char, 0> ptr_arg{i} = {{static_cast<char *>(arg{i}), static_cast<char *>(arg{i}), 0}};'
@@ -233,7 +243,8 @@ static void _launch(int gridX, int gridY, int gridZ, int64_t stream, kernel_ptr_
     }},
        {{gridX, gridY, gridZ}});
   }}
-
+  {'// Auto kernel capture: record kernel exit' if enable_proton_kernel_capture else ''}
+  {'proton_exit_kernel(KERNEL_NAME, gridX, gridY, gridZ);' if enable_proton_kernel_capture else ''}
   }}
 
 static PyObject* launch(PyObject* self, PyObject* args) {{
@@ -475,8 +486,10 @@ class CPULauncher(object):
         signature = {cst_key(key): value for key,
                      value in src.signature.items()}
         smt_parallel_inside = metadata.smt_parallel_inside
+        # Get kernel name for auto proton capture
+        kernel_name = src.fn.__name__ if hasattr(src, 'fn') and hasattr(src.fn, '__name__') else "unknown_kernel"
         launcher_src = _generate_launcher(
-            constants, signature, smt_parallel_inside)
+            constants, signature, smt_parallel_inside, kernel_name)
         mod = compile_module(launcher_src, "__spine_triton_kernel_launcher")
         self.launch = mod.launch
 

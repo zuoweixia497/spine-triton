@@ -63,8 +63,14 @@ def _attn_fwd_inner(
 
         qk = qk * qk_scale
 
+        mask_n = (start_n + offs_n) < N_CTX
+        mask_n_4d = tl.reshape(mask_n, (1, num_n_tiles, 1, MICRO_N))
+        qk = tl.where(mask_n_4d, qk, -1.0e6)
+
         if STAGE == 2:
-            mask = offs_m_4d >= (start_n + offs_n_4d)
+            mask_causal = offs_m_4d >= (start_n + offs_n_4d)
+            mask_n = (start_n + offs_n_4d) < N_CTX
+            mask = mask_causal & mask_n
             qk = tl.where(mask, qk, -1.0e6)
 
         # qk_max calc
@@ -129,7 +135,7 @@ def _attn_fwd(
     num_ctas: tl.constexpr,
 ):
 
-    NUM_BLOCKS_M = N_CTX // BLOCK_M
+    NUM_BLOCKS_M = tl.cdiv(N_CTX, BLOCK_M)
     NUM_BLOCKS = NUM_BLOCKS_M * Z * H
 
     pid = tl.program_id(0)
@@ -240,11 +246,12 @@ def _attn_fwd(
         m_i = m_i + tl.math.log(l_i)
         accumulator = acc_2d / l_i[:, None]
 
+        mask_m = offs_m < N_CTX
         m_ptrs = M + task_hz_idx * N_CTX + offs_m
-        tl.store(m_ptrs, m_i.to(M.type.element_ty))
+        tl.store(m_ptrs, m_i.to(M.type.element_ty), mask=mask_m)
 
         # Cast back to output type (e.g. float16) before storing
-        tl.store(O_block_ptr, accumulator.to(Out.type.element_ty))
+        tl.store(O_block_ptr, accumulator.to(Out.type.element_ty), boundary_check=(0, 1))
 
 
 def flash_attention_forward(q, k, v, sm_scale, is_causal=False, num_ctas=16):

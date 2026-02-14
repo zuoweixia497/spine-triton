@@ -550,34 +550,172 @@ def main():
     proton.finalize()
 ```
 
-### 8.6 TODO: CPU 自动 Kernel 捕获
+### 8.6 CPU 自动 Kernel 捕获
 
-> **🚧 待实现功能**
+> **✅ 已实现功能** (v1.2)
 >
-> 类似 GPU 的 CUPTI，CPU 也可以实现自动 kernel 捕获。实现思路：
->
-> 在 `spine-triton/backend/driver.py` 的 `_launch` 函数中添加 hook：
->
-> ```cpp
-> static void _launch(int gridX, int gridY, int gridZ, int64_t stream,
->                     kernel_ptr_t kernel_ptr, ...) {
->     // TODO: 在这里添加 proton hook
->     // proton_enter_kernel("kernel_name", gridX, gridY, gridZ);
->
->     // ... 原有的 kernel 调度代码 ...
->
->     // proton_exit_kernel("kernel_name");
-> }
-> ```
->
-> 这样就可以实现：
-> - 自动记录每个 kernel 的执行时间
-> - 记录 grid 配置 (gridX, gridY, gridZ)
-> - 不需要修改用户代码
->
-> **相关文件**:
-> - `spine-triton/backend/driver.py`: `_launch` 函数
-> - `spine-triton/backend/include/ExecutionEngine/CpuProtonRuntime.cpp`: Proton runtime
+> 类似 GPU 的 CUPTI，CPU 现在支持自动 kernel 捕获，无需修改用户代码。
+
+#### 8.6.1 启用方式
+
+设置环境变量 `PROTON_KERNEL_CAPTURE=1` 即可启用自动 kernel 捕获。
+
+> **⚠️ 重要**: 这是一个 **编译时** 选项。环境变量在 kernel 首次编译时读取，决定是否生成 proton hook 代码。
+> - 如果不设置此环境变量，生成的代码中 **完全没有** proton 相关调用，零性能开销
+> - 启用后需要清除 triton 缓存以重新编译 kernel
+
+```bash
+# 首次启用时，清除缓存以强制重新编译
+rm -rf ~/.triton/cache
+
+# 方式1: 控制台输出 (程序退出时自动打印)
+PROTON_KERNEL_CAPTURE=1 python3 your_script.py
+
+# 方式2: Chrome Trace 输出 (程序退出时自动保存)
+PROTON_KERNEL_CAPTURE=1 PROTON_OUTPUT=trace.json python3 your_script.py
+
+# 方式3: Hatchet 格式输出
+PROTON_KERNEL_CAPTURE=1 PROTON_OUTPUT=profile.hatchet python3 your_script.py
+
+# 禁用时 (默认)，无任何性能开销
+python3 your_script.py
+```
+
+> **注意**:
+> - 不需要在代码中使用 `proton.start()` 或 `proton.finalize()`！
+> - 自动 kernel 捕获是完全自动的，程序退出时会自动输出结果
+> - 只需在首次启用或切换设置时清除缓存一次，避免 `TRITON_ALWAYS_COMPILE=1` 影响性能测试
+
+#### 8.6.2 使用示例
+
+**完全自动，无需修改代码：**
+
+```python
+# your_script.py - 普通的 Triton 代码，不需要任何 proton 相关代码
+import triton
+import triton.language as tl
+from triton.backends.spine_triton.driver import CPUDriver
+
+triton.runtime.driver.set_active(CPUDriver())
+
+@triton.jit
+def my_kernel(x_ptr, y_ptr, N, BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(0)
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < N
+    x = tl.load(x_ptr + offsets, mask=mask)
+    tl.store(y_ptr + offsets, x * 2, mask=mask)
+
+# 直接调用，自动记录
+import torch
+x = torch.randn(1024)
+y = torch.empty(1024)
+my_kernel[(4,)](x, y, 1024, BLOCK_SIZE=256)
+```
+
+运行：
+```bash
+# 首次运行前清除缓存
+rm -rf ~/.triton/cache
+
+# 控制台输出
+PROTON_KERNEL_CAPTURE=1 python3 your_script.py
+
+# Chrome Trace 输出
+PROTON_KERNEL_CAPTURE=1 PROTON_OUTPUT=trace.json python3 your_script.py
+```
+
+程序退出时自动输出：
+```
+=== CPU Proton Profiling Results (Aggregated) ===
+Scope                     Count      Total(cyc)       Min(cyc)       Max(cyc)       Avg(cyc)       Avg(us)
+----------------------------------------------------------------------------------------------------------
+my_kernel[4,1,1]              1         240000         240000         240000         240000         10.00
+```
+
+#### 8.6.3 实现原理
+
+在 `spine-triton/backend/driver.py` 的 `_launch` 函数中自动添加了 hook：
+
+```cpp
+static void _launch(int gridX, int gridY, int gridZ, int64_t stream,
+                    kernel_ptr_t kernel_ptr, ...) {
+    // 自动记录 kernel 开始
+    proton_enter_kernel(KERNEL_NAME, gridX, gridY, gridZ);
+
+    // ... kernel 调度代码 ...
+
+    // 自动记录 kernel 结束
+    proton_exit_kernel(KERNEL_NAME, gridX, gridY, gridZ);
+}
+```
+
+`CpuProtonProfiler` 在程序退出时自动调用 `dump()` 输出结果：
+- 如果设置了 `PROTON_OUTPUT=xxx.json`，输出 Chrome Trace 格式
+- 如果设置了 `PROTON_OUTPUT=xxx.hatchet`，输出 Hatchet 格式
+- 否则输出到控制台
+
+> **注意**: 这段代码只在 `PROTON_KERNEL_CAPTURE=1` 时编译进去，否则完全不存在。
+
+#### 8.6.4 功能特性
+
+| 特性 | 说明 |
+|------|------|
+| **自动捕获** | 无需修改 kernel 代码，自动记录所有 kernel 执行 |
+| **Kernel 名称** | 自动获取 kernel 函数名 |
+| **Grid 配置** | 记录 gridX, gridY, gridZ 配置 |
+| **零开销** | 未启用时生成的代码中完全没有 proton 调用 (编译时决定) |
+| **自动输出** | 程序退出时自动输出，无需手动调用 |
+| **输出格式** | 控制台 (默认)、Chrome Trace (.json)、Hatchet (.hatchet) |
+
+#### 8.6.5 输出示例
+
+**控制台输出** (默认):
+
+```
+=== CPU Proton Profiling Results (Aggregated) ===
+Scope                     Count      Total(cyc)       Min(cyc)       Max(cyc)       Avg(cyc)       Avg(us)
+----------------------------------------------------------------------------------------------------------
+mm_kernel[4,4,1]            100       240000000        2300000        2500000        2400000        100.00
+softmax_kernel[8,1,1]        50        60000000        1100000        1300000        1200000         50.00
+```
+
+**Chrome Trace 输出** (`PROTON_OUTPUT=trace.json`):
+
+生成 `trace.json` 文件，在 `chrome://tracing` 或 `https://ui.perfetto.dev` 中可以看到：
+- 每个 kernel 的时间线
+- 详细的时间戳和持续时间
+- 多线程执行视图
+
+#### 8.6.6 与 Kernel 内部插桩的对比
+
+| 方法 | 粒度 | 代码修改 | 输出方式 | 使用场景 |
+|------|------|----------|----------|----------|
+| **自动 Kernel 捕获** | Kernel 级别 | 不需要 | 自动输出 (控制台/JSON/Hatchet) | 快速了解各 kernel 耗时分布 |
+| **Kernel 内部插桩** (`pl.enter_scope`) | 操作级别 | 需要 | 需要 profiler.profile() | 深入分析 kernel 内部瓶颈 |
+
+#### 8.6.7 常见问题
+
+**Q: 为什么没有生成 trace.json 文件？**
+
+A: 请检查：
+1. 是否设置了 `PROTON_KERNEL_CAPTURE=1`
+2. 是否设置了 `PROTON_OUTPUT=trace.json`
+3. 是否清除了缓存以重新编译 kernel（`rm -rf ~/.triton/cache`）
+4. 程序是否正常退出（异常退出可能不会触发输出）
+
+正确的命令：
+```bash
+# 首次运行或切换设置时
+rm -rf ~/.triton/cache
+PROTON_KERNEL_CAPTURE=1 PROTON_OUTPUT=trace.json python3 your_script.py
+```
+
+#### 8.6.8 相关文件
+
+- `spine-triton/backend/driver.py`: `_launch` 函数、`_generate_launcher` 函数
+- `spine-triton/backend/include/ExecutionEngine/CpuProtonRuntime.cpp`: `proton_enter_kernel`、`proton_exit_kernel` API
+- 测试脚本: `quick_test.py` (演示两种模式的使用)
 
 ---
 
@@ -602,6 +740,7 @@ def main():
 
 - **v1.0** (2026-01-30): 初始版本，支持基本的 Proton 分析功能
 - **v1.1** (2026-01-30): 添加 Kernel 外部 Proton 分析 (proton.scope) 文档，GPU vs CPU 差异说明
+- **v1.2** (2026-02-03): 实现 CPU 自动 Kernel 捕获功能，通过 `PROTON_KERNEL_CAPTURE=1` 启用
 - 后续版本将根据用户反馈和功能更新进行补充
 
 ---

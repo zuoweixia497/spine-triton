@@ -1422,6 +1422,13 @@ struct DescriptorLoadViewOpPattern : public OpRewritePattern<DescriptorLoadViewO
       return failure();
     Value rankedMemRef = unrealizedCast.getOperand(0);
 
+    // Trace through memref.cast to get the original reinterpret_cast if present
+    // This allows us to work with the actual dynamic sizes from reinterpret_cast
+    // instead of the static sizes from memref.cast
+    if (auto castOp = rankedMemRef.getDefiningOp<memref::CastOp>()) {
+      rankedMemRef = castOp.getSource();
+    }
+
     auto memrefTy = dyn_cast<MemRefType>(rankedMemRef.getType());
     if (!memrefTy || memrefTy.getRank() != 2)
       return failure();
@@ -1429,7 +1436,8 @@ struct DescriptorLoadViewOpPattern : public OpRewritePattern<DescriptorLoadViewO
     Location loc = op.getLoc();
 
     Value dim0Value, dim1Value;
-    if (auto rc = findReinterpretCastThroughCast(rankedMemRef)) {
+    if (auto rc = rankedMemRef.getDefiningOp<memref::ReinterpretCastOp>()) {
+      // Get actual sizes from reinterpret_cast
       auto sizes = rc.getMixedSizes();
       if (sizes.size() != 2)
         return failure();
@@ -1481,7 +1489,8 @@ struct DescriptorLoadViewOpPattern : public OpRewritePattern<DescriptorLoadViewO
         /*restrict=*/rewriter.getUnitAttr());
 
     if (!hasTranspose) {
-      return convertWithoutTranspose(op, tensor, size_m2, size_k2, tile0, tile1, rewriter);
+      auto shapes = op.getShape();
+      return convertWithoutTranspose(op, tensor, size_m2, size_k2, shapes[0], shapes[1], tile0, tile1, rewriter);
     }
 
     auto permutation = transposeOp.getPermutation();
@@ -1490,22 +1499,10 @@ struct DescriptorLoadViewOpPattern : public OpRewritePattern<DescriptorLoadViewO
       return failure();
     }
 
-    return convertWithTranspose(op, transposeOp, tensor, size_m2, size_k2, tile0, tile1, rewriter);
+    return convertWithTranspose(op, transposeOp, tensor, size_m2, size_k2, shapes[0], shapes[1], tile0, tile1, rewriter);
   }
 
 private:
-  memref::ReinterpretCastOp findReinterpretCastThroughCast(Value v) const {
-    while (true) {
-      if (auto rc = v.getDefiningOp<memref::ReinterpretCastOp>())
-        return rc;
-      if (auto c = v.getDefiningOp<memref::CastOp>()) {
-        v = c.getSource();
-        continue;
-      }
-      return nullptr;
-    }
-  }
-
   Value getDimValueFromTypeOrDimOp(Location loc, Value memref, int64_t dim,
                                   PatternRewriter &rewriter) const {
     auto ty = cast<MemRefType>(memref.getType());
@@ -1518,23 +1515,25 @@ private:
   LogicalResult convertWithoutTranspose(DescriptorLoadViewOp op,
                                        Value tensor,
                                        Value dim0, Value dim1,
+                                       int32_t shape0, int32_t shape1,
                                        int32_t tile0, int32_t tile1,
                                        PatternRewriter &rewriter) const {
     Location loc = op.getLoc();
-    Value tile0Value = arith::ConstantIndexOp::create(rewriter, loc, tile0);
-    Value tile1Value = arith::ConstantIndexOp::create(rewriter, loc, tile1);
 
-    Value packedRows = createCeilDivUI(rewriter, loc, dim0, tile0Value);
-    Value packedCols = createCeilDivUI(rewriter, loc, dim1, tile1Value);
+    // Use expected shape (not actual data size) to calculate packed dimensions
+    // This ensures the output has the expected static shape, with padding for boundary cases
+    int64_t packedRowsStatic = (shape0 + tile0 - 1) / tile0;
+    int64_t packedColsStatic = (shape1 + tile1 - 1) / tile1;
 
     SmallVector<int64_t, 4> shapeDims = {
-        ShapedType::kDynamic, ShapedType::kDynamic, tile0, tile1};
+        packedRowsStatic, packedColsStatic, tile0, tile1};
 
     auto tensorType = cast<RankedTensorType>(tensor.getType());
     Type elementType = tensorType.getElementType();
     auto emptyType = RankedTensorType::get(shapeDims, elementType);
 
-    Value emptyTensor = tensor::EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
+    // Static shape, no dynamic sizes needed
+    Value emptyTensor = tensor::EmptyOp::create(rewriter, loc, emptyType, ValueRange{});
     Value paddingValue = createZeroConstant(rewriter, loc, elementType);
 
     Value packedResult = linalg::PackOp::create(rewriter, loc, tensor, emptyTensor,
@@ -1557,24 +1556,27 @@ private:
                                     linalg::TransposeOp transposeOp,
                                     Value tensor,
                                     Value dim0, Value dim1,
+                                    int32_t shape0, int32_t shape1,
                                     int32_t tile0, int32_t tile1,
                                     PatternRewriter &rewriter) const {
     Location loc = op.getLoc();
-    Value tile0Value = arith::ConstantIndexOp::create(rewriter, loc, tile0);
-    Value tile1Value = arith::ConstantIndexOp::create(rewriter, loc, tile1);
 
-    Value packedRows = createCeilDivUI(rewriter, loc, dim1, tile1Value);
-    Value packedCols = createCeilDivUI(rewriter, loc, dim0, tile0Value);
+    // Use expected shape (not actual data size) to calculate packed dimensions
+    // This ensures static output shapes for downstream operations
+    // For transpose case: output shape is [ceil(shape1/tile1), ceil(shape0/tile0), tile1, tile0]
+    int64_t packedRowsStatic = (shape1 + tile1 - 1) / tile1;
+    int64_t packedColsStatic = (shape0 + tile0 - 1) / tile0;
 
     auto tensorType = cast<RankedTensorType>(tensor.getType());
     Type elementType = tensorType.getElementType();
 
     SmallVector<int64_t, 4> shapeDims = {
-        ShapedType::kDynamic, ShapedType::kDynamic, tile1, tile0};
+        packedRowsStatic, packedColsStatic, tile1, tile0};
 
     auto emptyType = RankedTensorType::get(shapeDims, elementType);
 
-    Value emptyTensor = tensor::EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
+    // Static shape, no dynamic sizes needed
+    Value emptyTensor = tensor::EmptyOp::create(rewriter, loc, emptyType, ValueRange{});
     Value paddingValue = createZeroConstant(rewriter, loc, elementType);
 
     Value packedResult = linalg::PackOp::create(rewriter, loc, tensor, emptyTensor,
