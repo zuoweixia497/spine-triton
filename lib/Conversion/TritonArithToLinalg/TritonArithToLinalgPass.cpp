@@ -121,8 +121,8 @@ public:
         func::FuncDialect, arith::ArithDialect, math::MathDialect,
         linalg::LinalgDialect, affine::AffineDialect, scf::SCFDialect,
         cf::ControlFlowDialect, tensor::TensorDialect,
-        bufferization::BufferizationDialect, ttx::TritonTilingExtDialect,
-        tts::TritonStructuredDialect>();
+        bufferization::BufferizationDialect, memref::MemRefDialect,
+        ttx::TritonTilingExtDialect, tts::TritonStructuredDialect>();
 
     target.addLegalOp<ModuleOp>();
 
@@ -157,6 +157,11 @@ public:
     if (pidsToFuncArgs) {
       target.addIllegalOp<triton::GetProgramIdOp, triton::GetNumProgramsOp>();
     }
+
+    // PrintOp must be converted (generates LLVM ops)
+    target.addIllegalOp<triton::PrintOp>();
+    target.addLegalOp<LLVM::GlobalOp, LLVM::AddressOfOp, LLVM::LLVMFuncOp,
+                      LLVM::CallOp>();
 
     if (addptrToLinalg) {
       target.addDynamicallyLegalOp<triton::AddPtrOp>([](triton::AddPtrOp op) {

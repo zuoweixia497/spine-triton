@@ -202,6 +202,10 @@ def _llir_to_so(llir: str, metadata):
         cpu_backend_path = Path(__file__).resolve().parent
         include_dir = os.path.join(cpu_backend_path, "include")
         so_path = os.path.join(tmpdir, ".so")
+
+        # Runtime library path for spine_print_unranked_memref
+        runtime_lib_dir = os.path.join(cpu_backend_path.parent.parent, "_C")
+
         gcc_flags = []
         if cpu_arch == "riscv64":
             gcc_flags.extend(
@@ -215,8 +219,10 @@ def _llir_to_so(llir: str, metadata):
                 f"-I{py_include_dir}",
                 f"-I{include_dir}",
                 f"-L{py_lib_dir}",
+                f"-L{runtime_lib_dir}",
                 "-shared",
                 f"-l{py_lib}",
+                "-lSpineTritonRuntime",
                 "-fPIC",
                 "-o",
                 so_path,

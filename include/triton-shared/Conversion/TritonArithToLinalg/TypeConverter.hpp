@@ -64,6 +64,14 @@ TritonLinalgTypeConverter::TritonLinalgTypeConverter() {
     return convertTritonPointerType(type);
   });
 
+  // Identity conversions for types that don't need conversion
+  addConversion([](Type type) -> std::optional<Type> {
+    // Allow RankedTensorType, scalar types, and other standard types to pass through
+    if (isa<RankedTensorType, IntegerType, FloatType, IndexType>(type))
+      return type;
+    return std::nullopt;
+  });
+
   auto addUnrealizedCast = [](OpBuilder &builder, Type type, ValueRange inputs,
                               Location loc) {
     auto cast = UnrealizedConversionCastOp::create(builder, loc, type, inputs);

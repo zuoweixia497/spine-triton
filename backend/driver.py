@@ -450,10 +450,13 @@ class CPUUtils(object):
             return
         self._initialized = True
 
+        # Runtime library path for spine_print_unranked_memref
+        runtime_lib_dir = os.path.join(dirname, "..", "..", "_C")
+
         mod = compile_module_from_src(
             src=Path(os.path.join(dirname, "driver.c")).read_text(),
             name="cpu_utils",
-            library_dirs=[],
+            library_dirs=[runtime_lib_dir],
             include_dirs=[include_dir],
             libraries=["dl"],
         )

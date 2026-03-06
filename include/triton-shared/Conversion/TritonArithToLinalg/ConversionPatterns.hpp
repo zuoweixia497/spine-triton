@@ -39,6 +39,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "TypeConverter.hpp"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 
 #include <numeric>
 #include <optional>
@@ -3022,6 +3023,270 @@ static void populateExternElementwiseOpToMLIROps(RewritePatternSet &patterns) {
   patterns.add<ExternElementwiseBinaryOpConverter,
                ExternElementwiseUnaryOpConverter>(patterns.getContext());
 }
+
+//===----------------------------------------------------------------------===//
+// PrintOp Conversion
+//===----------------------------------------------------------------------===//
+
+struct PrintOpConverter : public OpConversionPattern<triton::PrintOp> {
+  using OpConversionPattern<triton::PrintOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::PrintOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto func = op->getParentOfType<FunctionOpInterface>();
+
+    // Extract program IDs from function arguments
+    // spine-triton convention: last 6 args = [num_progs_x/y/z, pid_x/y/z]
+    auto numArgs = func.getNumArguments();
+    Value pid0 = func.getArgument(numArgs - 3); // pid_x
+    Value pid1 = func.getArgument(numArgs - 2); // pid_y
+    Value pid2 = func.getArgument(numArgs - 1); // pid_z
+
+    StringRef prefix = op.getPrefix();
+    bool hex = op.getHex();
+    auto isSigned = op.getIsSigned();
+
+    // Case 1: No operands (string-only print)
+    if (op.getNumOperands() == 0) {
+      createPrintfCall(rewriter, loc, moduleOp, prefix, pid0, pid1, pid2,
+                       std::nullopt, false, false);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    // Case 2: Process each operand
+    for (size_t i = 0; i < op.getNumOperands(); i++) {
+      Value operand = adaptor.getOperands()[i];
+      bool isSignedVal = isSigned[i];
+
+      if (auto tensorType = dyn_cast<RankedTensorType>(operand.getType())) {
+        // Tensor operand: alloc memref + call spine_print_unranked_memref
+        createTensorPrintCall(rewriter, loc, moduleOp, prefix, operand,
+                              tensorType, pid0, pid1, pid2, isSignedVal, hex);
+      } else {
+        // Scalar operand: call printf
+        createPrintfCall(rewriter, loc, moduleOp, prefix, pid0, pid1, pid2,
+                         operand, isSignedVal, hex);
+      }
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  /// Create a global string constant and return a pointer to it.
+  /// Uses LLVM::GlobalOp pattern (same as XSMTToLinalg proton support).
+  Value createStringConstant(ConversionPatternRewriter &rewriter, Location loc,
+                             ModuleOp moduleOp, StringRef str,
+                             StringRef globalNamePrefix) const {
+    auto ctx = rewriter.getContext();
+
+    // Build unique global name
+    std::string globalName = (globalNamePrefix + str).str();
+    for (auto &c : globalName) {
+      if (!llvm::isAlnum(c) && c != '_')
+        c = '_';
+    }
+    if (globalName.size() > 64)
+      globalName.resize(64);
+
+    auto globalOp = moduleOp.lookupSymbol<LLVM::GlobalOp>(globalName);
+    if (!globalOp) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      std::string strWithNull = str.str() + '\0';
+      auto strAttr = rewriter.getStringAttr(strWithNull);
+      auto arrayType = LLVM::LLVMArrayType::get(
+          IntegerType::get(ctx, 8), strWithNull.size());
+
+      globalOp = LLVM::GlobalOp::create(rewriter, loc, arrayType,
+          /*isConstant=*/true, LLVM::Linkage::Internal, globalName, strAttr);
+    }
+
+    Type ptrType = LLVM::LLVMPointerType::get(ctx);
+    return LLVM::AddressOfOp::create(rewriter, loc, ptrType, globalName)
+        .getResult();
+  }
+
+  /// Get or create LLVM declaration for printf (variadic).
+  LLVM::LLVMFuncOp getOrAddPrintfDecl(ConversionPatternRewriter &rewriter,
+                                       ModuleOp moduleOp) const {
+    StringRef funcName = "printf";
+    if (auto existing = moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
+      return existing;
+
+    auto ctx = rewriter.getContext();
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    auto i32Type = IntegerType::get(ctx, 32);
+    auto funcType =
+        LLVM::LLVMFunctionType::get(i32Type, {ptrType}, /*isVarArg=*/true);
+
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(moduleOp.getBody());
+    auto fn = LLVM::LLVMFuncOp::create(rewriter, UnknownLoc::get(ctx),
+                                        funcName, funcType);
+    fn.setLinkage(LLVM::Linkage::External);
+    return fn;
+  }
+
+  /// Get or create func declaration for spine_print_unranked_memref.
+  /// Uses func::FuncOp so that unranked memref types are automatically
+  /// lowered to LLVM struct {i64, ptr} by the memref-to-llvm pass.
+  func::FuncOp
+  getOrAddPrintMemrefDecl(ConversionPatternRewriter &rewriter,
+                          ModuleOp moduleOp, Type elemType) const {
+    StringRef funcName = "spine_print_unranked_memref";
+    if (auto existing = moduleOp.lookupSymbol<func::FuncOp>(funcName))
+      return existing;
+
+    auto ctx = rewriter.getContext();
+    auto i32Type = IntegerType::get(ctx, 32);
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    auto unrankedType = UnrankedMemRefType::get(elemType, /*memorySpace=*/0);
+
+    SmallVector<Type> argsType = {
+        i32Type, i32Type, i32Type, // pid_x, pid_y, pid_z
+        ptrType,                    // prefix string
+        unrankedType,               // unranked memref
+        i32Type,                    // bitWidth
+        i32Type,                    // isInteger
+        i32Type,                    // isSigned
+        i32Type                     // asHex
+    };
+    auto funcType = FunctionType::get(ctx, argsType, {i32Type});
+
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(moduleOp.getBody());
+    auto fn = func::FuncOp::create(rewriter, UnknownLoc::get(ctx),
+                                    funcName, funcType);
+    fn.setPrivate();
+    return fn;
+  }
+
+  /// Get printf format specifier for a scalar type.
+  std::string getFormatSubstr(Type type, bool hex, bool isSigned) const {
+    if (hex) {
+      unsigned bw = type.getIntOrFloatBitWidth();
+      std::string ret = "0x%0" + std::to_string(bw / 4);
+      if (bw > 32)
+        ret += "ll";
+      ret += "x";
+      return ret;
+    }
+    if (type.isBF16() || type.isF16() || type.isF32() || type.isF64())
+      return "%f";
+    if (type.isInteger()) {
+      if (type.getIntOrFloatBitWidth() == 64)
+        return isSigned ? "%lli" : "%llu";
+      return isSigned ? "%i" : "%u";
+    }
+    return "%d";
+  }
+
+  /// Promote value for printf ABI: int<32 → i32, float<64 → f64.
+  Value printfPromoteValue(ConversionPatternRewriter &rewriter, Location loc,
+                           Value value, bool isSigned) const {
+    auto type = value.getType();
+    auto ctx = rewriter.getContext();
+    if (type.isIntOrIndex() && type.getIntOrFloatBitWidth() < 32) {
+      auto i32Type = IntegerType::get(ctx, 32);
+      return isSigned ? arith::ExtSIOp::create(rewriter, loc, i32Type, value)
+                              .getResult()
+                      : arith::ExtUIOp::create(rewriter, loc, i32Type, value)
+                              .getResult();
+    }
+    if (type.isBF16() || type.isF16() || type.isF32()) {
+      return arith::ExtFOp::create(rewriter, loc, Float64Type::get(ctx), value)
+          .getResult();
+    }
+    return value;
+  }
+
+  /// Emit printf call for scalar or string-only print.
+  void createPrintfCall(ConversionPatternRewriter &rewriter, Location loc,
+                        ModuleOp moduleOp, StringRef prefix, Value pid0,
+                        Value pid1, Value pid2, std::optional<Value> arg,
+                        bool isSigned, bool hex) const {
+    // Format: "(%i, %i, %i) prefix: <value>\n"
+    std::string fmt = "(%i, %i, %i) " + prefix.str();
+    if (arg.has_value()) {
+      fmt += ": ";
+      fmt += getFormatSubstr(arg->getType(), hex, isSigned);
+    }
+    fmt += "\n";
+
+    Value fmtStr =
+        createStringConstant(rewriter, loc, moduleOp, fmt, "printf_fmt_");
+
+    SmallVector<Value> args = {fmtStr, pid0, pid1, pid2};
+    if (arg.has_value())
+      args.push_back(printfPromoteValue(rewriter, loc, *arg, isSigned));
+
+    LLVM::CallOp::create(rewriter, loc, getOrAddPrintfDecl(rewriter, moduleOp),
+                          args);
+  }
+
+  /// Emit tensor print: alloc memref → copy → cast unranked → call runtime →
+  /// dealloc.
+  void createTensorPrintCall(ConversionPatternRewriter &rewriter, Location loc,
+                             ModuleOp moduleOp, StringRef prefix,
+                             Value tensorOperand, RankedTensorType tensorType,
+                             Value pid0, Value pid1, Value pid2, bool isSigned,
+                             bool hex) const {
+    auto ctx = rewriter.getContext();
+    auto elemType = tensorType.getElementType();
+
+    // Pointer element → i64
+    if (isa<triton::PointerType>(elemType))
+      elemType = IntegerType::get(ctx, 64);
+
+    // 1. Allocate memref
+    auto memrefType = MemRefType::get(tensorType.getShape(), elemType);
+    Value alloc = memref::AllocOp::create(rewriter, loc, memrefType);
+
+    // 2. Copy tensor → memref: materialize tensor to buffer first, then copy
+    Value srcMemref = bufferization::ToBufferOp::create(rewriter,
+        loc, memrefType, tensorOperand);
+    memref::CopyOp::create(rewriter, loc, srcMemref, alloc);
+
+    // 3. Cast to UnrankedMemRef
+    auto unrankedType =
+        UnrankedMemRefType::get(elemType, memrefType.getMemorySpace());
+    Value unranked =
+        memref::CastOp::create(rewriter, loc, unrankedType, alloc);
+
+    // 4. Prepare call arguments
+    Value prefixVal =
+        createStringConstant(rewriter, loc, moduleOp, prefix, "print_pfx_");
+    auto i32Type = IntegerType::get(ctx, 32);
+    Value bw = arith::ConstantOp::create(
+        rewriter, loc, i32Type,
+        rewriter.getI32IntegerAttr(elemType.getIntOrFloatBitWidth()));
+    Value isInt = arith::ConstantOp::create(
+        rewriter, loc, i32Type, rewriter.getI32IntegerAttr(elemType.isInteger() ? 1 : 0));
+    Value isSig = arith::ConstantOp::create(
+        rewriter, loc, i32Type, rewriter.getI32IntegerAttr(isSigned ? 1 : 0));
+    Value asHex = arith::ConstantOp::create(
+        rewriter, loc, i32Type, rewriter.getI32IntegerAttr(hex ? 1 : 0));
+
+    // 5. Call spine_print_unranked_memref via func::CallOp
+    // The unranked memref will be automatically lowered to {i64, ptr} struct
+    // by the memref-to-llvm pass
+    SmallVector<Value> callArgs = {pid0, pid1, pid2, prefixVal, unranked,
+                                   bw,   isInt, isSig, asHex};
+    auto funcDecl = getOrAddPrintMemrefDecl(rewriter, moduleOp, elemType);
+    func::CallOp::create(rewriter, loc, funcDecl, callArgs);
+
+    // Note: intentionally skip memref.dealloc — spine-mlir's e2e pipeline
+    // does not support free side-effects. The small leak is acceptable for
+    // debug printing.
+  }
+};
 
 }
 }

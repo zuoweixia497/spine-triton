@@ -41,6 +41,10 @@ struct PromoteMemrefToPtrArg : public OpRewritePattern<func::FuncOp> {
 
   LogicalResult matchAndRewrite(func::FuncOp funcOp,
                                 PatternRewriter &rewriter) const override {
+    // Skip function declarations (no body) — e.g. spine_print_unranked_memref
+    if (funcOp.isDeclaration())
+      return failure();
+
     Block &entryBlock = funcOp.getBody().front();
     MLIRContext *ctx = funcOp->getContext();
     SmallVector<UnrealizedConversionCastOp> castOps;
