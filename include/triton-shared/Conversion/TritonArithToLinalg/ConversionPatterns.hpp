@@ -21,7 +21,6 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
@@ -890,50 +889,177 @@ struct AssertConverter : public OpConversionPattern<triton::AssertOp> {
   LogicalResult
   matchAndRewrite(triton::AssertOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = rewriter.getContext();
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto func = op->getParentOfType<FunctionOpInterface>();
+
+    // 1. Extract program IDs from function arguments (same as PrintOpConverter)
+    auto numArgs = func.getNumArguments();
+    Value pid0 = func.getArgument(numArgs - 3);
+    Value pid1 = func.getArgument(numArgs - 2);
+    Value pid2 = func.getArgument(numArgs - 1);
+
+    // 2. Reduce tensor condition to scalar i1 via AND reduction
     Value condVal = op.getCondition();
-
-    auto assertMessage =
-          llvm::formatv("Assertion `{0}` failed", op.getMessage());
-
-    // The condition can only be I1 or I1Tensor (integer or tensor) from TritonOps.td.
-    // Tensors will always be RankedTensorType.
+    Value scalarCond;
     if (isa<mlir::IntegerType>(condVal.getType())) {
-      // handle scalar case
-      mlir::cf::AssertOp::create(rewriter, op.getLoc(), condVal,
-                                          assertMessage.str());
-    } else if (auto tensorType = dyn_cast<RankedTensorType>(condVal.getType())) {
-      // handle tensor case
-      int64_t rank = tensorType.getRank();
-
-      // create identity mapping for access pattern
-      SmallVector<AffineMap, 3> indexingMaps{AffineMap::getMultiDimIdentityMap(rank, rewriter.getContext())};
-
-      // loops do not depend on each other
-      SmallVector<utils::IteratorType, 3> iteratorTypes(rank, utils::IteratorType::parallel);
-
-      linalg::GenericOp::create(rewriter,
-        op.getLoc(),
-        TypeRange{},
-        condVal,
-        ValueRange{},
-        ArrayRef<AffineMap>{indexingMaps},
-        ArrayRef<utils::IteratorType>{iteratorTypes},
-        [&](OpBuilder &b, Location loc, ValueRange args) {
-          // obtain the element in the tensor
-          Value element = args[0];
-
-          // make a cf.assert for the current element
-          mlir::cf::AssertOp::create(b, loc, element, assertMessage.str());
-
-          linalg::YieldOp::create(b, loc);
-        });
+      scalarCond = condVal;
+    } else if (auto tensorType =
+                   dyn_cast<RankedTensorType>(condVal.getType())) {
+      scalarCond = reduceCondTensor(rewriter, loc, condVal, tensorType);
     } else {
       op.emitError("Unexpected type in triton::AssertOp");
       return failure();
     }
 
+    // 3. Extract location info (file, line, func) from MLIR Location
+    StringRef file = "unknown";
+    StringRef funcName = "unknown";
+    int line = 0;
+    extractLocationInfo(loc, file, funcName, line);
+
+    // 4. Create string constants for message, file, func
+    Value msgStr = createAssertStringConstant(rewriter, loc, moduleOp,
+                                              op.getMessage(), "assert_msg_");
+    Value fileStr = createAssertStringConstant(rewriter, loc, moduleOp, file,
+                                               "assert_file_");
+    Value funcStr = createAssertStringConstant(rewriter, loc, moduleOp,
+                                               funcName, "assert_func_");
+
+    // 5. Create line number constant
+    auto i32Type = IntegerType::get(ctx, 32);
+    Value lineVal = arith::ConstantOp::create(rewriter, loc, i32Type,
+                                              rewriter.getI32IntegerAttr(line));
+
+    // 6. Call spine_assert(pid0, pid1, pid2, cond, msg, file, line, func)
+    auto assertFn = getOrAddSpineAssertDecl(rewriter, moduleOp);
+    SmallVector<Value> callArgs = {pid0,    pid1,    pid2,    scalarCond,
+                                   msgStr,  fileStr, lineVal, funcStr};
+    LLVM::CallOp::create(rewriter, loc, assertFn, callArgs);
+
     rewriter.eraseOp(op);
     return success();
+  }
+
+private:
+  /// Reduce a tensor<...xi1> to a scalar i1 via AND reduction.
+  Value reduceCondTensor(ConversionPatternRewriter &rewriter, Location loc,
+                         Value condTensor,
+                         RankedTensorType tensorType) const {
+    auto ctx = rewriter.getContext();
+    auto i1Type = IntegerType::get(ctx, 1);
+    int64_t rank = tensorType.getRank();
+
+    // Create rank-0 init tensor with value `true`
+    auto initTensorType = RankedTensorType::get({}, i1Type);
+    Value trueVal = arith::ConstantOp::create(
+        rewriter, loc, i1Type, rewriter.getIntegerAttr(i1Type, 1));
+    Value initTensor =
+        bufferization::AllocTensorOp::create(rewriter, loc, initTensorType,
+                                             ValueRange{});
+    initTensor =
+        tensor::InsertOp::create(rewriter, loc, trueVal, initTensor,
+                                 ValueRange{});
+
+    // linalg.reduce with AND across all dimensions
+    SmallVector<int64_t> reductionDims;
+    for (int64_t i = 0; i < rank; ++i)
+      reductionDims.push_back(i);
+
+    auto reduceOp = linalg::ReduceOp::create(
+        rewriter, loc, condTensor, initTensor, reductionDims,
+        [&](OpBuilder &b, Location innerLoc, ValueRange args) {
+          Value andVal =
+              arith::AndIOp::create(b, innerLoc, args[0], args[1]);
+          linalg::YieldOp::create(b, innerLoc, andVal);
+        });
+
+    // Extract scalar from rank-0 tensor result
+    Value result = reduceOp.getResults()[0];
+    return tensor::ExtractOp::create(rewriter, loc, result, ValueRange{});
+  }
+
+  /// Extract file, func, line from MLIR Location (following triton-cpu).
+  static void extractLocationInfo(Location loc, StringRef &file,
+                                  StringRef &funcName, int &line) {
+    while (auto callLoc = dyn_cast<CallSiteLoc>(loc))
+      loc = callLoc.getCallee();
+
+    if (auto fileLineColLoc = dyn_cast<FileLineColLoc>(loc)) {
+      file = fileLineColLoc.getFilename();
+      line = fileLineColLoc.getLine();
+    }
+  }
+
+  /// Create a global string constant and return a pointer to it.
+  Value createAssertStringConstant(ConversionPatternRewriter &rewriter,
+                                   Location loc, ModuleOp moduleOp,
+                                   StringRef str,
+                                   StringRef globalNamePrefix) const {
+    auto ctx = rewriter.getContext();
+
+    std::string globalName = (globalNamePrefix + str).str();
+    for (auto &c : globalName) {
+      if (!llvm::isAlnum(c) && c != '_')
+        c = '_';
+    }
+    if (globalName.size() > 64)
+      globalName.resize(64);
+
+    auto globalOp = moduleOp.lookupSymbol<LLVM::GlobalOp>(globalName);
+    if (!globalOp) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      std::string strWithNull = str.str() + '\0';
+      auto strAttr = rewriter.getStringAttr(strWithNull);
+      auto arrayType = LLVM::LLVMArrayType::get(IntegerType::get(ctx, 8),
+                                                 strWithNull.size());
+
+      globalOp = LLVM::GlobalOp::create(rewriter, loc, arrayType,
+                                        /*isConstant=*/true,
+                                        LLVM::Linkage::Internal, globalName,
+                                        strAttr);
+    }
+
+    Type ptrType = LLVM::LLVMPointerType::get(ctx);
+    return LLVM::AddressOfOp::create(rewriter, loc, ptrType, globalName)
+        .getResult();
+  }
+
+  /// Get or create LLVM declaration for spine_assert.
+  /// Signature: void spine_assert(i32, i32, i32, i1, ptr, ptr, i32, ptr)
+  LLVM::LLVMFuncOp
+  getOrAddSpineAssertDecl(ConversionPatternRewriter &rewriter,
+                          ModuleOp moduleOp) const {
+    StringRef funcName = "spine_assert";
+    if (auto existing = moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
+      return existing;
+
+    auto ctx = rewriter.getContext();
+    auto i32Type = IntegerType::get(ctx, 32);
+    auto i1Type = IntegerType::get(ctx, 1);
+    auto ptrType = LLVM::LLVMPointerType::get(ctx);
+    auto voidType = LLVM::LLVMVoidType::get(ctx);
+
+    SmallVector<Type> argsType = {
+        i32Type, i32Type, i32Type, // pid_x, pid_y, pid_z
+        i1Type,                     // condition
+        ptrType,                    // message
+        ptrType,                    // file
+        i32Type,                    // line
+        ptrType                     // func
+    };
+    auto funcType =
+        LLVM::LLVMFunctionType::get(voidType, argsType, /*isVarArg=*/false);
+
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(moduleOp.getBody());
+    auto fn = LLVM::LLVMFuncOp::create(rewriter, UnknownLoc::get(ctx),
+                                        funcName, funcType);
+    fn.setLinkage(LLVM::Linkage::External);
+    return fn;
   }
 };
 
