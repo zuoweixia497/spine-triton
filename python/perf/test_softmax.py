@@ -58,7 +58,7 @@ def softmax_kernel(
             row_minus_max = row - row_max_total
             numerator = tl.exp(row_minus_max)
             denominator += tl.sum(numerator, axis=0)
-            tl.store(output_block_ptr, numerator, boundary_check=(0,))
+            tl.store(output_block_ptr, numerator.to(input_ptr.type.element_ty), boundary_check=(0,))
 
         for col_idx in range(0, n_cols, COL_SIZE):
             output_block_ptr = tl.make_block_ptr(
@@ -70,8 +70,8 @@ def softmax_kernel(
                 order=(0,)
             )
             exp_out = tl.load(output_block_ptr, boundary_check=(0,))
-            softmax_output = exp_out / denominator
-            tl.store(output_block_ptr, softmax_output, boundary_check=(0,))
+            softmax_output = exp_out.to(tl.float32) / denominator
+            tl.store(output_block_ptr, softmax_output.to(input_ptr.type.element_ty), boundary_check=(0,))
 
 
 def softmax(x):
@@ -80,7 +80,7 @@ def softmax(x):
     y = torch.empty_like(x)
 
     COL_SIZE = 64
-    ROW_SIZE = 64
+    ROW_SIZE = min(64, n_rows)
 
     def grid(META): return (
         triton.cdiv(n_rows, META["ROW_SIZE"]),
@@ -99,28 +99,72 @@ def softmax(x):
 if __name__ == "__main__":
     torch.manual_seed(0)
 
-    M, N = 1024, 1000
-    dtype = torch.float32
+    test_shape_list = [(1024, 1024), (512, 512), (256, 256), (128, 128), (32, 32)]
+    test_dtype_list = [torch.float32, torch.float16]
+    test_warm_up = 5
+    test_iterations = 100
 
-    x = torch.randn(M, N, device='cpu', dtype=dtype)
+    # ====================================================================
+    # Phase 1: Correctness Validation
+    # ====================================================================
+    print("=" * 80)
+    print("Phase 1: Correctness Validation")
+    print("=" * 80)
 
-    y_torch = torch.softmax(x, dim=1)
+    for test_dtype in test_dtype_list:
+        for test_shape in test_shape_list:
+            M, N = test_shape
+            x = torch.randn(M, N, device='cpu', dtype=test_dtype)
+            y_triton = softmax(x)
+            y_torch = torch.softmax(x, dim=1)
+            is_correct = torch.allclose(y_triton, y_torch, atol=1e-2, rtol=1e-2)
+            max_diff = torch.max(torch.abs(y_triton - y_torch)).item()
+            status = "✅ PASS" if is_correct else f"❌ FAIL (max_diff={max_diff:.2e})"
+            print(f"  softmax      | {str(test_dtype):15} | {str(test_shape):15} | {status}")
 
-    y_triton = softmax(x)
+    # ====================================================================
+    # Phase 2: Triton Performance
+    # ====================================================================
+    print()
+    print("=" * 80)
+    print("Phase 2: Triton Kernel Performance")
+    print("=" * 80)
 
-    if torch.allclose(y_triton, y_torch, atol=1e-2, rtol=1e-2):
-        print("✅ Success! Triton result matches PyTorch result.")
-    else:
-        print("❌ Failure! Results do not match.")
+    for test_dtype in test_dtype_list:
+        print(f"\n  dtype: {test_dtype}")
+        header = f"  {'Op':12}"
+        for shape in test_shape_list:
+            header += f" | {str(shape):>22}"
+        print(f"  {'-' * (16 + 25 * len(test_shape_list))}")
+        print(header)
+        print(f"  {'-' * (16 + 25 * len(test_shape_list))}")
 
-    start = time.time()
-    for _ in range(1000):
-        C = softmax(x)
-    end = time.time()
-    print(f"Time: {end - start}")
+        row = f"  {'softmax':12}"
+        for test_shape in test_shape_list:
+            M, N = test_shape
+            x = torch.randn(M, N, device='cpu', dtype=test_dtype)
 
-    start = time.time()
-    for _ in range(1000):
-        C = torch.softmax(x, dim=1)
-    end = time.time()
-    print(f"Time: {end - start}")
+            # Warmup
+            for _ in range(test_warm_up):
+                _ = softmax(x)
+
+            # Benchmark
+            start = time.time()
+            for _ in range(test_iterations):
+                _ = softmax(x)
+            triton_time = (time.time() - start) / test_iterations * 1000  # ms
+
+            n_elements = x.numel()
+            throughput = n_elements / (triton_time / 1000)  # elements/sec
+            if throughput >= 1e9:
+                tp_str = f"{triton_time:.2f}ms {throughput/1e9:.2f}G/s"
+            elif throughput >= 1e6:
+                tp_str = f"{triton_time:.2f}ms {throughput/1e6:.2f}M/s"
+            else:
+                tp_str = f"{triton_time:.2f}ms {throughput:.0f}/s"
+            row += f" | {tp_str:>22}"
+        print(row)
+
+        print()
+
+    print("=" * 80)

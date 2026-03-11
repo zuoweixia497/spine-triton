@@ -360,68 +360,79 @@ if __name__ == "__main__":
     test_dtype_list = [torch.float16, torch.float32]
     test_causal_list = [False, True]
 
-    print("Flash Attention Performance Test")
-    print("=================================")
+    # ====================================================================
+    # Phase 1: Correctness Validation
+    # ====================================================================
+    print("=" * 80)
+    print("Phase 1: Correctness Validation")
+    print("=" * 80)
 
     for is_causal in test_causal_list:
         causal_str = "Causal" if is_causal else "Non-Causal"
-        print(f"\n--- {causal_str} Attention ---")
-
         for test_dtype in test_dtype_list:
-            print(f"\n[Testing Dtype: {test_dtype}]")
             for test_shape in test_shape_list:
                 try:
                     batch, heads, seq_len, head_dim = test_shape
-
                     q = torch.randn(test_shape, dtype=test_dtype, device="cpu")
                     k = torch.randn(test_shape, dtype=test_dtype, device="cpu")
                     v = torch.randn(test_shape, dtype=test_dtype, device="cpu")
                     sm_scale = 1.0 / (head_dim ** 0.5)
 
-                    # Warm up
-                    for _ in range(test_warm_up):
-                        out = flash_attention_forward(q, k, v, sm_scale, is_causal, num_ctas)
+                    out = flash_attention_forward(q, k, v, sm_scale, is_causal, num_ctas)
+                    ref = pytorch_attention(q, k, v, sm_scale, is_causal)
 
-                    # Benchmark triton kernel
+                    atol = 1e-2 if test_dtype == torch.float16 else 1e-4
+                    is_correct = torch.allclose(out, ref, atol=atol, rtol=atol)
+                    max_diff = (out - ref).abs().max().item()
+                    status = "✅ PASS" if is_correct else f"❌ FAIL (max_diff={max_diff:.2e})"
+                    print(f"  {causal_str:10} | {str(test_dtype):15} | {str(test_shape):25} | {status}")
+                except Exception as e:
+                    print(f"  {causal_str:10} | {str(test_dtype):15} | {str(test_shape):25} | ❌ ERROR: {e}")
+
+    # ====================================================================
+    # Phase 2: Triton Performance
+    # ====================================================================
+    print()
+    print("=" * 80)
+    print("Phase 2: Triton Kernel Performance")
+    print("=" * 80)
+
+    for is_causal in test_causal_list:
+        causal_str = "Causal" if is_causal else "Non-Causal"
+
+        for test_dtype in test_dtype_list:
+            print(f"\n  {causal_str} | dtype: {test_dtype}")
+            header = f"  {'Shape':25}"
+            header += f" | {'Time (ms)':>12} | {'GFLOPS':>12}"
+            print(f"  {'-' * 58}")
+            print(header)
+            print(f"  {'-' * 58}")
+
+            for test_shape in test_shape_list:
+                try:
+                    batch, heads, seq_len, head_dim = test_shape
+                    q = torch.randn(test_shape, dtype=test_dtype, device="cpu")
+                    k = torch.randn(test_shape, dtype=test_dtype, device="cpu")
+                    v = torch.randn(test_shape, dtype=test_dtype, device="cpu")
+                    sm_scale = 1.0 / (head_dim ** 0.5)
+
+                    # Warmup
+                    for _ in range(test_warm_up):
+                        _ = flash_attention_forward(q, k, v, sm_scale, is_causal, num_ctas)
+
+                    # Benchmark
                     start = time.time()
                     for _ in range(test_iterations):
-                        out = flash_attention_forward(q, k, v, sm_scale, is_causal, num_ctas)
-                    end = time.time()
-                    triton_time = 1000 * (end - start) / test_iterations
-
-                    # Benchmark pytorch reference
-                    for _ in range(test_warm_up):
-                        ref = pytorch_attention(q, k, v, sm_scale, is_causal)
-
-                    start = time.time()
-                    for _ in range(test_iterations):
-                        ref = pytorch_attention(q, k, v, sm_scale, is_causal)
-                    end = time.time()
-                    pytorch_time = 1000 * (end - start) / test_iterations
+                        _ = flash_attention_forward(q, k, v, sm_scale, is_causal, num_ctas)
+                    triton_time = 1000 * (time.time() - start) / test_iterations
 
                     flops = 4 * batch * heads * seq_len * seq_len * head_dim
-                    gflops_triton = test_iterations * flops / 1e9 / (triton_time * test_iterations / 1000)
-                    gflops_pytorch = test_iterations * flops / 1e9 / (pytorch_time * test_iterations / 1000)
-                    speedup = pytorch_time / triton_time
+                    gflops = flops / 1e9 / (triton_time / 1000)
 
-                    print(
-                        f"shape {test_shape}: "
-                        f"Triton {triton_time:.3f} ms ({gflops_triton:.2f} GFLOPS), "
-                        f"PyTorch {pytorch_time:.3f} ms ({gflops_pytorch:.2f} GFLOPS), "
-                        f"Speedup {speedup:.2f}x"
-                    )
-
-                    # Verify correctness
-                    # Lower tolerance slightly for float16 accumulation differences
-                    atol = 1e-2 if test_dtype == torch.float16 else 1e-4
-                    if not torch.allclose(out, ref, atol=atol, rtol=atol):
-                        max_diff = (out - ref).abs().max().item()
-                        print(f"  WARNING: Results differ! Max diff: {max_diff:.6f}")
-
+                    print(f"  {str(test_shape):25} | {triton_time:12.2f} | {gflops:12.2f}")
                 except Exception as e:
-                    import traceback
-                    traceback.print_exc()
-                    print(f"dtype {test_dtype} shape {test_shape}, Failed: {str(e)}")
+                    print(f"  {str(test_shape):25} | ERROR: {e}")
 
-    print("\n=================================")
-    print("Performance test completed.")
+            print()
+
+    print("=" * 80)

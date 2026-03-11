@@ -48,7 +48,9 @@ def exp_kernel(
         )
 
         x = tl.load(in_block_ptr, boundary_check=(0,))
-        y = tl_extra_shim.exp(x)
+        x_fp32 = x.to(tl.float32)
+        y = tl_extra_shim.exp(x_fp32)
+        y = y.to(x.dtype)
         tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
@@ -87,7 +89,9 @@ def cos_kernel(
         )
 
         x = tl.load(in_block_ptr, boundary_check=(0,))
-        y = tl.cos(x)
+        x_fp32 = x.to(tl.float32)
+        y = tl.cos(x_fp32)
+        y = y.to(x.dtype)
         tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
@@ -126,7 +130,9 @@ def sin_kernel(
         )
 
         x = tl.load(in_block_ptr, boundary_check=(0,))
-        y = tl.sin(x)
+        x_fp32 = x.to(tl.float32)
+        y = tl.sin(x_fp32)
+        y = y.to(x.dtype)
         tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
@@ -165,7 +171,9 @@ def tanh_kernel(
         )
 
         x = tl.load(in_block_ptr, boundary_check=(0,))
-        y = tl_extra_shim.tanh(x)
+        x_fp32 = x.to(tl.float32)
+        y = tl_extra_shim.tanh(x_fp32)
+        y = y.to(x.dtype)
         tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
@@ -204,7 +212,9 @@ def erf_kernel(
         )
 
         x = tl.load(in_block_ptr, boundary_check=(0,))
-        y = tl_extra_shim.erf(x)
+        x_fp32 = x.to(tl.float32)
+        y = tl_extra_shim.erf(x_fp32)
+        y = y.to(x.dtype)
         tl.store(out_block_ptr, y, boundary_check=(0,))
 
 
@@ -337,7 +347,9 @@ def gelu_none_kernel(
 
         # GeLU formula: 0.5 * x * (1 + erf(x / sqrt(2)))
         scale: tl.constexpr = 0.7071067811  # 1 / sqrt(2)
-        y = 0.5 * x * (1.0 + tl_extra_shim.erf(x * scale))
+        x_fp32 = x.to(tl.float32)
+        y = 0.5 * x_fp32 * (1.0 + tl_extra_shim.erf(x_fp32 * scale))
+        y = y.to(x.dtype)
 
         tl.store(out_block_ptr, y, boundary_check=(0,))
 
@@ -417,21 +429,6 @@ def benchmark_triton_kernel(kernel, x, num_iterations=100, num_ctas=16, num_warm
     return elapsed
 
 
-def benchmark_torch_op(op_func, x, num_iterations=100, num_warmup=10):
-    """Benchmark a PyTorch operation"""
-    # Warmup
-    for _ in range(num_warmup):
-        _ = op_func(x)
-
-    # Benchmark
-    start = time.time()
-    for _ in range(num_iterations):
-        _ = op_func(x)
-    elapsed = (time.time() - start) / num_iterations * 1000  # Convert to ms
-
-    return elapsed
-
-
 def validate_kernel(kernel, torch_func, x, num_ctas=16, atol=1e-4, rtol=1e-4):
     """Validate Triton kernel output against PyTorch reference"""
     output_triton = torch.empty_like(x)
@@ -453,7 +450,7 @@ if __name__ == "__main__":
     num_ctas = 16
 
     test_shape_list = [(1024, 1024), (512, 512), (256, 256), (128, 128), (32, 32)]
-    test_dtype_list = [torch.float32]
+    test_dtype_list = [torch.float32, torch.float16]
 
     # (kernel, torch_func, atol, rtol)
     test_ops = {
@@ -470,39 +467,54 @@ if __name__ == "__main__":
         "gelu_tanh": (gelu_tanh_kernel, lambda x: torch.nn.functional.gelu(x, approximate="tanh"), 1e-3, 1e-3),
     }
 
-    print("=" * 100)
-    print("Elementwise Operations - Triton vs PyTorch Benchmark")
-    print("=" * 100)
+    # ====================================================================
+    # Phase 1: Correctness Validation
+    # ====================================================================
+    print("=" * 80)
+    print("Phase 1: Correctness Validation")
+    print("=" * 80)
 
     for op_name, (triton_kernel, torch_func, atol, rtol) in test_ops.items():
-        print(f"\n{'#' * 100}")
-        print(f"{'#':^100}")
-        print(f"# {op_name.upper():^96} #")
-        print(f"{'#':^100}")
-        print(f"{'#' * 100}\n")
-
         for test_dtype in test_dtype_list:
-            print(f"  dtype: {test_dtype}")
-            print(f"  {'-' * 96}")
-            print(f"  {'Shape':20} | {'Triton (ms)':15} | {'PyTorch (ms)':15} | {'Speedup':10} | {'Status':15}")
-            print(f"  {'-' * 96}")
+            x = torch.randn(test_shape_list[0], dtype=test_dtype, device="cpu")
+            is_correct, max_diff = validate_kernel(triton_kernel, torch_func, x, num_ctas, atol, rtol)
+            status = "✅ PASS" if is_correct else f"❌ FAIL (max_diff={max_diff:.2e})"
+            print(f"  {op_name:12} | {str(test_dtype):15} | {status}")
 
+    # ====================================================================
+    # Phase 2: Triton Performance
+    # ====================================================================
+    print()
+    print("=" * 80)
+    print("Phase 2: Triton Kernel Performance")
+    print("=" * 80)
+
+    for test_dtype in test_dtype_list:
+        print(f"\n  dtype: {test_dtype}")
+        # Table header
+        header = f"  {'Op':12}"
+        for shape in test_shape_list:
+            header += f" | {str(shape):>22}"
+        print(f"  {'-' * (16 + 25 * len(test_shape_list))}")
+        print(header)
+        print(f"  {'-' * (16 + 25 * len(test_shape_list))}")
+
+        for op_name, (triton_kernel, torch_func, atol, rtol) in test_ops.items():
+            row = f"  {op_name:12}"
             for test_shape in test_shape_list:
                 x = torch.randn(test_shape, dtype=test_dtype, device="cpu")
-
-                # Correctness validation
-                is_correct, max_diff = validate_kernel(triton_kernel, torch_func, x, num_ctas, atol, rtol)
-                status = "✅ PASS" if is_correct else f"❌ FAIL (diff={max_diff:.2e})"
-
-                # Performance benchmark
                 triton_time = benchmark_triton_kernel(triton_kernel, x, test_iterations, num_ctas, test_warm_up)
-                torch_time = benchmark_torch_op(torch_func, x, test_iterations, test_warm_up)
-                speedup = torch_time / triton_time if triton_time > 0 else 0
+                n_elements = x.numel()
+                throughput = n_elements / (triton_time / 1000)  # elements/sec
+                if throughput >= 1e9:
+                    tp_str = f"{triton_time:.2f}ms {throughput/1e9:.2f}G/s"
+                elif throughput >= 1e6:
+                    tp_str = f"{triton_time:.2f}ms {throughput/1e6:.2f}M/s"
+                else:
+                    tp_str = f"{triton_time:.2f}ms {throughput:.0f}/s"
+                row += f" | {tp_str:>22}"
+            print(row)
 
-                print(
-                    f"  {str(test_shape):20} | {triton_time:15.4f} | {torch_time:15.4f} | {speedup:10.2f}x | {status}"
-                )
+        print()
 
-            print()
-
-    print("=" * 100)
+    print("=" * 80)

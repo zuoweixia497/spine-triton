@@ -377,7 +377,7 @@ def outer_kernel(
 
 # ==================== Wrapper Functions ====================
 
-def triton_mm(a, b, block_size_m=256, block_size_n=256, micro_m=None, micro_n=None, micro_k=None):
+def triton_mm(a, b, block_size_m=128, block_size_n=128, micro_m=None, micro_n=None, micro_k=None):
     """Matrix multiplication using Triton kernel: C = A @ B"""
     if a.stride(0) > 1 and a.stride(1) > 1:
         a = a.contiguous()
@@ -841,157 +841,12 @@ if __name__ == "__main__":
 
     test_dtype_list = [torch.float32, torch.float16]
 
-    print("=" * 120)
-    print("Custom Matrix Operations - Triton vs PyTorch Benchmark")
-    print("=" * 120)
-
-    # ==================== MM ====================
-    print(f"\n{'#' * 120}")
-    print(f"# {'MATRIX MULTIPLICATION (mm)':^116} #")
-    print(f"{'#' * 120}\n")
-
-    for test_dtype in test_dtype_list:
-        print(f"  dtype: {test_dtype}")
-        print(f"  {'-' * 116}")
-        print(
-            f"  {'Shape (M,N,K)':25} | {'Triton (ms)':15} | {'PyTorch (ms)':15} | "
-            f"{'Triton GFLOPS':15} | {'PyTorch GFLOPS':15} | {'Speedup':10}"
-        )
-        print(f"  {'-' * 116}")
-
-        for test_shape in test_shape_list:
-            M, N, K = test_shape
-            try:
-                triton_time, torch_time, triton_gflops, torch_gflops, speedup = benchmark_mm(
-                    M, N, K, dtype=test_dtype, num_warmup=test_warm_up, num_iterations=test_iterations,
-                )
-                print(
-                    f"  {str(test_shape):25} | {triton_time:15.4f} | {torch_time:15.4f} | "
-                    f"{triton_gflops:15.2f} | {torch_gflops:15.2f} | {speedup:10.2f}x"
-                )
-            except Exception as e:
-                print(f"  {str(test_shape):25} | Failed: {str(e)}")
-        print()
-
-    # ==================== ADDMM ====================
-    print(f"\n{'#' * 120}")
-    print(f"# {'ADDMM (bias + A @ B)':^116} #")
-    print(f"{'#' * 120}\n")
-
-    for test_dtype in test_dtype_list:
-        print(f"  dtype: {test_dtype}")
-        print(f"  {'-' * 116}")
-        print(
-            f"  {'Shape (M,N,K)':25} | {'Triton (ms)':15} | {'PyTorch (ms)':15} | "
-            f"{'Triton GFLOPS':15} | {'PyTorch GFLOPS':15} | {'Speedup':10}"
-        )
-        print(f"  {'-' * 116}")
-
-        for test_shape in test_shape_list:
-            M, N, K = test_shape
-            try:
-                triton_time, torch_time, triton_gflops, torch_gflops, speedup = benchmark_addmm(
-                    M, N, K, dtype=test_dtype, num_warmup=test_warm_up, num_iterations=test_iterations,
-                )
-                print(
-                    f"  {str(test_shape):25} | {triton_time:15.4f} | {torch_time:15.4f} | "
-                    f"{triton_gflops:15.2f} | {torch_gflops:15.2f} | {speedup:10.2f}x"
-                )
-            except Exception as e:
-                print(f"  {str(test_shape):25} | Failed: {str(e)}")
-        print()
-
-    # ==================== BMM ====================
-    print(f"\n{'#' * 120}")
-    print(f"# {'BATCHED MATRIX MULTIPLICATION (bmm)':^116} #")
-    print(f"{'#' * 120}\n")
-
-    for test_dtype in test_dtype_list:
-        print(f"  dtype: {test_dtype}")
-        print(f"  {'-' * 116}")
-        print(
-            f"  {'Shape (B,M,N,K)':25} | {'Triton (ms)':15} | {'PyTorch (ms)':15} | "
-            f"{'Triton GFLOPS':15} | {'PyTorch GFLOPS':15} | {'Speedup':10}"
-        )
-        print(f"  {'-' * 116}")
-
-        for test_shape in test_bmm_shape_list:
-            B, M, N, K = test_shape
-            try:
-                triton_time, torch_time, triton_gflops, torch_gflops, speedup = benchmark_bmm(
-                    B, M, N, K, dtype=test_dtype, num_warmup=test_warm_up, num_iterations=test_iterations,
-                )
-                print(
-                    f"  {str(test_shape):25} | {triton_time:15.4f} | {torch_time:15.4f} | "
-                    f"{triton_gflops:15.2f} | {torch_gflops:15.2f} | {speedup:10.2f}x"
-                )
-            except Exception as e:
-                print(f"  {str(test_shape):25} | Failed: {str(e)}")
-        print()
-
-    # ==================== MV ====================
-    print(f"\n{'#' * 120}")
-    print(f"# {'MATRIX-VECTOR MULTIPLICATION (mv)':^116} #")
-    print(f"{'#' * 120}\n")
-
-    for test_dtype in test_dtype_list:
-        print(f"  dtype: {test_dtype}")
-        print(f"  {'-' * 116}")
-        print(
-            f"  {'Shape (M,N)':25} | {'Triton (ms)':15} | {'PyTorch (ms)':15} | "
-            f"{'Triton GFLOPS':15} | {'PyTorch GFLOPS':15} | {'Speedup':10}"
-        )
-        print(f"  {'-' * 116}")
-
-        for test_shape in test_mv_shape_list:
-            M, N = test_shape
-            try:
-                triton_time, torch_time, triton_gflops, torch_gflops, speedup = benchmark_mv(
-                    M, N, dtype=test_dtype, num_warmup=test_warm_up, num_iterations=test_iterations,
-                )
-                print(
-                    f"  {str(test_shape):25} | {triton_time:15.4f} | {torch_time:15.4f} | "
-                    f"{triton_gflops:15.2f} | {torch_gflops:15.2f} | {speedup:10.2f}x"
-                )
-            except Exception as e:
-                print(f"  {str(test_shape):25} | Failed: {str(e)}")
-        print()
-
-    # ==================== OUTER ====================
-    print(f"\n{'#' * 120}")
-    print(f"# {'OUTER PRODUCT (outer)':^116} #")
-    print(f"{'#' * 120}\n")
-
-    for test_dtype in test_dtype_list:
-        print(f"  dtype: {test_dtype}")
-        print(f"  {'-' * 116}")
-        print(
-            f"  {'Shape (M,N)':25} | {'Triton (ms)':15} | {'PyTorch (ms)':15} | "
-            f"{'Triton GFLOPS':15} | {'PyTorch GFLOPS':15} | {'Speedup':10}"
-        )
-        print(f"  {'-' * 116}")
-
-        for test_shape in test_mv_shape_list:
-            M, N = test_shape
-            try:
-                triton_time, torch_time, triton_gflops, torch_gflops, speedup = benchmark_outer(
-                    M, N, dtype=test_dtype, num_warmup=test_warm_up, num_iterations=test_iterations,
-                )
-                print(
-                    f"  {str(test_shape):25} | {triton_time:15.4f} | {torch_time:15.4f} | "
-                    f"{triton_gflops:15.2f} | {torch_gflops:15.2f} | {speedup:10.2f}x"
-                )
-            except Exception as e:
-                print(f"  {str(test_shape):25} | Failed: {str(e)}")
-        print()
-
-    # ==================== Validation ====================
-    print(f"\n{'#' * 120}")
-    print(f"# {'VALIDATION':^116} #")
-    print(f"{'#' * 120}\n")
-
-    print("  Validating Triton kernels against PyTorch reference...")
-    print(f"  {'-' * 116}")
+    # ================================================================
+    # Phase 1: Correctness Validation
+    # ================================================================
+    print("=" * 90)
+    print("Phase 1: Correctness Validation")
+    print("=" * 90)
 
     all_passed = True
 
@@ -1065,10 +920,107 @@ if __name__ == "__main__":
                 print(f"  ❌ FAIL | {test_name:20} | Shape: ({M}, {N}) | Error: {str(e)}")
                 all_passed = False
 
-    print(f"\n  {'-' * 116}")
+    print(f"\n  {'-' * 80}")
     if all_passed:
         print("  ✅ All validations passed!")
     else:
         print("  ❌ Some validations failed!")
 
-    print("\n" + "=" * 120)
+    # ================================================================
+    # Phase 2: Triton Performance
+    # ================================================================
+    print("\n" + "=" * 90)
+    print("Phase 2: Triton Ops Performance")
+    print("=" * 90)
+
+    # ==================== MM ====================
+    print(f"\n  {'MATRIX MULTIPLICATION (mm)':}")
+    for test_dtype in test_dtype_list:
+        print(f"\n  dtype: {test_dtype}")
+        print(f"  {'-' * 70}")
+        print(f"  {'Shape (M,N,K)':25} | {'Time (ms)':15} | {'GFLOPS':15}")
+        print(f"  {'-' * 70}")
+
+        for test_shape in test_shape_list:
+            M, N, K = test_shape
+            try:
+                triton_time, _, triton_gflops, _, _ = benchmark_mm(
+                    M, N, K, dtype=test_dtype, num_warmup=test_warm_up, num_iterations=test_iterations,
+                )
+                print(f"  {str(test_shape):25} | {triton_time:15.4f} | {triton_gflops:15.2f}")
+            except Exception as e:
+                print(f"  {str(test_shape):25} | Failed: {str(e)}")
+
+    # ==================== ADDMM ====================
+    print(f"\n  {'ADDMM (bias + A @ B)':}")
+    for test_dtype in test_dtype_list:
+        print(f"\n  dtype: {test_dtype}")
+        print(f"  {'-' * 70}")
+        print(f"  {'Shape (M,N,K)':25} | {'Time (ms)':15} | {'GFLOPS':15}")
+        print(f"  {'-' * 70}")
+
+        for test_shape in test_shape_list:
+            M, N, K = test_shape
+            try:
+                triton_time, _, triton_gflops, _, _ = benchmark_addmm(
+                    M, N, K, dtype=test_dtype, num_warmup=test_warm_up, num_iterations=test_iterations,
+                )
+                print(f"  {str(test_shape):25} | {triton_time:15.4f} | {triton_gflops:15.2f}")
+            except Exception as e:
+                print(f"  {str(test_shape):25} | Failed: {str(e)}")
+
+    # ==================== BMM ====================
+    print(f"\n  {'BATCHED MATRIX MULTIPLICATION (bmm)':}")
+    for test_dtype in test_dtype_list:
+        print(f"\n  dtype: {test_dtype}")
+        print(f"  {'-' * 70}")
+        print(f"  {'Shape (B,M,N,K)':25} | {'Time (ms)':15} | {'GFLOPS':15}")
+        print(f"  {'-' * 70}")
+
+        for test_shape in test_bmm_shape_list:
+            B, M, N, K = test_shape
+            try:
+                triton_time, _, triton_gflops, _, _ = benchmark_bmm(
+                    B, M, N, K, dtype=test_dtype, num_warmup=test_warm_up, num_iterations=test_iterations,
+                )
+                print(f"  {str(test_shape):25} | {triton_time:15.4f} | {triton_gflops:15.2f}")
+            except Exception as e:
+                print(f"  {str(test_shape):25} | Failed: {str(e)}")
+
+    # ==================== MV ====================
+    print(f"\n  {'MATRIX-VECTOR MULTIPLICATION (mv)':}")
+    for test_dtype in test_dtype_list:
+        print(f"\n  dtype: {test_dtype}")
+        print(f"  {'-' * 70}")
+        print(f"  {'Shape (M,N)':25} | {'Time (ms)':15} | {'GFLOPS':15}")
+        print(f"  {'-' * 70}")
+
+        for test_shape in test_mv_shape_list:
+            M, N = test_shape
+            try:
+                triton_time, _, triton_gflops, _, _ = benchmark_mv(
+                    M, N, dtype=test_dtype, num_warmup=test_warm_up, num_iterations=test_iterations,
+                )
+                print(f"  {str(test_shape):25} | {triton_time:15.4f} | {triton_gflops:15.2f}")
+            except Exception as e:
+                print(f"  {str(test_shape):25} | Failed: {str(e)}")
+
+    # ==================== OUTER ====================
+    print(f"\n  {'OUTER PRODUCT (outer)':}")
+    for test_dtype in test_dtype_list:
+        print(f"\n  dtype: {test_dtype}")
+        print(f"  {'-' * 70}")
+        print(f"  {'Shape (M,N)':25} | {'Time (ms)':15} | {'GFLOPS':15}")
+        print(f"  {'-' * 70}")
+
+        for test_shape in test_mv_shape_list:
+            M, N = test_shape
+            try:
+                triton_time, _, triton_gflops, _, _ = benchmark_outer(
+                    M, N, dtype=test_dtype, num_warmup=test_warm_up, num_iterations=test_iterations,
+                )
+                print(f"  {str(test_shape):25} | {triton_time:15.4f} | {triton_gflops:15.2f}")
+            except Exception as e:
+                print(f"  {str(test_shape):25} | Failed: {str(e)}")
+
+    print("\n" + "=" * 90)
