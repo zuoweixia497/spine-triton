@@ -117,12 +117,27 @@ public:
       auto inputType = dyn_cast<MemRefType>(inputs[0].getType());
       if (!inputType)
         return nullptr;
-      // If shapes and element types match, use memref.cast for layout conversion
-      if (inputType.getShape() == resultType.getShape() &&
-          inputType.getElementType() == resultType.getElementType()) {
-        return memref::CastOp::create(builder, loc, resultType, inputs[0]).getResult();
+      // Check element type and rank match
+      if (inputType.getElementType() != resultType.getElementType() ||
+          inputType.getRank() != resultType.getRank())
+        return nullptr;
+      // Check shape compatibility: allow dynamic -> static cast
+      // memref.cast can cast from dynamic dims to static dims
+      auto inputShape = inputType.getShape();
+      auto resultShape = resultType.getShape();
+      for (size_t i = 0; i < inputShape.size(); ++i) {
+        // If input is static and result is static, they must match
+        if (!ShapedType::isDynamic(inputShape[i]) &&
+            !ShapedType::isDynamic(resultShape[i]) &&
+            inputShape[i] != resultShape[i])
+          return nullptr;
+        // If input is static but result is dynamic, that's not allowed for cast
+        if (!ShapedType::isDynamic(inputShape[i]) &&
+            ShapedType::isDynamic(resultShape[i]))
+          return nullptr;
       }
-      return nullptr;
+      // Use memref.cast for compatible type conversion (dynamic -> static or same shape)
+      return memref::CastOp::create(builder, loc, resultType, inputs[0]).getResult();
     });
 
     addSourceMaterialization([&](OpBuilder &builder, Type resultType,

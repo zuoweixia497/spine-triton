@@ -254,6 +254,28 @@ public:
     if (!baseType) {
       return rewriter.notifyMatchFailure(viewOp, "Base is not a tensor type");
     }
+
+    // Optimization: for FillOp base (e.g. zero-initialized tensor),
+    // skip the redundant alloc → materialize → subview → to_tensor chain.
+    // We can directly pack the fill result tensor without materializing to memref.
+    // This avoids generating:
+    //   %alloc = memref.alloc()
+    //   bufferization.materialize_in_destination %fill in writable %alloc
+    //   %cast = memref.cast %alloc
+    //   %t = bufferization.to_tensor %cast restrict
+    //   linalg.pack %t ...
+    // Instead, we generate:
+    //   linalg.pack %fill ...
+    if (auto fillOp = base.getDefiningOp<linalg::FillOp>()) {
+      auto tensorType = cast<RankedTensorType>(fillOp.getResult(0).getType());
+      auto shapes = tensorType.getShape();
+      SmallVector<OpFoldResult> sizes;
+      for (int64_t s : shapes) {
+        sizes.push_back(rewriter.getIndexAttr(s));
+      }
+      return convertFillDirect(viewOp, base, sizes, rewriter);
+    }
+
     auto memrefType = MemRefType::get(baseType.getShape(), baseType.getElementType());
     Value memref = memref::AllocOp::create(rewriter, loc, memrefType);
 
@@ -280,12 +302,6 @@ public:
     SmallVector<OpFoldResult> sizes;
     if (auto ViewOp = base.getDefiningOp<xsmt::ViewOp>()){
       auto shapes = ViewOp.getShape();
-      for (int64_t shape : shapes) {
-        sizes.push_back(rewriter.getIndexAttr(shape));
-      }
-    }else if (auto FillOp = base.getDefiningOp<linalg::FillOp>()){
-      auto tensorType = cast<RankedTensorType>(FillOp.getResult(0).getType());
-      auto shapes = tensorType.getShape();
       for (int64_t shape : shapes) {
         sizes.push_back(rewriter.getIndexAttr(shape));
       }
@@ -317,6 +333,80 @@ public:
 }
 
 private:
+  /// Directly pack a FillOp result tensor without going through
+  /// alloc → materialize → subview → to_tensor. This eliminates the
+  /// redundant bufferization roundtrip for zero-initialized tensors.
+  LogicalResult convertFillDirect(xsmt::ViewOp viewOp, Value baseTensor,
+                                  SmallVector<OpFoldResult> sizes,
+                                  PatternRewriter &rewriter) const {
+    Location loc = viewOp.getLoc();
+    ValueRange offsets = viewOp.getOffsets();
+    ArrayRef<int32_t> shape = viewOp.getShape();
+    ArrayRef<int32_t> microSize = viewOp.getMicroSize();
+
+    auto resultType = cast<RankedTensorType>(viewOp.getResult().getType());
+    Type elementType = resultType.getElementType();
+
+    SmallVector<OpFoldResult> offsetValues;
+    for (auto offset : offsets) {
+      offsetValues.push_back(ensureIndexType(loc, offset, rewriter));
+    }
+
+    // Compute actual slice size: min(baseSize - offset, shape)
+    auto size_m1 = subOFRs(sizes[0], offsetValues[0], loc, rewriter);
+    Value size_m2 = ofrToIndexValue(size_m1, loc, rewriter);
+    Value shape0 = ConstantIndexOp::create(rewriter, loc, shape[0]);
+    Value size_m3 = MinSIOp::create(rewriter, loc, size_m2, shape0);
+
+    auto size_n1 = subOFRs(sizes[1], offsetValues[1], loc, rewriter);
+    Value size_n2 = ofrToIndexValue(size_n1, loc, rewriter);
+    Value shape1 = ConstantIndexOp::create(rewriter, loc, shape[1]);
+    Value size_n3 = MinSIOp::create(rewriter, loc, size_n2, shape1);
+
+    // Extract the slice from the fill result tensor directly (no memref roundtrip)
+    SmallVector<int64_t, 2> sliceStaticShape = {ShapedType::kDynamic, ShapedType::kDynamic};
+    auto sliceType = RankedTensorType::get(sliceStaticShape, elementType);
+    Value slice = tensor::ExtractSliceOp::create(rewriter, loc, sliceType,
+        baseTensor,
+        ArrayRef<OpFoldResult>{offsetValues[0], offsetValues[1]},
+        ArrayRef<OpFoldResult>{size_m3, size_n3},
+        ArrayRef<OpFoldResult>{rewriter.getIndexAttr(1), rewriter.getIndexAttr(1)});
+
+    // Pack directly
+    Value tile0Value = ConstantIndexOp::create(rewriter, loc, microSize[0]);
+    Value tile1Value = ConstantIndexOp::create(rewriter, loc, microSize[1]);
+    Value packedRows = createCeilDivUI(rewriter, loc, size_m3, tile0Value);
+    Value packedCols = createCeilDivUI(rewriter, loc, size_n3, tile1Value);
+
+    SmallVector<int64_t, 4> shapeDims;
+    shapeDims.push_back(ShapedType::kDynamic);
+    shapeDims.push_back(ShapedType::kDynamic);
+    shapeDims.push_back(microSize[0]);
+    shapeDims.push_back(microSize[1]);
+    auto emptyType = RankedTensorType::get(shapeDims, elementType);
+    Value emptyTensor = EmptyOp::create(rewriter, loc, emptyType, ValueRange{packedRows, packedCols});
+
+    Value paddingValue = createZeroConstant(rewriter, loc, elementType);
+    if (!paddingValue) {
+      return rewriter.notifyMatchFailure(viewOp, "Unsupported element type for padding");
+    }
+
+    Value packedResult = linalg::PackOp::create(rewriter, loc,
+        slice,
+        emptyTensor,
+        ArrayRef<int64_t>{0, 1},
+        ArrayRef<OpFoldResult>{
+        rewriter.getIndexAttr(microSize[0]),
+        rewriter.getIndexAttr(microSize[1])
+        },
+        paddingValue,
+        ArrayRef<int64_t>{0, 1});
+
+    Value castResult = tensor::CastOp::create(rewriter, loc, resultType, packedResult);
+    rewriter.replaceOp(viewOp, castResult);
+    return success();
+  }
+
     LogicalResult convertNormal(xsmt::ViewOp viewOp, Value memrefBaseValue, SmallVector<OpFoldResult> sizes, PatternRewriter &rewriter) const {
     Location loc = viewOp.getLoc();
     Value base = viewOp.getBase();
