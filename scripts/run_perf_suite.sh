@@ -70,9 +70,6 @@ PERF_SCRIPTS=(
   echo "repo_root: $REPO_ROOT"
   echo "python: $PYTHON_BIN"
   echo "logfile: $LOGFILE"
-  echo "env: CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-}"
-  echo "env: HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES-}"
-  echo "env: TRITON_CACHE_DIR=${TRITON_CACHE_DIR-}"
   echo
 
   cd "$REPO_ROOT"

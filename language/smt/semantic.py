@@ -138,15 +138,19 @@ def mmt4d(a_packed: tl.tensor, b_packed: tl.tensor, out_unpacked: tl.tensor, _se
         a_packed.shape) == 4, f"A must be 4D packed, got {a_packed.shape}D"
     assert len(
         b_packed.shape) == 4, f"B must be 4D packed, got {b_packed.shape}D"
-    assert a_packed.shape[1] == b_packed.shape[
-        0], f"KB dim mismatch: A{a_packed.shape[1]} vs B{b_packed.shape[0]}"
-    assert a_packed.shape[3] == b_packed.shape[
-        2], f"nb dim mismatch: B{b_packed.shape[3]} vs out{b_packed.shape[2]}"
 
-    mb = a_packed.shape[0]
-    nb = b_packed.shape[1]
-    mb_micro_sizes = a_packed.shape[2]
-    nb_micro_sizes = b_packed.shape[3]
+    if a_packed.shape[1] == b_packed.shape[0] and a_packed.shape[3] == b_packed.shape[2]:
+        mb = a_packed.shape[0]
+        nb = b_packed.shape[1]
+        mb_micro_sizes = a_packed.shape[2]
+        nb_micro_sizes = b_packed.shape[3]
+    elif a_packed.shape[1] == b_packed.shape[1] and a_packed.shape[3] == b_packed.shape[3]:
+        mb = a_packed.shape[0]
+        nb = b_packed.shape[0]
+        mb_micro_sizes = a_packed.shape[2]
+        nb_micro_sizes = b_packed.shape[2]
+    else:
+        raise ValueError(f"Unsupported packing shapes A{a_packed.shape} B{b_packed.shape}")
     output_shape = [mb, nb, mb_micro_sizes, nb_micro_sizes]
     ret_type = tl.block_type(a_packed.type.scalar, output_shape)
     if out_unpacked is None:

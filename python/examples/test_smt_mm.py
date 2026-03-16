@@ -173,28 +173,78 @@ def triton_mm(a, b):
         BLOCK_SIZE_M=128,
         BLOCK_SIZE_N=128,
         BLOCK_SIZE_K=BLOCK_SIZE_K,
-        SPLIT_M=1,
+        SPLIT_M=0,
         SPLIT_MN=0,
-        SPLIT_K=0,
+        SPLIT_K=1,
         SUB_BLK_M=8,
         SUB_BLK_N=64,
-        SUB_BLK_K=32,
-        MICRO_M=8,
-        MICRO_N=16,
+        SUB_BLK_K=256,
+        MICRO_M=16,
+        MICRO_N=32,
         MICRO_K=8,
     )
     return c
 
-if __name__ == "__main__":
-
-    M, N, K = 256, 256, 512
-    A = torch.randn((M, K), dtype=torch.float32, device="cpu", requires_grad=False)
-    B = torch.randn((K, N), dtype=torch.float32, device="cpu", requires_grad=False)
+def _run_correctness(M: int, N: int, K: int, dtype=torch.float16, device: str = "cpu"):
+    A = torch.randn((M, K), dtype=dtype, device=device, requires_grad=False)
+    B = torch.randn((K, N), dtype=dtype, device=device, requires_grad=False)
 
     C = triton_mm(A, B)
-
     C_ref = torch.mm(A, B)
-
-    torch.testing.assert_close(C, C_ref, atol=1e-2, rtol=0)
-
+    torch.testing.assert_close(C, C_ref, atol=1e-1, rtol=0)
     print("PASS")
+
+
+# -----------------------------
+# Performance benchmark (GOPS)
+# -----------------------------
+def benchmark_gops(
+    M: int = 512,
+    N: int = 512,
+    K: int = 512,
+    iters: int = 100,
+    warmup: int = 10,
+    dtype=torch.float16,
+    device: str = "cpu",
+):
+    """Run matmul benchmark and report GOPS.
+
+    GOPS definition here uses GEMM FLOP count: 2 * M * N * K operations.
+    """
+    import time
+
+    A = torch.randn((M, K), dtype=dtype, device=device, requires_grad=False)
+    B = torch.randn((K, N), dtype=dtype, device=device, requires_grad=False)
+
+    # Warmup
+    for _ in range(warmup):
+        _ = triton_mm(A, B)
+
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        _ = triton_mm(A, B)
+    t1 = time.perf_counter()
+
+    avg_s = (t1 - t0) / iters
+    ops = 2.0 * float(M) * float(N) * float(K)
+    gops = ops / avg_s / 1e9
+
+    print(
+        f"[PERF] M={M}, N={N}, K={K}, iters={iters}, "
+        f"avg={avg_s * 1e3:.3f} ms, GOPS={gops:.3f}"
+    )
+
+
+# Run perf by env var:
+#   RUN_PERF=1 python test_smt_mm.py
+if __name__ == "__main__":
+    import os
+
+    M, N, K = 512, 512, 512
+    dtype = torch.float16
+    device = "cpu"
+
+    _run_correctness(M, N, K, dtype=dtype, device=device)
+
+    if os.getenv("RUN_PERF", "0") == "1":
+        benchmark_gops(M=M, N=N, K=K, iters=100, dtype=dtype, device=device)

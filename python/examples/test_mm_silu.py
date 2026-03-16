@@ -58,10 +58,8 @@ def mm_silu_kernel(
         b_descriptor_load = smt.descriptor_load(b_block_ptr, (0, 0))
         b = smt.view(b_descriptor_load, (k * SUB_BLK_K, 0), (SUB_BLK_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N))
         accumulator += smt.dot(a, b)
+        accumulator = tl_extra_shim.silu(accumulator)
     accumulator = smt.view(accumulator, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 1))
-
-    # Fused SiLU using tl_extra_shim
-    c = tl_extra_shim.silu(accumulator)
 
     c_block_ptr = tl.make_block_ptr(
         base=c_ptr,
@@ -71,7 +69,7 @@ def mm_silu_kernel(
         block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_N],
         order=[1, 0],
     )
-    tl.store(c_block_ptr, c, boundary_check=(0, 1))
+    tl.store(c_block_ptr, accumulator, boundary_check=(0, 1))
 
 
 def triton_mm_silu(a, b):

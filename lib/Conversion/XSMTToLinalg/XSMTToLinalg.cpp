@@ -68,6 +68,194 @@ Value createZeroConstant(PatternRewriter &rewriter, Location loc, Type elementTy
     return nullptr;
   }
 
+static bool isZeroOFRLocal(OpFoldResult ofr) {
+  if (auto attr = llvm::dyn_cast<Attribute>(ofr)) {
+    if (auto intAttr = llvm::dyn_cast<IntegerAttr>(attr))
+      return intAttr.getInt() == 0;
+    return false;
+  }
+  if (auto val = llvm::dyn_cast<Value>(ofr)) {
+    if (auto cst = val.getDefiningOp<arith::ConstantIndexOp>())
+      return cst.value() == 0;
+    if (auto cst = val.getDefiningOp<arith::ConstantIntOp>())
+      return cst.value() == 0;
+    if (auto cast = val.getDefiningOp<arith::IndexCastOp>()) {
+      if (auto cst = cast.getIn().getDefiningOp<arith::ConstantIntOp>())
+        return cst.value() == 0;
+    }
+  }
+  return false;
+}
+
+static bool isUnitOFRLocal(OpFoldResult ofr) {
+  if (auto attr = llvm::dyn_cast<Attribute>(ofr)) {
+    if (auto intAttr = llvm::dyn_cast<IntegerAttr>(attr))
+      return intAttr.getInt() == 1;
+    return false;
+  }
+  if (auto val = llvm::dyn_cast<Value>(ofr)) {
+    if (auto cst = val.getDefiningOp<arith::ConstantIndexOp>())
+      return cst.value() == 1;
+    if (auto cst = val.getDefiningOp<arith::ConstantIntOp>())
+      return cst.value() == 1;
+    if (auto cast = val.getDefiningOp<arith::IndexCastOp>()) {
+      if (auto cst = cast.getIn().getDefiningOp<arith::ConstantIntOp>())
+        return cst.value() == 1;
+    }
+  }
+  return false;
+}
+
+static bool sameValueOrEquivalentCast(Value lhs, Value rhs) {
+  if (lhs == rhs)
+    return true;
+
+  if (auto cast = lhs.getDefiningOp<arith::IndexCastOp>())
+    if (cast.getIn() == rhs)
+      return true;
+  if (auto cast = rhs.getDefiningOp<arith::IndexCastOp>())
+    if (cast.getIn() == lhs)
+      return true;
+
+  return false;
+}
+
+static std::optional<int64_t> getConstantIntLike(Value v) {
+  if (!v)
+    return std::nullopt;
+  if (auto cst = v.getDefiningOp<arith::ConstantIndexOp>())
+    return cst.value();
+  if (auto cst = v.getDefiningOp<arith::ConstantIntOp>())
+    return cst.value();
+  if (auto cast = v.getDefiningOp<arith::IndexCastOp>())
+    return getConstantIntLike(cast.getIn());
+  return std::nullopt;
+}
+
+static bool sameBoundedSizeExpr(Value lhs, Value rhs);
+
+static Value peelTrivialIndexExpr(Value v) {
+  while (v) {
+    if (auto cast = v.getDefiningOp<arith::IndexCastOp>()) {
+      v = cast.getIn();
+      continue;
+    }
+    if (auto minOp = v.getDefiningOp<arith::MinSIOp>()) {
+      // min(x, C) where v is already known-bounded often appears repeatedly.
+      // Keep the canonical SSA value rather than peeling further here.
+      return v;
+    }
+    break;
+  }
+  return v;
+}
+
+static bool sameMinSIOp(arith::MinSIOp lhsMin, arith::MinSIOp rhsMin) {
+  Value lhsA = peelTrivialIndexExpr(lhsMin.getLhs());
+  Value lhsB = peelTrivialIndexExpr(lhsMin.getRhs());
+  Value rhsA = peelTrivialIndexExpr(rhsMin.getLhs());
+  Value rhsB = peelTrivialIndexExpr(rhsMin.getRhs());
+
+  return (sameBoundedSizeExpr(lhsA, rhsA) && sameBoundedSizeExpr(lhsB, rhsB)) ||
+         (sameBoundedSizeExpr(lhsA, rhsB) && sameBoundedSizeExpr(lhsB, rhsA));
+}
+
+static bool sameSubIOp(arith::SubIOp lhsSub, arith::SubIOp rhsSub) {
+  return sameBoundedSizeExpr(lhsSub.getLhs(), rhsSub.getLhs()) &&
+         sameBoundedSizeExpr(lhsSub.getRhs(), rhsSub.getRhs());
+}
+
+static bool sameBoundedSizeExpr(Value lhs, Value rhs) {
+  lhs = peelTrivialIndexExpr(lhs);
+  rhs = peelTrivialIndexExpr(rhs);
+
+  if (!lhs || !rhs)
+    return false;
+  if (sameValueOrEquivalentCast(lhs, rhs))
+    return true;
+
+  if (auto lhsCst = getConstantIntLike(lhs)) {
+    if (auto rhsCst = getConstantIntLike(rhs))
+      return *lhsCst == *rhsCst;
+  }
+
+  auto lhsMin = lhs.getDefiningOp<arith::MinSIOp>();
+  auto rhsMin = rhs.getDefiningOp<arith::MinSIOp>();
+  if (lhsMin && rhsMin)
+    return sameMinSIOp(lhsMin, rhsMin);
+
+  auto lhsSub = lhs.getDefiningOp<arith::SubIOp>();
+  auto rhsSub = rhs.getDefiningOp<arith::SubIOp>();
+  if (lhsSub && rhsSub)
+    return sameSubIOp(lhsSub, rhsSub);
+
+  return false;
+}
+
+static bool sameOFR(OpFoldResult lhs, OpFoldResult rhs) {
+  auto lhsAttr = llvm::dyn_cast_if_present<Attribute>(lhs.dyn_cast<Attribute>());
+  auto rhsAttr = llvm::dyn_cast_if_present<Attribute>(rhs.dyn_cast<Attribute>());
+  if (lhsAttr && rhsAttr)
+    return lhsAttr == rhsAttr;
+
+  Value lhsVal = lhs.dyn_cast<Value>();
+  Value rhsVal = rhs.dyn_cast<Value>();
+  if (lhsVal && rhsVal)
+    return sameBoundedSizeExpr(lhsVal, rhsVal);
+
+  if (lhsAttr && rhsVal) {
+    if (auto intAttr = llvm::dyn_cast<IntegerAttr>(lhsAttr)) {
+      if (auto cst = rhsVal.getDefiningOp<arith::ConstantIndexOp>())
+        return intAttr.getInt() == cst.value();
+      if (auto cst = rhsVal.getDefiningOp<arith::ConstantIntOp>())
+        return intAttr.getInt() == cst.value();
+    }
+  }
+  if (lhsVal && rhsAttr)
+    return sameOFR(rhs, lhs);
+
+  return false;
+}
+
+static bool canElideDescriptorSubview(Value rankedMemRef, Value off0, Value off1,
+                                      Value size0, Value size1) {
+  (void)size0;
+  (void)size1;
+  if (!isZeroOFRLocal(off0) || !isZeroOFRLocal(off1))
+    return false;
+
+  auto memrefTy = llvm::dyn_cast<MemRefType>(rankedMemRef.getType());
+  return memrefTy && memrefTy.getRank() == 2;
+}
+
+static bool canElideIdentitySubview(Value memrefBaseValue,
+                                    ArrayRef<OpFoldResult> sizes,
+                                    ArrayRef<OpFoldResult> offsets,
+                                    ArrayRef<OpFoldResult> strides) {
+  auto memrefTy = llvm::dyn_cast<MemRefType>(memrefBaseValue.getType());
+  if (!memrefTy)
+    return false;
+  if (memrefTy.getRank() != static_cast<int64_t>(offsets.size()) ||
+      memrefTy.getRank() != static_cast<int64_t>(strides.size()) ||
+      memrefTy.getRank() != static_cast<int64_t>(sizes.size()))
+    return false;
+
+  if (!llvm::all_of(offsets, [](OpFoldResult ofr) { return isZeroOFRLocal(ofr); }) ||
+      !llvm::all_of(strides, [](OpFoldResult ofr) { return isUnitOFRLocal(ofr); }))
+    return false;
+
+  if (auto reinterpretCast = memrefBaseValue.getDefiningOp<memref::ReinterpretCastOp>()) {
+    auto baseSizes = reinterpretCast.getMixedSizes();
+    if (baseSizes.size() != sizes.size())
+      return false;
+    return llvm::all_of(llvm::zip(sizes, baseSizes), [](auto it) {
+      return sameOFR(std::get<0>(it), std::get<1>(it));
+    });
+  }
+
+  return true;
+}
+
 inline bool isInsideLoop(mlir::Operation *op) {
   mlir::Operation *parent = op->getParentOp();
   while (parent) {
@@ -407,7 +595,7 @@ private:
     return success();
   }
 
-    LogicalResult convertNormal(xsmt::ViewOp viewOp, Value memrefBaseValue, SmallVector<OpFoldResult> sizes, PatternRewriter &rewriter) const {
+  LogicalResult convertNormal(xsmt::ViewOp viewOp, Value memrefBaseValue, SmallVector<OpFoldResult> sizes, PatternRewriter &rewriter) const {
     Location loc = viewOp.getLoc();
     Value base = viewOp.getBase();
     ValueRange offsets = viewOp.getOffsets();
@@ -434,16 +622,25 @@ private:
     Value shape1 = ConstantIndexOp::create(rewriter, loc, shape[1]);
     Value size_n3 = MinSIOp::create(rewriter, loc, size_n2, shape1);
 
-    auto subview = memref::SubViewOp::create(rewriter, loc,
+    SmallVector<OpFoldResult> strideValues{c1, c1};
+    Value toTensorSource = memrefBaseValue;
+    auto tensorType = RankedTensorType::get({ShapedType::kDynamic, ShapedType::kDynamic}, elementType);
+
+    if (!canElideIdentitySubview(memrefBaseValue,
+                   ArrayRef<OpFoldResult>{size_m3, size_n3},
+                   offsetValues, strideValues)) {
+      auto subview = memref::SubViewOp::create(rewriter, loc,
         memrefBaseValue,
         offsetValues,
         ArrayRef<OpFoldResult>{size_m3, size_n3},
-        ArrayRef<OpFoldResult>{c1, c1});
+        strideValues);
+      toTensorSource = subview.getResult();
+      auto subviewType = cast<MemRefType>(subview.getType());
+      tensorType = RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
+    }
 
-    auto subviewType = cast<MemRefType>(subview.getType());
-    auto tensorType = RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
-    Value toTensorOp2 = bufferization::ToTensorOp::create(rewriter, loc, tensorType, subview,
-                                              /*restrict=*/rewriter.getUnitAttr());
+    Value toTensorOp2 = bufferization::ToTensorOp::create(rewriter, loc, tensorType, toTensorSource,
+                          /*restrict=*/rewriter.getUnitAttr());
 
     Value tile0Value = ConstantIndexOp::create(rewriter, loc, microSize[0]);
     Value tile1Value = ConstantIndexOp::create(rewriter, loc, microSize[1]);
@@ -700,6 +897,28 @@ private:
 struct LowerXSMTMMT4D : public OpRewritePattern<xsmt::MMT4DOp> {
   using OpRewritePattern::OpRewritePattern;
 
+  /// Returns true if the memref type is known to be contiguous in the last
+  /// dimension (i.e. last stride == 1). We use this as a conservative guard for
+  /// the "unpack directly into output buffer" optimization because downstream
+  /// lowering (e.g. spestruct.unpack) may require the destination/result memref
+  /// types to match exactly.
+  static bool hasUnitStrideInLastDim(MemRefType ty) {
+    if (!ty.hasStaticShape()) {
+      // Shape dynamic is fine; we only care about layout.
+    }
+    if (!ty.getLayout().isIdentity()) {
+      int64_t offset = 0;
+      SmallVector<int64_t, 4> strides;
+      if (failed(ty.getStridesAndOffset(strides, offset)))
+        return false;
+      if (strides.empty())
+        return false;
+      return strides.back() == 1;
+    }
+    // Identity layout implies last-dim stride is 1.
+    return true;
+  }
+
   LogicalResult matchAndRewrite(xsmt::MMT4DOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
@@ -743,30 +962,40 @@ struct LowerXSMTMMT4D : public OpRewritePattern<xsmt::MMT4DOp> {
 
         auto mmt4dOp = linalg::Mmt4DOp::create(rewriter, loc, ValueRange{a, b}, ValueRange{fillOp.getResult(0)});
 
-        RankedTensorType unpackedType = cast<RankedTensorType>(packInput.getType());
+        // Unpack directly into the output buffer (subview) as in
+        // /home/share/nfs_share/zuoweixia/ir_offline/mm_kernel_linalg1.mlir.
+        //
+        // IMPORTANT: Use the *same* memref subview that backs the pack input
+        // (operand of bufferization.to_tensor feeding linalg.pack). This keeps
+        // dest/result types stable for downstream lowerings.
+        Value destination = subview;
+        auto destMemrefTy = cast<MemRefType>(destination.getType());
 
-        SmallVector<OpFoldResult> mixedSizes =
-            tensor::getMixedSizes(rewriter, loc, packInput);
-        Value emptyUnpack = tensor::EmptyOp::create(rewriter, loc, mixedSizes, unpackedType.getElementType());
+        // Create a dynamic-shaped destination tensor view backed by the memref.
+        auto elemTy = destMemrefTy.getElementType();
+        auto dstTensorTy = RankedTensorType::get(
+          {ShapedType::kDynamic, ShapedType::kDynamic}, elemTy);
+        auto dstTensor = bufferization::ToTensorOp::create(
+            rewriter, loc, dstTensorTy, destination,
+            /*restrict=*/rewriter.getUnitAttr(),
+            /*writable=*/rewriter.getUnitAttr());
+
+        // Unpack into the destination tensor (should alias the output buffer).
         ArrayRef<int64_t> staticInnerTiles = cPackOp.getStaticInnerTiles();
-        if (staticInnerTiles.empty()) {
+        if (staticInnerTiles.empty())
           return rewriter.notifyMatchFailure(op, "static_inner_tiles is empty");
-        }
-
         SmallVector<OpFoldResult> innerTiles;
-        for (int64_t tile : staticInnerTiles) {
+        for (int64_t tile : staticInnerTiles)
           innerTiles.push_back(rewriter.getIndexAttr(tile));
-        }
-        auto unpackOp = linalg::UnPackOp::create(rewriter, loc,
-            mmt4dOp.getResult(0),
-            emptyUnpack,
-            cPackOp.getInnerDimsPos(),
-            innerTiles,
-            cPackOp.getOuterDimsPerm());
 
-        Value destination = traceDestinationFromOutput(c);
+        auto unpackOp = linalg::UnPackOp::create(
+            rewriter, loc, mmt4dOp.getResult(0), dstTensor.getResult(),
+            cPackOp.getInnerDimsPos(), innerTiles, cPackOp.getOuterDimsPerm());
 
-        auto materializeOp = bufferization::MaterializeInDestinationOp::create(rewriter, unpackOp.getLoc(), unpackOp.getResult(), destination);
+        // Keep an explicit anchor write-back. If aliasing is proven, this should
+        // become a no-op; otherwise it preserves semantics.
+        auto materializeOp = bufferization::MaterializeInDestinationOp::create(
+            rewriter, unpackOp.getLoc(), unpackOp.getResult(), destination);
         materializeOp.setWritable(true);
 
         rewriter.replaceOp(op, unpackOp.getResult());
@@ -1021,6 +1250,201 @@ public:
       rewriter.eraseOp(destAlloc);
     }
 
+    return success();
+  }
+};
+
+/// Rewrite the common tail pattern:
+///   %t0 = tensor.empty() : tensor<128x128xf16>
+///   %u  = linalg.unpack %packed ... into %t0 : ... -> tensor<128x128xf16>
+///   %s  = tensor.extract_slice %u[0,0] [%m,%n] [1,1] : tensor<128x128xf16> to tensor<?x?xf16>
+///   %sv = memref.subview %out[...] [%m,%n] ...
+///   bufferization.materialize_in_destination %s in writable %sv
+/// into an in-place form (as in mm_kernel_linalg1.mlir):
+///   %sv' = (optional) memref.cast %sv : memref<?x?xf16, strided<[?,?],...>> to memref<?x?xf16, strided<[?,1],...>>
+///   %dst = bufferization.to_tensor %sv' restrict writable : ... -> tensor<?x?xf16>
+///   %u2  = linalg.unpack %packed ... into %dst : ... -> tensor<?x?xf16>
+///   bufferization.materialize_in_destination %u2 in writable %sv'
+///
+/// This avoids the intermediate 128x128 tensor and the extract_slice copy for
+/// tail blocks.
+class MaterializeUnpackIntoSubviewPattern
+    : public OpRewritePattern<bufferization::MaterializeInDestinationOp> {
+public:
+  MaterializeUnpackIntoSubviewPattern(MLIRContext *context)
+      : OpRewritePattern<bufferization::MaterializeInDestinationOp>(context,
+                                                                    /*benefit=*/2) {}
+
+private:
+  static bool isZeroIndex(Value value) {
+    APInt intValue;
+    return matchPattern(value, m_ConstantInt(&intValue)) && intValue.isZero();
+  }
+
+  static bool isIdentitySubview(memref::SubViewOp subview) {
+    if (!hasZeroOffsets(subview.getOffsets()))
+      return false;
+    if (!hasUnitStrides(subview.getStrides()))
+      return false;
+
+    auto srcTy = dyn_cast<MemRefType>(subview.getSource().getType());
+    auto dstTy = dyn_cast<MemRefType>(subview.getType());
+    if (!srcTy || !dstTy || srcTy.getRank() != dstTy.getRank())
+      return false;
+
+    for (auto [srcDim, dstDim] : llvm::zip(srcTy.getShape(), dstTy.getShape())) {
+      if (srcDim != ShapedType::kDynamic && dstDim != ShapedType::kDynamic &&
+          srcDim != dstDim)
+        return false;
+    }
+    return true;
+  }
+
+  static bool comesFromDimOf(Value value, Value source) {
+    auto dimOp = value.getDefiningOp<tensor::DimOp>();
+    return dimOp && dimOp.getSource() == source;
+  }
+
+  static bool isBoundedByUnpackDim(Value size, Value unpackResult) {
+    if (comesFromDimOf(size, unpackResult))
+      return true;
+
+    auto minOp = size.getDefiningOp<arith::MinUIOp>();
+    if (!minOp)
+      return false;
+
+    return comesFromDimOf(minOp.getLhs(), unpackResult) ||
+           comesFromDimOf(minOp.getRhs(), unpackResult);
+  }
+
+  static bool isStaticSliceWithinUnpackDim(OpFoldResult size, int64_t unpackDim) {
+    auto attr = llvm::dyn_cast_if_present<IntegerAttr>(size.dyn_cast<Attribute>());
+    return attr && unpackDim != ShapedType::kDynamic &&
+           attr.getInt() <= unpackDim;
+  }
+
+  static bool isSliceSizeCompatible(OpFoldResult size, Value unpackResult,
+                                    int64_t unpackDim) {
+    if (isStaticSliceWithinUnpackDim(size, unpackDim))
+      return true;
+
+    Value sizeVal = size.dyn_cast<Value>();
+    return sizeVal && isBoundedByUnpackDim(sizeVal, unpackResult);
+  }
+
+  static bool hasUnitStrides(ValueRange strides) {
+    return llvm::all_of(strides,
+                        [](Value stride) { return isConstantIntValue(stride, 1); });
+  }
+
+  static bool hasZeroOffsets(ValueRange offsets) {
+    return llvm::all_of(offsets, isZeroIndex);
+  }
+
+  LogicalResult matchAndRewrite(bufferization::MaterializeInDestinationOp mat,
+                                PatternRewriter &rewriter) const override {
+    auto fail = [&](StringRef reason) -> LogicalResult {
+      (void)reason;
+      return failure();
+    };
+
+    if (!mat.getWritable())
+      return failure();
+
+    // Match the actual post-bufferization shape:
+    // materialize_in_destination(extract_slice(cast(extract_slice(unpack(...)))))
+    auto outerSlice = mat.getSource().getDefiningOp<tensor::ExtractSliceOp>();
+    if (!outerSlice)
+      return fail("source is not outer extract_slice");
+
+    if (outerSlice.getMixedOffsets().size() != 2 ||
+        outerSlice.getMixedSizes().size() != 2 ||
+        outerSlice.getMixedStrides().size() != 2)
+      return fail("expected rank-2 outer slice");
+
+    if (!hasZeroOffsets(outerSlice.getOffsets()))
+      return fail("expected zero outer slice offsets");
+
+    if (!hasUnitStrides(outerSlice.getStrides()))
+      return fail("expected unit outer slice strides");
+
+    auto cast = outerSlice.getSource().getDefiningOp<tensor::CastOp>();
+    if (!cast)
+      return fail("outer slice source is not tensor.cast");
+
+    auto innerSlice = cast.getSource().getDefiningOp<tensor::ExtractSliceOp>();
+    if (!innerSlice)
+      return fail("cast source is not inner extract_slice");
+
+    auto unpack = innerSlice.getSource().getDefiningOp<linalg::UnPackOp>();
+    if (!unpack)
+      return fail("inner slice source is not linalg.unpack");
+
+    if (innerSlice.getMixedOffsets().size() != 2 ||
+        innerSlice.getMixedSizes().size() != 2 ||
+        innerSlice.getMixedStrides().size() != 2)
+      return fail("expected rank-2 inner slice");
+
+    if (!hasZeroOffsets(innerSlice.getOffsets()))
+      return fail("expected zero inner slice offsets");
+
+    if (!hasUnitStrides(innerSlice.getStrides()))
+      return fail("expected unit inner slice strides");
+
+    auto unpackTy = dyn_cast<RankedTensorType>(unpack.getResult().getType());
+    if (!unpackTy || unpackTy.getRank() != 2)
+      return fail("expected rank-2 unpack result");
+
+    Value unpackResult = unpack.getResult();
+    ArrayRef<int64_t> unpackShape = unpackTy.getShape();
+    if (!llvm::all_of(llvm::zip(innerSlice.getMixedSizes(), unpackShape),
+                      [&](auto it) {
+                        return isSliceSizeCompatible(std::get<0>(it), unpackResult,
+                                                     std::get<1>(it));
+                      }))
+      return fail("inner slice sizes must be derived from unpack dimensions");
+
+    // Destination subview memref.
+    Value dstMemref = mat.getDest();
+    if (auto subview = dstMemref.getDefiningOp<memref::SubViewOp>()) {
+      if (isIdentitySubview(subview)) {
+        dstMemref = subview.getSource();
+      }
+    }
+    auto dstTy = dyn_cast<MemRefType>(dstMemref.getType());
+    if (!dstTy || dstTy.getRank() != 2)
+      return fail("destination is not rank-2 memref");
+
+    if (outerSlice.getMixedSizes().size() != static_cast<size_t>(dstTy.getRank()))
+      return fail("outer slice rank does not match destination rank");
+
+    Location loc = mat.getLoc();
+    rewriter.setInsertionPoint(mat);
+
+    // Keep destination memref type unchanged. We don't try to force a
+    // particular strided layout here; downstream can reason about the actual
+    // strides if needed.
+    Value castedDst = dstMemref;
+
+    // Create writable tensor view of the destination.
+    auto dstTensorTy = RankedTensorType::get(dstTy.getShape(), dstTy.getElementType());
+    Value dstTensor = bufferization::ToTensorOp::create(
+        rewriter, loc, dstTensorTy, castedDst,
+        /*restrict=*/rewriter.getUnitAttr(),
+        /*writable=*/rewriter.getUnitAttr());
+
+    // Recreate unpack with destination init = dstTensor.
+    auto newUnpack = linalg::UnPackOp::create(
+        rewriter, loc, unpack.getSource(), dstTensor,
+        unpack.getInnerDimsPos(), unpack.getMixedTiles(), unpack.getOuterDimsPerm());
+
+    // Replace materialize to use the unpack result directly.
+    auto newMat = bufferization::MaterializeInDestinationOp::create(
+        rewriter, loc, newUnpack.getResult(), castedDst);
+    newMat.setWritable(true);
+
+    rewriter.eraseOp(mat);
+    // Old slice/unpack/empty will be DCE'd if no longer used.
     return success();
   }
 };
@@ -1520,7 +1944,16 @@ struct DescriptorLoadViewOpPattern : public OpRewritePattern<DescriptorLoadViewO
     }
 
     auto memrefTy = dyn_cast<MemRefType>(rankedMemRef.getType());
-    if (!memrefTy || memrefTy.getRank() != 2)
+    if (!memrefTy)
+      return failure();
+
+    if (memrefTy.getRank() == 4) {
+      if (hasTranspose)
+        return failure();
+      return convertRank4ToUnpack(op, rankedMemRef, rewriter);
+    }
+
+    if (memrefTy.getRank() != 2)
       return failure();
 
     Location loc = op.getLoc();
@@ -1565,18 +1998,33 @@ struct DescriptorLoadViewOpPattern : public OpRewritePattern<DescriptorLoadViewO
     Value size_k1 = arith::SubIOp::create(rewriter, loc, indexDim1Value, indexOffset1);
     Value size_k2 = arith::MinSIOp::create(rewriter, loc, size_k1, shape1);
 
-    // memref.subview
-    Value subview = memref::SubViewOp::create(rewriter, loc, rankedMemRef,
-        /*offsets=*/ArrayRef<OpFoldResult>{indexOffset0, indexOffset1},
-        /*sizes=*/ArrayRef<OpFoldResult>{size_m2, size_k2},
-        /*strides=*/ArrayRef<OpFoldResult>{c1, c1});
+    SmallVector<OpFoldResult> subviewOffsets{indexOffset0, indexOffset1};
+    SmallVector<OpFoldResult> subviewSizes{size_m2, size_k2};
+    SmallVector<OpFoldResult> subviewStrides{c1, c1};
 
-    auto subviewType = cast<MemRefType>(subview.getType());
-    auto tensorType =
-        RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
+    Value toTensorSource = rankedMemRef;
+    auto rankedMemRefType = cast<MemRefType>(rankedMemRef.getType());
+    auto tensorType = RankedTensorType::get(rankedMemRefType.getShape(),
+                                            rankedMemRefType.getElementType());
 
-    Value tensor = bufferization::ToTensorOp::create(rewriter, loc, tensorType, subview,
-        /*restrict=*/rewriter.getUnitAttr());
+    bool elideSubview = canElideDescriptorSubview(rankedMemRef, indexOffset0,
+                           indexOffset1, size_m2, size_k2) ||
+              canElideIdentitySubview(rankedMemRef, subviewSizes,
+                          subviewOffsets, subviewStrides);
+
+    if (!elideSubview) {
+      Value subview = memref::SubViewOp::create(rewriter, loc, rankedMemRef,
+        /*offsets=*/subviewOffsets,
+        /*sizes=*/subviewSizes,
+        /*strides=*/subviewStrides);
+
+      auto subviewType = cast<MemRefType>(subview.getType());
+      tensorType = RankedTensorType::get(subviewType.getShape(), subviewType.getElementType());
+      toTensorSource = subview;
+    }
+
+    Value tensor = bufferization::ToTensorOp::create(rewriter, loc, tensorType, toTensorSource,
+      /*restrict=*/rewriter.getUnitAttr());
 
     if (!hasTranspose) {
       auto shapes = op.getShape();
@@ -1593,6 +2041,92 @@ struct DescriptorLoadViewOpPattern : public OpRewritePattern<DescriptorLoadViewO
   }
 
 private:
+  LogicalResult convertRank4ToUnpack(DescriptorLoadViewOp op,
+                                     Value rankedMemRef,
+                                     PatternRewriter &rewriter) const {
+    Location loc = op.getLoc();
+
+    auto memrefTy = dyn_cast<MemRefType>(rankedMemRef.getType());
+    if (!memrefTy || memrefTy.getRank() != 4)
+      return failure();
+
+    Value outer0, outer1, tile0Val, tile1Val;
+    if (auto rc = rankedMemRef.getDefiningOp<memref::ReinterpretCastOp>()) {
+      auto sizes = rc.getMixedSizes();
+      if (sizes.size() != 4)
+        return failure();
+      outer0 = ofrToIndexValue(loc, sizes[0], rewriter);
+      outer1 = ofrToIndexValue(loc, sizes[1], rewriter);
+      tile0Val = ofrToIndexValue(loc, sizes[2], rewriter);
+      tile1Val = ofrToIndexValue(loc, sizes[3], rewriter);
+    } else {
+      outer0 = getDimValueFromTypeOrDimOp(loc, rankedMemRef, /*dim=*/0, rewriter);
+      outer1 = getDimValueFromTypeOrDimOp(loc, rankedMemRef, /*dim=*/1, rewriter);
+      tile0Val = getDimValueFromTypeOrDimOp(loc, rankedMemRef, /*dim=*/2, rewriter);
+      tile1Val = getDimValueFromTypeOrDimOp(loc, rankedMemRef, /*dim=*/3, rewriter);
+    }
+
+    int64_t tile0Static = memrefTy.getDimSize(2);
+    int64_t tile1Static = memrefTy.getDimSize(3);
+    if (ShapedType::isDynamic(tile0Static) || ShapedType::isDynamic(tile1Static))
+      return failure();
+
+    auto tensor4DType = RankedTensorType::get(memrefTy.getShape(), memrefTy.getElementType());
+    Value packedTensor = bufferization::ToTensorOp::create(
+        rewriter, loc, tensor4DType, rankedMemRef, rewriter.getUnitAttr());
+
+    Value flatRows = arith::MulIOp::create(rewriter, loc, outer0, tile0Val);
+    Value flatCols = arith::MulIOp::create(rewriter, loc, outer1, tile1Val);
+
+    auto elementType = memrefTy.getElementType();
+    auto flatTy = RankedTensorType::get({ShapedType::kDynamic, ShapedType::kDynamic},
+                                        elementType);
+    Value empty = tensor::EmptyOp::create(rewriter, loc, flatTy,
+                                          ValueRange{flatRows, flatCols});
+
+    Value flatTensor = linalg::UnPackOp::create(
+        rewriter, loc, packedTensor, empty,
+        ArrayRef<int64_t>{0, 1},
+      ArrayRef<OpFoldResult>{rewriter.getIndexAttr(tile0Static),
+                   rewriter.getIndexAttr(tile1Static)});
+
+    auto offsets = op.getOffsets();
+    if (offsets.size() != 2)
+      return failure();
+
+    Value off0 = ensureIndexType(loc, offsets[0], rewriter);
+    Value off1 = ensureIndexType(loc, offsets[1], rewriter);
+
+    auto shapes = op.getShape();
+    if (shapes.size() != 2)
+      return failure();
+
+    Value reqRows = arith::ConstantIndexOp::create(rewriter, loc, shapes[0]);
+    Value reqCols = arith::ConstantIndexOp::create(rewriter, loc, shapes[1]);
+
+    Value flatDim0 = tensor::DimOp::create(rewriter, loc, flatTensor, 0);
+    Value flatDim1 = tensor::DimOp::create(rewriter, loc, flatTensor, 1);
+
+    Value availRows = arith::SubIOp::create(rewriter, loc, flatDim0, off0);
+    Value availCols = arith::SubIOp::create(rewriter, loc, flatDim1, off1);
+    Value actualRows = arith::MinSIOp::create(rewriter, loc, reqRows, availRows);
+    Value actualCols = arith::MinSIOp::create(rewriter, loc, reqCols, availCols);
+
+    Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value slice = tensor::ExtractSliceOp::create(
+        rewriter, loc, flatTensor,
+        ArrayRef<Value>{off0, off1},
+        ArrayRef<Value>{actualRows, actualCols},
+        ArrayRef<Value>{c1, c1});
+
+    auto originalResultType = cast<RankedTensorType>(op.getResult().getType());
+    Value castResult = tensor::CastOp::create(rewriter, loc, originalResultType, slice);
+
+    rewriter.replaceOp(op, castResult);
+    cleanupUnusedOps(op, rewriter);
+    return success();
+  }
+
   Value getDimValueFromTypeOrDimOp(Location loc, Value memref, int64_t dim,
                                   PatternRewriter &rewriter) const {
     auto ty = cast<MemRefType>(memref.getType());
@@ -1817,4 +2351,8 @@ void mlir::triton::BufferizationCleanupConversionPatterns(RewritePatternSet &pat
   patterns.add<RemoveUnusedAllocPattern>(patterns.getContext());
   patterns.add<RemoveRedundantBufferizationRoundtrip>(patterns.getContext());
   patterns.add<FoldAllocCopyToTensor>(patterns.getContext());
+}
+
+void mlir::triton::populateCanonicalizationPatterns(RewritePatternSet &patterns) {
+  patterns.add<MaterializeUnpackIntoSubviewPattern>(patterns.getContext());
 }

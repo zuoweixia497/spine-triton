@@ -85,6 +85,7 @@ public:
     RewritePatternSet patterns3(&getContext());
     RewritePatternSet patterns4(&getContext());
     RewritePatternSet patterns5(&getContext());
+    RewritePatternSet patterns6(&getContext());
 
 
     triton::populateXSMTOptimizationAndValidationPatterns(patterns0);
@@ -114,6 +115,11 @@ public:
 
     triton::BufferizationCleanupConversionPatterns(patterns5);
     if (failed(applyPatternsGreedily(moduleOp, std::move(patterns5)))) {
+      signalPassFailure();
+    }
+
+    triton::populateCanonicalizationPatterns(patterns6);
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns6)))) {
       signalPassFailure();
     }
 

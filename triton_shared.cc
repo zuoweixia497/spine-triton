@@ -113,31 +113,52 @@ void init_triton_xsmt_ir(py::module &&m) {
 
              auto aShape = aType.getShape();
              auto bShape = bType.getShape();
-             assert(aShape[1] == bShape[0] && "KB dimension must match");
-             assert(aShape[3] == bShape[2] && "kb dimension must match");
 
-             SmallVector<int64_t> outputShape = {
-                 aShape[0],
-                 bShape[1],
-                 aShape[2],
-                 bShape[3],
-             };
-             auto resultType =
+             SmallVector<int64_t> outputShape;
+
+             if (aShape[1] == bShape[0] && aShape[3] == bShape[2]) {
+               outputShape = {
+                    aShape[0],
+                    bShape[1],
+                    aShape[2],
+                    bShape[3],
+               };
+               auto resultType =
                  RankedTensorType::get(outputShape, aType.getElementType());
 
-             auto perm = std::vector<int>{1, 0, 3, 2};
-             auto transbOp = self.create<mlir::triton::TransOp>(b, perm);
-             mlir::Value transbValue = transbOp->getResult(0);
+               auto perm = std::vector<int>{1, 0, 3, 2};
+               auto transbOp = self.create<mlir::triton::TransOp>(b, perm);
+               mlir::Value transbValue = transbOp->getResult(0);
 
-             mlir::Value cValue;
-             if (c.has_value()) {
-               cValue = *c;
+               mlir::Value cValue;
+               if (c.has_value()) {
+                    cValue = *c;
+               } else {
+                    cValue = Value();
+               }
+
+               return self.create<xsmt::MMT4DOp>(resultType, a, transbValue, cValue);
+             }else if (aShape[1] == bShape[1] && aShape[3] == bShape[3]) {
+               outputShape = {
+                    aShape[0],
+                    bShape[0],
+                    aShape[2],
+                    bShape[2],
+               };
+               auto resultType =
+                 RankedTensorType::get(outputShape, aType.getElementType());
+
+               mlir::Value cValue;
+               if (c.has_value()) {
+                    cValue = *c;
+               } else {
+                    cValue = Value();
+               }
+
+               return self.create<xsmt::MMT4DOp>(resultType, a, b, cValue);
              } else {
-               cValue = Value();
+               throw std::runtime_error("Unsupported packing shapes");
              }
-
-             return self.create<xsmt::MMT4DOp>(resultType, a, transbValue,
-                                               cValue);
            })
       .def("create_mbarrier",
            [](TritonOpBuilder &self, Value &flag, Value &atc, Value &tc,
