@@ -15,7 +15,9 @@ export TRITON_PLUGIN_DIRS=${PWD}
 mkdir -p ${TRITON_PLUGIN_DIRS}/${BUILD_DIR}
 
 pushd triton
+git reset
 git checkout .
+git clean -fd
 ls ${CUR_DIR}/patch/*.patch | xargs -n1 git apply
 
 export SPINE_MLIR_INSTALL_DIR=${SPINE_MLIR_INSTALL_DIR}

@@ -57,6 +57,7 @@ ts="$(date +"%Y%m%d_%H%M%S")"
 LOGFILE="${LOGDIR}/perf_suite.${ts}.log"
 
 PERF_SCRIPTS=(
+  "${REPO_ROOT}/python/perf/perf_mm_col.py"
   "${REPO_ROOT}/python/perf/test_mm_512_fp16.py"
   "${REPO_ROOT}/python/perf/perf_custom_matrix.py"
   "${REPO_ROOT}/python/perf/perf_elementwise.py"
