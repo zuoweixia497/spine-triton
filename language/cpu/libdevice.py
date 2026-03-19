@@ -131,6 +131,24 @@ def silu(arg0, _semantic=None):
             (core.dtype("fp16"), ): ("linalg.silu", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
+@core.extern
+def cos(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.cos", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.cos", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.cos", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
+
+@core.extern
+def sin(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("math.sin", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("math.sin", core.dtype("fp64")),
+            (core.dtype("fp16"), ): ("math.sin", core.dtype("fp16")),
+        }, is_pure=True, _semantic=_semantic)
+
 # TODO: the following lower implementation
 @core.extern
 def acos(arg0, _semantic=None):
@@ -164,9 +182,9 @@ def atan2(arg0, _semantic=None):
 def cbrt(arg0, _semantic=None):
     return core.tensor(_semantic.create_cbrt(arg0.handle), arg0.type)
 
-@core.extern
-def cos(arg0, _semantic=None):
-    return core.tensor(_semantic.create_cos(arg0.handle), arg0.type)
+# @core.extern
+# def cos(arg0, _semantic=None):
+#     return core.tensor(_semantic.create_cos(arg0.handle), arg0.type)
 
 @core.extern
 def cosh(arg0, _semantic=None):
@@ -195,9 +213,9 @@ def log1p(arg0, _semantic=None):
     return core.tensor(_semantic.create_log1p(arg0.handle), arg0.type)
 
 
-@core.extern
-def sin(arg0, _semantic=None):
-    return core.tensor(_semantic.create_sin(arg0.handle), arg0.type)
+# @core.extern
+# def sin(arg0, _semantic=None):
+#     return core.tensor(_semantic.create_sin(arg0.handle), arg0.type)
 
 
 @core.extern

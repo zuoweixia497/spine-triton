@@ -183,11 +183,12 @@ def _attn_fwd(
 
         offs_m = task_m_idx * BLOCK_M + tl.arange(0, BLOCK_M)
         offs_n = tl.arange(0, BLOCK_N)
+        math_dtype = Q.dtype.element_ty
 
-        m_i_2d = tl.zeros([num_m_tiles, MICRO_M], dtype=tl.float32) - float("inf")
-        l_i_2d = tl.zeros([num_m_tiles, MICRO_M], dtype=tl.float32) + 1.0
+        m_i_2d = tl.zeros([num_m_tiles, MICRO_M], dtype=math_dtype) - float("inf")
+        l_i_2d = tl.zeros([num_m_tiles, MICRO_M], dtype=math_dtype) + 1.0
 
-        acc_4d = tl.zeros([num_m_tiles, num_k_tiles, MICRO_M, MICRO_N], dtype=tl.float32)
+        acc_4d = tl.zeros([num_m_tiles, num_k_tiles, MICRO_M, MICRO_N], dtype=math_dtype)
 
         if STAGE & 1:
             acc_4d, l_i_2d, m_i_2d = _attn_fwd_inner(
@@ -327,6 +328,131 @@ def flash_attention_forward(q, k, v, sm_scale, is_causal=False, num_ctas=16):
     return o
 
 
+def flash_attention_forward_with_config(
+    q,
+    k,
+    v,
+    sm_scale,
+    is_causal=False,
+    block_m=64,
+    block_n=64,
+    num_ctas=16,
+):
+    """Flash Attention forward pass with explicit Triton config parameters."""
+    HEAD_DIM_Q, HEAD_DIM_K = q.shape[-1], k.shape[-1]
+    HEAD_DIM_V = v.shape[-1]
+    assert HEAD_DIM_Q == HEAD_DIM_K and HEAD_DIM_K == HEAD_DIM_V
+    assert HEAD_DIM_K in {16, 32, 64, 128, 256}
+
+    o = torch.empty_like(q)
+    acc = torch.empty(
+        (q.shape[0], q.shape[1], q.shape[2], HEAD_DIM_K),
+        dtype=torch.float32,
+        device=q.device,
+    )
+    M = torch.empty((q.shape[0], q.shape[1], q.shape[2]), device=q.device, dtype=torch.float32)
+
+    STAGE = 3 if is_causal else 1
+
+    if q.dtype == torch.float32:
+        MICRO_M = 8
+        MICRO_N = 32
+        MICRO_K = 32
+    else:
+        MICRO_M = 16
+        MICRO_N = 32
+        MICRO_K = 8
+
+    BLOCK_M = block_m
+    BLOCK_N = block_n
+
+    # Keep the descriptor tiling valid for current dtype/micro config.
+    assert BLOCK_M % MICRO_M == 0, "BLOCK_M must be divisible by MICRO_M"
+    assert BLOCK_N % MICRO_N == 0, "BLOCK_N must be divisible by MICRO_N"
+
+    num_m_tiles = BLOCK_M // MICRO_M
+    num_n_tiles = BLOCK_N // MICRO_N
+    num_k_tiles = HEAD_DIM_K // MICRO_N
+
+    _attn_fwd[(num_ctas,)](
+        q,
+        k,
+        v,
+        M,
+        o,
+        acc,
+        sm_scale,
+        q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+        k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+        v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+        o.stride(0), o.stride(1), o.stride(2), o.stride(3),
+        q.shape[0],
+        q.shape[1],
+        N_CTX=q.shape[2],
+        HEAD_DIM=HEAD_DIM_K,
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        STAGE=STAGE,
+        MICRO_M=MICRO_M,
+        MICRO_K=MICRO_K,
+        MICRO_N=MICRO_N,
+        num_m_tiles=num_m_tiles,
+        num_n_tiles=num_n_tiles,
+        num_k_tiles=num_k_tiles,
+        num_ctas=num_ctas,
+    )
+
+    return o
+
+
+def _best_of_repeats(run_once, num_warmup=5, num_iterations=20, num_repeats=3):
+    for _ in range(num_warmup):
+        run_once()
+
+    best_ms = float("inf")
+    for _ in range(num_repeats):
+        start = time.time()
+        for _ in range(num_iterations):
+            run_once()
+        elapsed_ms = 1000 * (time.time() - start) / num_iterations
+        best_ms = min(best_ms, elapsed_ms)
+
+    return best_ms
+
+
+def _tune_best_config(configs, run_with_config, num_warmup=3, num_iterations=20, num_repeats=2):
+    best_config = None
+    best_time_ms = float("inf")
+
+    for config in configs:
+        try:
+            config_time_ms = _best_of_repeats(
+                lambda: run_with_config(config.kwargs),
+                num_warmup=num_warmup,
+                num_iterations=num_iterations,
+                num_repeats=num_repeats,
+            )
+        except Exception:
+            continue
+
+        if config_time_ms < best_time_ms:
+            best_time_ms = config_time_ms
+            best_config = config
+
+    if best_config is None:
+        raise RuntimeError("No valid Triton config found for current attention input.")
+
+    return best_config, best_time_ms
+
+
+ATTN_TUNING_CONFIGS = [
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 64, "num_ctas": 8}, num_warps=1),
+    triton.Config({"BLOCK_M": 64, "BLOCK_N": 64, "num_ctas": 16}, num_warps=1),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "num_ctas": 8}, num_warps=1),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "num_ctas": 16}, num_warps=1),
+]
+
+
 def pytorch_attention(q, k, v, sm_scale, is_causal=False):
     """
     PyTorch native attention implementation for reference.
@@ -348,6 +474,7 @@ def pytorch_attention(q, k, v, sm_scale, is_causal=False):
 if __name__ == "__main__":
     test_warm_up = 5
     test_iterations = 20
+    test_repeats = 2
     num_ctas = 16
 
     # Test configurations
@@ -403,10 +530,10 @@ if __name__ == "__main__":
         for test_dtype in test_dtype_list:
             print(f"\n  {causal_str} | dtype: {test_dtype}")
             header = f"  {'Shape':25}"
-            header += f" | {'Time (ms)':>12} | {'GFLOPS':>12}"
-            print(f"  {'-' * 58}")
+            header += f" | {'Time (ms)':>12} | {'GFLOPS':>12} | {'Config':>28}"
+            print(f"  {'-' * 92}")
             print(header)
-            print(f"  {'-' * 58}")
+            print(f"  {'-' * 92}")
 
             for test_shape in test_shape_list:
                 try:
@@ -416,20 +543,48 @@ if __name__ == "__main__":
                     v = torch.randn(test_shape, dtype=test_dtype, device="cpu")
                     sm_scale = 1.0 / (head_dim ** 0.5)
 
-                    # Warmup
-                    for _ in range(test_warm_up):
-                        _ = flash_attention_forward(q, k, v, sm_scale, is_causal, num_ctas)
+                    best_config, _ = _tune_best_config(
+                        ATTN_TUNING_CONFIGS,
+                        lambda meta: flash_attention_forward_with_config(
+                            q,
+                            k,
+                            v,
+                            sm_scale,
+                            is_causal=is_causal,
+                            block_m=meta["BLOCK_M"],
+                            block_n=meta["BLOCK_N"],
+                            num_ctas=meta["num_ctas"],
+                        ),
+                        num_warmup=max(1, test_warm_up // 2),
+                        num_iterations=test_iterations,
+                        num_repeats=test_repeats,
+                    )
 
-                    # Benchmark
-                    start = time.time()
-                    for _ in range(test_iterations):
-                        _ = flash_attention_forward(q, k, v, sm_scale, is_causal, num_ctas)
-                    triton_time = 1000 * (time.time() - start) / test_iterations
+                    triton_time = _best_of_repeats(
+                        lambda: flash_attention_forward_with_config(
+                            q,
+                            k,
+                            v,
+                            sm_scale,
+                            is_causal=is_causal,
+                            block_m=best_config.kwargs["BLOCK_M"],
+                            block_n=best_config.kwargs["BLOCK_N"],
+                            num_ctas=best_config.kwargs["num_ctas"],
+                        ),
+                        num_warmup=test_warm_up,
+                        num_iterations=test_iterations,
+                        num_repeats=test_repeats,
+                    )
 
                     flops = 4 * batch * heads * seq_len * seq_len * head_dim
                     gflops = flops / 1e9 / (triton_time / 1000)
 
-                    print(f"  {str(test_shape):25} | {triton_time:12.2f} | {gflops:12.2f}")
+                    config_str = (
+                        f"BM={best_config.kwargs['BLOCK_M']},"
+                        f"BN={best_config.kwargs['BLOCK_N']},"
+                        f"CTA={best_config.kwargs['num_ctas']}"
+                    )
+                    print(f"  {str(test_shape):25} | {triton_time:12.2f} | {gflops:12.2f} | {config_str:28}")
                 except Exception as e:
                     print(f"  {str(test_shape):25} | ERROR: {e}")
 

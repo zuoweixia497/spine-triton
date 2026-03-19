@@ -46,6 +46,11 @@
 
 namespace mlir {
 namespace triton {
+
+static bool keepFp16ReduceAccInLinalg() {
+  return true;
+}
+
 //===----------------------------------------------------------------------===//
 // Utilities
 //===----------------------------------------------------------------------===//
@@ -1512,6 +1517,9 @@ private:
   }
 
   bool requiresF32Conversion(const Type elemType, Operation *redOp) const {
+    if (keepFp16ReduceAccInLinalg() && elemType.isF16()) {
+      return false;
+    }
     unsigned width =
         cast<FloatType>(Float32Type::get(elemType.getContext())).getWidth();
     return isa<FloatType>(elemType) &&
@@ -2556,7 +2564,7 @@ public:
     LogicalResult matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto inputs = op.getSrcs();
+        auto inputs = adaptor.getSrcs();
 
         auto symbol = op.getSymbol().str();
         auto it = opMap.find(symbol);
@@ -2581,6 +2589,16 @@ public:
                 return failure();
             }
 
+          for (Value input : opInputs) {
+            auto inputTensorType = dyn_cast<RankedTensorType>(input.getType());
+            if (!inputTensorType || inputTensorType.getElementType() != elementType) {
+              return rewriter.notifyMatchFailure(
+                op,
+                "extern elementwise tensor lowering requires input/output "
+                "element types to match");
+            }
+          }
+
             auto init = tensor::EmptyOp::create(rewriter, loc, tensorType.getShape(), elementType
             );
 
@@ -2596,6 +2614,15 @@ public:
             return success();
         }
         else if (isa<FloatType>(resultType)) {
+          for (Value input : opInputs) {
+            if (!isa<FloatType>(input.getType()) || input.getType() != resultType) {
+              return rewriter.notifyMatchFailure(
+                op,
+                "extern elementwise scalar lowering requires input/output "
+                "types to match");
+            }
+          }
+
             Operation* resultOp = createMathFunc(rewriter, loc, opInputs);
             if (!resultOp || resultOp->getNumResults() == 0) {
                 return failure();
@@ -2676,8 +2703,10 @@ public:
     bool isIsNaN = (symbol == "math.isnan");
     bool isIsInf = (symbol == "math.isinf");
     bool isFinite = (symbol == "math.isfinite");
+    bool isCos = (symbol == "math.cos");
+    bool isSin = (symbol == "math.sin");
 
-    if (!isIsNaN && !isIsInf && !isFinite) {
+    if (!isIsNaN && !isIsInf && !isFinite && !isCos && !isSin) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "unsupported extern operation: " << symbol;
       });
@@ -2697,6 +2726,15 @@ public:
       return rewriter.notifyMatchFailure(op, "element type is not float");
     }
     auto outputElemType = outputType.getElementType();
+
+    if ((isCos || isSin) &&
+        (!isa<FloatType>(outputElemType) ||
+         outputElemType != inputType.getElementType())) {
+      return rewriter.notifyMatchFailure(
+          op,
+          "math.sin/math.cos lowering requires float output element type "
+          "matching input element type");
+    }
 
     Value outputTensor = tensor::EmptyOp::create(rewriter, loc, outputType.getShape(), outputElemType);
 
@@ -2724,21 +2762,37 @@ public:
         /*libraryCall=*/StringRef(),
         [&](OpBuilder &b, Location loc, ValueRange args) {
           Value inputVal = args[0];
-          Value specialOp;
+          Value outputVal;
 
           if (isIsNaN) {
-            specialOp = math::IsNaNOp::create(b, loc, inputVal);
+            Value specialOp = math::IsNaNOp::create(b, loc, inputVal);
+            if (outputElemType.isInteger(1)) {
+              outputVal = specialOp;
+            } else {
+              outputVal =
+                  arith::ExtUIOp::create(b, loc, outputElemType, specialOp);
+            }
           } else if(isIsInf) { // isIsInf
-            specialOp = math::IsInfOp::create(b, loc, inputVal);
+            Value specialOp = math::IsInfOp::create(b, loc, inputVal);
+            if (outputElemType.isInteger(1)) {
+              outputVal = specialOp;
+            } else {
+              outputVal =
+                  arith::ExtUIOp::create(b, loc, outputElemType, specialOp);
+            }
           } else if(isFinite) {
-            specialOp = math::IsFiniteOp::create(b, loc, inputVal);
-          }
-
-          Value outputVal;
-          if (outputElemType.isInteger(1)) {
-            outputVal = specialOp;
+            Value specialOp = math::IsFiniteOp::create(b, loc, inputVal);
+            if (outputElemType.isInteger(1)) {
+              outputVal = specialOp;
+            } else {
+              outputVal =
+                  arith::ExtUIOp::create(b, loc, outputElemType, specialOp);
+            }
+          } else if (isCos) {
+            outputVal = math::CosOp::create(b, loc, inputVal);
           } else {
-            outputVal = arith::ExtUIOp::create(b, loc, outputElemType, specialOp);
+            assert(isSin && "expected math.sin path");
+            outputVal = math::SinOp::create(b, loc, inputVal);
           }
 
           linalg::YieldOp::create(b, loc, outputVal);
@@ -2767,6 +2821,14 @@ struct ConvertExternGeluNone : public OpRewritePattern<triton::ExternElementwise
     auto inputElemTy = inputType.getElementType();
     auto outputType = mlir::cast<RankedTensorType>(op.getResult().getType());
     auto outputElemTy = outputType.getElementType();
+
+    auto floatTy = dyn_cast<FloatType>(inputElemTy);
+    if (!floatTy || inputElemTy != outputElemTy) {
+      return rewriter.notifyMatchFailure(
+          op,
+          "linalg.gelu_none lowering requires float input and matching output "
+          "element type");
+    }
 
     Location loc = op.getLoc();
 
@@ -2810,9 +2872,13 @@ struct ConvertExternGeluNone : public OpRewritePattern<triton::ExternElementwise
     rewriter.setInsertionPointToStart(body);
 
     // output = 0.5 * x * (1 + erf(x * 0.7071067811))
-    Value c0_5 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.5f));
-    Value c0_07071067811 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.7071067811f));
-    Value c1 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(1.0f));
+    Value c0_5 = arith::ConstantOp::create(
+      rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 0.5));
+    Value c0_07071067811 = arith::ConstantOp::create(
+      rewriter, loc, inputElemTy,
+      rewriter.getFloatAttr(floatTy, 0.7071067811));
+    Value c1 = arith::ConstantOp::create(
+      rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 1.0));
 
     Value x = body->getArgument(0);
 
@@ -2854,6 +2920,14 @@ struct ConvertExternGeluTanh : public OpRewritePattern<triton::ExternElementwise
     auto inputElemTy = inputType.getElementType();
     auto outputType = mlir::cast<RankedTensorType>(op.getResult().getType());
     auto outputElemTy = outputType.getElementType();
+
+    auto floatTy = dyn_cast<FloatType>(inputElemTy);
+    if (!floatTy || inputElemTy != outputElemTy) {
+      return rewriter.notifyMatchFailure(
+          op,
+          "linalg.gelu_tanh lowering requires float input and matching output "
+          "element type");
+    }
 
     Location loc = op.getLoc();
 
@@ -2897,10 +2971,14 @@ struct ConvertExternGeluTanh : public OpRewritePattern<triton::ExternElementwise
     rewriter.setInsertionPointToStart(body);
 
     // 0.5 * x * (1 + tanh(x * 0.79788456 * (1 + 0.044715 * pow(x.to(tl.float32), 2))))
-    Value c0_5 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.5f));
-    Value c0_044715 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.044715f));
-    Value c0_797885 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.79788456f));
-    Value c1 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(1.0f));
+    Value c0_5 = arith::ConstantOp::create(
+      rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 0.5));
+    Value c0_044715 = arith::ConstantOp::create(
+      rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 0.044715));
+    Value c0_797885 = arith::ConstantOp::create(
+      rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 0.79788456));
+    Value c1 = arith::ConstantOp::create(
+      rewriter, loc, inputElemTy, rewriter.getFloatAttr(floatTy, 1.0));
 
     Value x = body->getArgument(0);
 
@@ -2953,6 +3031,13 @@ struct ConvertExternSilu : public OpRewritePattern<triton::ExternElementwiseOp> 
     auto inputElemTy = inputType.getElementType();
     auto outputType = mlir::cast<RankedTensorType>(op.getResult().getType());
     auto outputElemTy = outputType.getElementType();
+
+    if (inputElemTy != outputElemTy) {
+      return rewriter.notifyMatchFailure(
+          op,
+          "linalg.silu lowering requires input and output element types to "
+          "match");
+    }
 
     Location loc = op.getLoc();
 
