@@ -2603,9 +2603,10 @@ public:
             );
 
             Value output = init.getResult();
-            ValueRange outputs = ValueRange{output};
+            SmallVector<Value, 1> outputs{output};
 
-            Operation* resultOp = createLinalgFunc(rewriter, loc, opInputs, outputs);
+            Operation* resultOp =
+              createLinalgFunc(rewriter, loc, opInputs, outputs);
             if (!resultOp || resultOp->getNumResults() == 0) {
                 return failure();
             }
