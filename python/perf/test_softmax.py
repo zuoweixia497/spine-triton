@@ -88,8 +88,8 @@ def softmax_kernel(
                 denominator += tl.sum(numerator, axis=0)
                 tl.store(output_block_ptr, numerator, boundary_check=(0,))
 
-            denominator = denominator.to(element_ty)
-            inv_denom = (1.0 / denominator).to(element_ty)
+            one = tl.full((1,), 1, dtype=element_ty)
+            inv_denom = one / denominator
 
             for col_idx in range(0, n_cols, COL_SIZE):
                 output_block_ptr = tl.make_block_ptr(
