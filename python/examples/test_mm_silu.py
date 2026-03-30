@@ -24,7 +24,6 @@ def mm_silu_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
-    SUB_BLK_K: tl.constexpr,
     MICRO_M: tl.constexpr,
     MICRO_K: tl.constexpr,
     MICRO_N: tl.constexpr,
@@ -49,17 +48,15 @@ def mm_silu_kernel(
         order=[1, 0],
     )
 
-    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=a_ptr.type.element_ty)
-    accumulator = smt.view(accumulator, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_N), (MICRO_M, MICRO_N))
-    sub_num = (K + SUB_BLK_K - 1) // SUB_BLK_K
-    for k in tl.range(0, sub_num):
-        a_descriptor_load = smt.descriptor_load(a_block_ptr, (0, 0))
-        a = smt.view(a_descriptor_load, (0, k * SUB_BLK_K), (BLOCK_SIZE_M, SUB_BLK_K), (MICRO_M, MICRO_K))
-        b_descriptor_load = smt.descriptor_load(b_block_ptr, (0, 0))
-        b = smt.view(b_descriptor_load, (k * SUB_BLK_K, 0), (SUB_BLK_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N))
-        accumulator += smt.dot(a, b)
-        accumulator = tl_extra_shim.silu(accumulator)
-    accumulator = smt.view(accumulator, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 1))
+    a_descriptor_load = smt.descriptor_load(a_block_ptr, (0, 0))
+    a = smt.view(a_descriptor_load, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
+    b_descriptor_load = smt.descriptor_load(b_block_ptr, (0, 0))
+    b = smt.view(b_descriptor_load, (0, 0), (BLOCK_SIZE_K, BLOCK_SIZE_N), (MICRO_K, MICRO_N))
+    accumulator = smt.dot(a, b)
+    c = accumulator.to(c_ptr.dtype.element_ty)
+    c = tl_extra_shim.silu(c)
+    c = smt.view(c, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 1))
+
 
     c_block_ptr = tl.make_block_ptr(
         base=c_ptr,
@@ -69,7 +66,7 @@ def mm_silu_kernel(
         block_shape=[BLOCK_SIZE_M, BLOCK_SIZE_N],
         order=[1, 0],
     )
-    tl.store(c_block_ptr, accumulator, boundary_check=(0, 1))
+    tl.store(c_block_ptr, c, boundary_check=(0, 1))
 
 
 def triton_mm_silu(a, b):
@@ -91,7 +88,6 @@ def triton_mm_silu(a, b):
         triton.cdiv(N, META["BLOCK_SIZE_N"]),
     )
     BLOCK_SIZE_K = triton.next_power_of_2(K)
-    SUB_BLK_K = min(1024, BLOCK_SIZE_K)
 
     mm_silu_kernel[grid](
         a,
@@ -109,9 +105,8 @@ def triton_mm_silu(a, b):
         BLOCK_SIZE_M=32,
         BLOCK_SIZE_N=32,
         BLOCK_SIZE_K=BLOCK_SIZE_K,
-        SUB_BLK_K=SUB_BLK_K,
-        MICRO_M=8,
-        MICRO_K=32,
+        MICRO_M=16,
+        MICRO_K=8,
         MICRO_N=32,
     )
     return c
@@ -120,8 +115,8 @@ def triton_mm_silu(a, b):
 if __name__ == "__main__":
 
     M, N, K = 256, 256, 512
-    A = torch.randn((M, K), dtype=torch.float32, device="cpu", requires_grad=False)
-    B = torch.randn((K, N), dtype=torch.float32, device="cpu", requires_grad=False)
+    A = torch.randn((M, K), dtype=torch.float16, device="cpu", requires_grad=False)
+    B = torch.randn((K, N), dtype=torch.float16, device="cpu", requires_grad=False)
 
     C = triton_mm_silu(A, B)
 

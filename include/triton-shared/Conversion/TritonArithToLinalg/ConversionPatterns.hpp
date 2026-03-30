@@ -3081,20 +3081,28 @@ struct ConvertExternSilu : public OpRewritePattern<triton::ExternElementwiseOp> 
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(body);
 
-    // y = tl.fdiv(x_fp32, (1.0 + tl.exp(-x_fp32)))
-    Value c0 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(0.0f));
-
-    Value c1 = arith::ConstantFloatOp::create(rewriter, loc, rewriter.getF32Type(), APFloat(1.0f));
+    // Compute SiLU in input element type (e.g. f16 path).
+    Value c0 = arith::ConstantOp::create(
+        rewriter, loc, inputElemTy,
+        rewriter.getFloatAttr(inputElemTy, 0.0));
+    Value c1 = arith::ConstantOp::create(
+        rewriter, loc, inputElemTy,
+        rewriter.getFloatAttr(inputElemTy, 1.0));
 
     Value x = body->getArgument(0);
-
     Value xneg = arith::SubFOp::create(rewriter, loc, c0, x);
-
     Value xexp = math::ExpOp::create(rewriter, loc, xneg);
-
     Value xaddf = arith::AddFOp::create(rewriter, loc, xexp, c1);
-
     Value result = arith::DivFOp::create(rewriter, loc, x, xaddf);
+
+    if (result.getType() != outputElemTy) {
+      auto srcWidth = cast<FloatType>(result.getType()).getWidth();
+      auto dstWidth = cast<FloatType>(outputElemTy).getWidth();
+      if (srcWidth > dstWidth)
+        result = arith::TruncFOp::create(rewriter, loc, outputElemTy, result);
+      else
+        result = arith::ExtFOp::create(rewriter, loc, outputElemTy, result);
+    }
 
     linalg::YieldOp::create(rewriter, loc, result);
 

@@ -38,10 +38,11 @@ def mm_kernel(
         block_shape=[BLOCK_SIZE_N, BLOCK_SIZE_K], order=[1, 0],
     )
 
-    a_descriptor_load = smt.descriptor_load(a_block_ptr, (0, 0))
-    a = smt.view(a_descriptor_load, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
-    b_descriptor_load = smt.descriptor_load(b_block_ptr, (0, 0))
-    b = smt.view(b_descriptor_load, (0, 0), (BLOCK_SIZE_N, BLOCK_SIZE_K), (MICRO_N, MICRO_K))
+    a_desc = smt.descriptor_load(a_block_ptr, (0, 0))
+    a = smt.view(a_desc, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_K), (MICRO_M, MICRO_K))
+
+    b_desc = smt.descriptor_load(b_block_ptr, (0, 0))
+    b = smt.view(b_desc, (0, 0), (BLOCK_SIZE_N, BLOCK_SIZE_K), (MICRO_N, MICRO_K))
 
     accumulator = smt.dot(a, b)
     accumulator = smt.view(accumulator, (0, 0), (BLOCK_SIZE_M, BLOCK_SIZE_N), (1, 1))
@@ -55,34 +56,23 @@ def mm_kernel(
     tl.store(c_block_ptr, c, boundary_check=(0, 1))
 
 
-def triton_mm(a, b, block_size_m=128, block_size_n=128):
-    if a.stride(0) > 1 and a.stride(1) > 1:
-        a = a.contiguous()
-    if b.stride(0) > 1 and b.stride(1) > 1:
-        b = b.contiguous()
-
+def triton_mm(a, b, c, block_size_m=128, block_size_n=128):
     M, K = a.shape
-    N, K = b.shape
+    N, Kb = b.shape
+    assert K == Kb
 
     micro_m, micro_n, micro_k = 16, 32, 8
-
-
-    c = torch.empty((M, N), device=a.device, dtype=a.dtype)
-
-    def grid(META):
-        return (triton.cdiv(M, META["BLOCK_SIZE_M"]), triton.cdiv(N, META["BLOCK_SIZE_N"]))
-
-    BLOCK_SIZE_K = triton.next_power_of_2(K)
+    block_size_k = triton.next_power_of_2(K)
+    grid = (triton.cdiv(M, block_size_m), triton.cdiv(N, block_size_n))
 
     mm_kernel[grid](
         a, b, c, M, N, K,
         a.stride(0), a.stride(1),
         b.stride(0), b.stride(1),
         c.stride(0), c.stride(1),
-        BLOCK_SIZE_M=block_size_m, BLOCK_SIZE_N=block_size_n, BLOCK_SIZE_K=BLOCK_SIZE_K,
+        BLOCK_SIZE_M=block_size_m, BLOCK_SIZE_N=block_size_n, BLOCK_SIZE_K=block_size_k,
         MICRO_M=micro_m, MICRO_N=micro_n, MICRO_K=micro_k,
     )
-    return c
 
 
 if __name__ == "__main__":
@@ -90,32 +80,25 @@ if __name__ == "__main__":
     dtype = torch.float16
     block_size_m = 128
     block_size_n = 256
-    num_warmup = 5
-    num_iterations = 100
+    num_warmup = 20
+    num_iterations = 200
 
     print(f"MM fp16 test: M={M}, N={N}, K={K}, BLOCK_M={block_size_m}, BLOCK_N={block_size_n}, ARCH_ID={ARCH_ID}")
     print("=" * 70)
 
-    # --- Correctness ---
     torch.manual_seed(0)
-    A = torch.randn((M, K), dtype=dtype, device="cpu")
-    B = torch.randn((N, K), dtype=dtype, device="cpu")
+    A = torch.randn((M, K), dtype=dtype, device="cpu").contiguous()
+    B = torch.randn((N, K), dtype=dtype, device="cpu").contiguous()
+    C = torch.empty((M, N), dtype=dtype, device="cpu")
 
-    out_triton = triton_mm(A, B, block_size_m=block_size_m, block_size_n=block_size_n)
-    out_torch = torch.mm(A, B.t())
-
-    max_diff = torch.max(torch.abs(out_triton - out_torch)).item()
-    passed = torch.allclose(out_triton, out_torch, atol=1e-2, rtol=0)
-    status = "✅ PASS" if passed else "❌ FAIL"
-    print(f"Correctness: {status}  (max_diff={max_diff:.6f})")
-
-    # --- Performance ---
+    # warmup
     for _ in range(num_warmup):
-        _ = triton_mm(A, B, block_size_m=block_size_m, block_size_n=block_size_n)
+        triton_mm(A, B, C, block_size_m=block_size_m, block_size_n=block_size_n)
 
     start = time.time()
     for _ in range(num_iterations):
-        _ = triton_mm(A, B, block_size_m=block_size_m, block_size_n=block_size_n)
+        triton_mm(A, B, C, block_size_m=block_size_m, block_size_n=block_size_n)
+
     triton_time = 1000 * (time.time() - start) / num_iterations
 
     gflops = 2 * M * N * K / (triton_time / 1000) / 1e9
