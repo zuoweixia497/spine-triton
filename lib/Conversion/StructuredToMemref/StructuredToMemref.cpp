@@ -484,17 +484,17 @@ private:
     dispatchIndexOpFoldResults(mixedStrides, dynamicStrides, staticStrides);
 
     auto targetOffset =
-      accumulateTargetOffset(op.getLoc(), op.getMixedOffsets(), rewriter);
+        accumulateTargetOffset(op.getLoc(), op.getMixedOffsets(), rewriter);
     auto staticTargetOffset = getIntAttr(targetOffset);
 
     ArrayRef<int64_t> resultShape = cast<ShapedType>(op.getType()).getShape();
     auto resultType = getResultMemrefType(
-      op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
-      resultShape);
+        op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
+        resultShape);
 
     auto castOp = memref::ReinterpretCastOp::create(
-      rewriter, op.getLoc(), resultType, adaptor.getBase(), targetOffset,
-      op.getMixedSizes(), mixedStrides);
+        rewriter, op.getLoc(), resultType, adaptor.getBase(), targetOffset,
+        op.getMixedSizes(), mixedStrides);
 
     rewriter.replaceOp(op, castOp);
     return success();
