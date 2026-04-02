@@ -2694,8 +2694,34 @@ public:
       return failure();
     }
 
-    ValueRange opInputs = inputs.take_front(requiredOperands);
+    SmallVector<Value> normalizedInputs(inputs.take_front(requiredOperands));
     auto resultType = op.getResult().getType();
+
+    // For powf, allow int32 exponent input and normalize it to float before
+    // running the existing type checks and lowering path.
+    if (symbol == "linalg.powf" && normalizedInputs.size() >= 2) {
+      Value exponent = normalizedInputs[1];
+      if (auto exponentTensorType =
+              dyn_cast<RankedTensorType>(exponent.getType())) {
+        if (auto resultTensorType = dyn_cast<RankedTensorType>(resultType)) {
+          Type resultElementType = resultTensorType.getElementType();
+          Type exponentElementType = exponentTensorType.getElementType();
+          if (exponentElementType.isInteger(32) &&
+              isa<FloatType>(resultElementType)) {
+            auto castType = RankedTensorType::get(exponentTensorType.getShape(),
+                                                  resultElementType);
+            normalizedInputs[1] =
+                arith::SIToFPOp::create(rewriter, loc, castType, exponent);
+          }
+        }
+      } else if (exponent.getType().isInteger(32) &&
+                 isa<FloatType>(resultType)) {
+        normalizedInputs[1] =
+            arith::SIToFPOp::create(rewriter, loc, resultType, exponent);
+      }
+    }
+
+    ValueRange opInputs(normalizedInputs);
 
     if (auto tensorType = dyn_cast<RankedTensorType>(resultType)) {
       auto elementType = tensorType.getElementType();
