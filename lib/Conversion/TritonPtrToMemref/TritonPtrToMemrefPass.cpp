@@ -8,6 +8,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/Ptr/IR/PtrAttrs.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -37,10 +38,17 @@
 using namespace mlir;
 using namespace triton;
 
-#define GEN_PASS_CLASSES
+namespace mlir::triton {
+#define GEN_PASS_DECL
+#define GEN_PASS_DEF_TRITONPTRTOMEMREF
 #include "triton-shared/Conversion/TritonPtrToMemref/Passes.h.inc"
+} // namespace mlir::triton
 
 namespace {
+
+static ptr::MemorySpaceAttrInterface getPtrBridgeMemorySpace(MLIRContext *ctx) {
+  return ptr::GenericSpaceAttr::get(ctx);
+}
 
 class TritonFunctionSignatureConverter : public TypeConverter {
 public:
@@ -48,21 +56,24 @@ public:
     // The order of type conversion is important: later ones are tried earlier.
     addConversion([](Type type) { return type; });
     addConversion([](triton::PointerType ptrType) {
+      auto *ctx = ptrType.getContext();
       return UnrankedMemRefType::get(ptrType.getPointeeType(),
-                                     /*memorySpace=*/0);
+                                     getPtrBridgeMemorySpace(ctx));
     });
     addConversion([](RankedTensorType tensorType) -> std::optional<Type> {
       if (auto ptrType =
               dyn_cast<triton::PointerType>(tensorType.getElementType())) {
-        return MemRefType::get(tensorType.getShape(), ptrType.getPointeeType());
+        auto *ctx = tensorType.getContext();
+        return MemRefType::get(tensorType.getShape(), ptrType.getPointeeType(),
+                               AffineMap(), getPtrBridgeMemorySpace(ctx));
       }
       return std::nullopt;
     });
 
     auto createUnrealizedCast = [&](OpBuilder &builder, Type resultType,
-                                    ValueRange inputs,
-                                    Location loc) -> Value {
-      return UnrealizedConversionCastOp::create(builder, loc, resultType, inputs)
+                                    ValueRange inputs, Location loc) -> Value {
+      return UnrealizedConversionCastOp::create(builder, loc, resultType,
+                                                inputs)
           .getResult(0);
     };
     addSourceMaterialization(createUnrealizedCast);
@@ -70,7 +81,7 @@ public:
 };
 
 class TritonPtrToMemrefPass
-    : public TritonPtrToMemrefBase<TritonPtrToMemrefPass> {
+    : public triton::impl::TritonPtrToMemrefBase<TritonPtrToMemrefPass> {
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {

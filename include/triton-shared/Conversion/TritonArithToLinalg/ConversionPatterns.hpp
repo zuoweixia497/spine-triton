@@ -94,7 +94,7 @@ static Value getScalarValue(Value operand, Location loc,
     } else if (auto op = operand.getDefiningOp<arith::ConstantOp>()) {
       if (auto attr = dyn_cast<DenseElementsAttr>(op.getValue())) {
         if (!attr.isSplat()) {
-          InFlightDiagnostic diag = emitError(loc)
+          InFlightDiagnostic diag = emitRemark(loc)
                                     << "other value used in masked load "
                                        "produced by unsupported instruction";
           return nullptr;
@@ -113,13 +113,53 @@ static Value getScalarValue(Value operand, Location loc,
       ops.push_back(op.getOperation());
       operand = op.getIn();
     } else {
-      InFlightDiagnostic diag = emitError(loc)
+      InFlightDiagnostic diag = emitRemark(loc)
                                 << "other value used in masked load produced "
                                    "by unsupported instruction";
       return nullptr;
     }
   }
   return nullptr;
+}
+
+static Value castScalarToElementType(Value scalar, Type elementType,
+                                     Location loc,
+                                     ConversionPatternRewriter &rewriter) {
+  auto srcType = scalar.getType();
+  if (srcType == elementType)
+    return scalar;
+
+  if (isa<IntegerType>(srcType) && isa<IntegerType>(elementType)) {
+    auto srcInt = cast<IntegerType>(srcType);
+    auto dstInt = cast<IntegerType>(elementType);
+    unsigned srcWidth = srcInt.getWidth();
+    unsigned dstWidth = dstInt.getWidth();
+    if (srcWidth == dstWidth)
+      return scalar;
+    if (srcWidth < dstWidth)
+      return arith::ExtUIOp::create(rewriter, loc, elementType, scalar);
+    return arith::TruncIOp::create(rewriter, loc, elementType, scalar);
+  }
+
+  if (isa<FloatType>(srcType) && isa<FloatType>(elementType)) {
+    auto srcFloat = cast<FloatType>(srcType);
+    auto dstFloat = cast<FloatType>(elementType);
+    unsigned srcWidth = srcFloat.getWidth();
+    unsigned dstWidth = dstFloat.getWidth();
+    if (srcWidth == dstWidth)
+      return scalar;
+    if (srcWidth < dstWidth)
+      return arith::ExtFOp::create(rewriter, loc, elementType, scalar);
+    return arith::TruncFOp::create(rewriter, loc, elementType, scalar);
+  }
+
+  if (isa<IntegerType>(srcType) && isa<FloatType>(elementType))
+    return arith::SIToFPOp::create(rewriter, loc, elementType, scalar);
+
+  if (isa<FloatType>(srcType) && isa<IntegerType>(elementType))
+    return arith::FPToSIOp::create(rewriter, loc, elementType, scalar);
+
+  return scalar;
 }
 
 // if order is empty, transpose the last two dimensions
@@ -485,6 +525,17 @@ public:
     auto alloc = memref::AllocOp::create(
         rewriter, loc, MemRefType::get(type.getShape(), type.getElementType()));
 
+    // Initialize masked-load temporary buffer eagerly when `other` is absent.
+    // This preserves Triton semantics where masked-out lanes read as zero.
+    if (mask && !other) {
+      auto zero =
+          arith::ConstantOp::create(rewriter, loc,
+                                    rewriter.getZeroAttr(type.getElementType()))
+              .getResult();
+      linalg::FillOp::create(rewriter, loc, ValueRange{zero},
+                             ValueRange{alloc});
+    }
+
     if (!mask) {
       assert(!other && "other value used in non-masked load");
       if (auto unrealizedCast =
@@ -535,6 +586,8 @@ public:
       auto scalarOther = getScalarValue(other, loc, rewriter);
       assert(scalarOther && "other value used in masked load produced by "
                             "unsupported instruction");
+      scalarOther = castScalarToElementType(scalarOther, type.getElementType(),
+                                            loc, rewriter);
 
       // For each dimension check if mstate.dims[i] < shape[i], or-accumulate
       // the result
@@ -740,16 +793,30 @@ struct SplatConverter : public OpConversionPattern<triton::SplatOp> {
   LogicalResult
   matchAndRewrite(triton::SplatOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto opType = cast<TensorType>(op.getType());
+    auto opType = cast<RankedTensorType>(op.getType());
     auto loc = op.getLoc();
 
     auto init = tensor::EmptyOp::create(rewriter, loc, opType.getShape(),
                                         opType.getElementType());
 
-    auto filledTensor =
-        linalg::FillOp::create(rewriter, loc, ValueRange{adaptor.getSrc()},
-                               ValueRange{init})
-            .result();
+    Value filledTensor;
+    if (isa<triton::PointerType>(adaptor.getSrc().getType())) {
+      SmallVector<AffineMap> indexingMaps = {
+          rewriter.getMultiDimIdentityMap(opType.getRank())};
+      auto linalgOp = linalg::GenericOp::create(
+          rewriter, loc, op->getResultTypes(), ValueRange{}, ValueRange{init},
+          indexingMaps, getNParallelLoopsAttrs(opType.getRank()),
+          [&](OpBuilder &nestedBuilder, Location nestedLoc,
+              ValueRange blockArgs) {
+            linalg::YieldOp::create(nestedBuilder, nestedLoc, adaptor.getSrc());
+          });
+      filledTensor = linalgOp.getResult(0);
+    } else {
+      filledTensor =
+          linalg::FillOp::create(rewriter, loc, ValueRange{adaptor.getSrc()},
+                                 ValueRange{init})
+              .result();
+    }
 
     rewriter.replaceOp(op, filledTensor);
     return success();
@@ -2458,7 +2525,7 @@ public:
     auto axis = op.getAxis();
     auto type = dyn_cast<RankedTensorType>(input.getType());
 
-    if (type.getRank() != 1 && type.getRank() != 2 &&
+    if ((type.getRank() != 1 && type.getRank() != 2) ||
         axis != type.getRank() - 1) {
       return rewriter.notifyMatchFailure(
           op, "Only support lowering scan op to cumsum with rank "
@@ -2828,10 +2895,139 @@ private:
   std::unordered_map<std::string, OpInfo> opMap;
 };
 
-class ConvertExternIsNaNOrInf
+class ConvertExternSpecialMath
     : public OpConversionPattern<triton::ExternElementwiseOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
+
+private:
+  enum class DivRoundingMode { RN, RZ, RD, RU };
+
+  static std::optional<DivRoundingMode> getDivRoundingMode(StringRef symbol) {
+    return llvm::StringSwitch<std::optional<DivRoundingMode>>(symbol)
+        .Case("linalg.div_rn", DivRoundingMode::RN)
+        .Case("linalg.div_rz", DivRoundingMode::RZ)
+        .Case("linalg.div_rd", DivRoundingMode::RD)
+        .Case("linalg.div_ru", DivRoundingMode::RU)
+        .Default(std::nullopt);
+  }
+
+  static LogicalResult
+  validateBinaryFloatOp(triton::ExternElementwiseOp op, ValueRange operands,
+                        RankedTensorType outputType,
+                        ConversionPatternRewriter &rewriter, StringRef opName) {
+    if (operands.size() != 2) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << opName << " expects exactly two inputs";
+      });
+    }
+
+    auto lhsType = dyn_cast<RankedTensorType>(operands[0].getType());
+    auto rhsType = dyn_cast<RankedTensorType>(operands[1].getType());
+    if (!lhsType || !rhsType) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << opName << " lowering requires ranked tensor operands";
+      });
+    }
+
+    if (lhsType.getShape() != rhsType.getShape() ||
+        lhsType.getShape() != outputType.getShape()) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << opName << " lowering requires matching operand/result shapes";
+      });
+    }
+
+    auto lhsElemType = lhsType.getElementType();
+    auto rhsElemType = rhsType.getElementType();
+    auto outputElemType = outputType.getElementType();
+    if (lhsElemType != rhsElemType || lhsElemType != outputElemType) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << opName
+             << " lowering requires matching operand/result element types";
+      });
+    }
+
+    if (!isa<FloatType>(lhsElemType)) {
+      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
+        diag << opName << " lowering only supports float element types";
+      });
+    }
+
+    return success();
+  }
+
+  static LogicalResult validateDivLikeOp(triton::ExternElementwiseOp op,
+                                         ValueRange operands,
+                                         RankedTensorType outputType,
+                                         ConversionPatternRewriter &rewriter) {
+    if (operands.size() != 2) {
+      return rewriter.notifyMatchFailure(
+          op, "linalg.div_r* expects exactly two inputs");
+    }
+
+    auto lhsType = dyn_cast<RankedTensorType>(operands[0].getType());
+    auto rhsType = dyn_cast<RankedTensorType>(operands[1].getType());
+    if (!lhsType || !rhsType) {
+      return rewriter.notifyMatchFailure(
+          op, "linalg.div_r* lowering requires ranked tensor operands");
+    }
+
+    if (lhsType.getShape() != rhsType.getShape() ||
+        lhsType.getShape() != outputType.getShape()) {
+      return rewriter.notifyMatchFailure(
+          op, "linalg.div_r* lowering requires matching operand/result "
+              "shapes");
+    }
+
+    auto lhsElemType = lhsType.getElementType();
+    auto rhsElemType = rhsType.getElementType();
+    auto outputElemType = outputType.getElementType();
+    if (lhsElemType != rhsElemType || lhsElemType != outputElemType) {
+      return rewriter.notifyMatchFailure(
+          op, "linalg.div_r* lowering requires matching operand/result "
+              "element types");
+    }
+
+    if (!isa<FloatType, IntegerType>(lhsElemType)) {
+      return rewriter.notifyMatchFailure(
+          op, "linalg.div_r* lowering only supports integer or float "
+              "element types");
+    }
+
+    return success();
+  }
+
+  static Value buildIntegerDivOp(OpBuilder &b, Location loc, Value lhs,
+                                 Value rhs, IntegerType intType) {
+    if (intType.isUnsigned()) {
+      return arith::DivUIOp::create(b, loc, lhs, rhs);
+    }
+    return arith::DivSIOp::create(b, loc, lhs, rhs);
+  }
+
+  static Value buildFloatDivOp(OpBuilder &b, Location loc, Value lhs, Value rhs,
+                               DivRoundingMode mode) {
+    Value quotient = arith::DivFOp::create(b, loc, lhs, rhs);
+    switch (mode) {
+    case DivRoundingMode::RN:
+      return quotient;
+    case DivRoundingMode::RZ:
+      return math::TruncOp::create(b, loc, quotient);
+    case DivRoundingMode::RD:
+      return math::FloorOp::create(b, loc, quotient);
+    case DivRoundingMode::RU:
+      return math::CeilOp::create(b, loc, quotient);
+    }
+    llvm_unreachable("unsupported div rounding mode");
+  }
+
+  static Value buildDivLikeOp(OpBuilder &b, Location loc, Value lhs, Value rhs,
+                              DivRoundingMode mode) {
+    if (auto intType = dyn_cast<IntegerType>(lhs.getType())) {
+      return buildIntegerDivOp(b, loc, lhs, rhs, intType);
+    }
+    return buildFloatDivOp(b, loc, lhs, rhs, mode);
+  }
 
   LogicalResult
   matchAndRewrite(triton::ExternElementwiseOp op, OpAdaptor adaptor,
@@ -2843,15 +3039,22 @@ public:
     bool isFinite = (symbol == "math.isfinite");
     bool isCos = (symbol == "math.cos");
     bool isSin = (symbol == "math.sin");
+    bool isTrunc = (symbol == "math.trunc");
+    bool isAtan2 = (symbol == "math.atan2");
+    bool isFmod = (symbol == "linalg.fmod");
+    auto divRoundingMode = getDivRoundingMode(symbol);
+    bool isDivLike = divRoundingMode.has_value();
 
-    if (!isIsNaN && !isIsInf && !isFinite && !isCos && !isSin) {
+    if (!isIsNaN && !isIsInf && !isFinite && !isCos && !isSin && !isTrunc &&
+        !isAtan2 && !isFmod && !isDivLike) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "unsupported extern operation: " << symbol;
       });
     }
 
     Location loc = op.getLoc();
-    Value input = adaptor.getOperands().front();
+    auto operands = adaptor.getOperands();
+    Value input = operands.front();
 
     auto inputType = dyn_cast<RankedTensorType>(input.getType());
     if (!inputType) {
@@ -2860,17 +3063,37 @@ public:
     }
 
     auto outputType = cast<RankedTensorType>(op.getType());
-    auto floatType = dyn_cast<FloatType>(inputType.getElementType());
-    if (!floatType) {
+    auto outputElemType = outputType.getElementType();
+    auto inputElemType = inputType.getElementType();
+    auto floatType = dyn_cast<FloatType>(inputElemType);
+
+    if (!isDivLike && !floatType) {
       return rewriter.notifyMatchFailure(op, "element type is not float");
     }
-    auto outputElemType = outputType.getElementType();
 
-    if ((isCos || isSin) && (!isa<FloatType>(outputElemType) ||
-                             outputElemType != inputType.getElementType())) {
+    if ((isCos || isSin || isTrunc) &&
+        (!isa<FloatType>(outputElemType) ||
+         outputElemType != inputType.getElementType())) {
       return rewriter.notifyMatchFailure(
-          op, "math.sin/math.cos lowering requires float output element type "
+          op, "math.sin/math.cos/math.trunc lowering requires float output "
+              "element type "
               "matching input element type");
+    }
+
+    if (isDivLike) {
+      if (failed(validateDivLikeOp(op, operands, outputType, rewriter))) {
+        return failure();
+      }
+    } else if (isAtan2) {
+      if (failed(validateBinaryFloatOp(op, operands, outputType, rewriter,
+                                       "math.atan2"))) {
+        return failure();
+      }
+    } else if (isFmod) {
+      if (failed(validateBinaryFloatOp(op, operands, outputType, rewriter,
+                                       "linalg.fmod"))) {
+        return failure();
+      }
     }
 
     Value outputTensor = tensor::EmptyOp::create(
@@ -2878,7 +3101,9 @@ public:
 
     AffineMap identityMap = AffineMap::getMultiDimIdentityMap(
         inputType.getRank(), rewriter.getContext());
-    SmallVector<AffineMap> indexingMaps = {identityMap, identityMap};
+    SmallVector<AffineMap> indexingMaps;
+    indexingMaps.append(operands.size(), identityMap);
+    indexingMaps.push_back(identityMap);
 
     SmallVector<utils::IteratorType> iteratorTypes(
         inputType.getRank(), utils::IteratorType::parallel);
@@ -2888,7 +3113,7 @@ public:
     linalg::GenericOp::build(
         rewriter, state,
         /*resultTensorTypes=*/TypeRange{outputType},
-        /*inputs=*/ValueRange{input},
+        /*inputs=*/operands,
         /*outputs=*/ValueRange{outputTensor},
         /*indexingMaps=*/indexingMaps,
         /*iteratorTypes=*/iteratorTypes,
@@ -2924,6 +3149,15 @@ public:
             }
           } else if (isCos) {
             outputVal = math::CosOp::create(b, loc, inputVal);
+          } else if (isTrunc) {
+            outputVal = math::TruncOp::create(b, loc, inputVal);
+          } else if (isAtan2) {
+            outputVal = math::Atan2Op::create(b, loc, args[0], args[1]);
+          } else if (isFmod) {
+            outputVal = arith::RemFOp::create(b, loc, args[0], args[1]);
+          } else if (isDivLike) {
+            outputVal =
+                buildDivLikeOp(b, loc, args[0], args[1], *divRoundingMode);
           } else {
             assert(isSin && "expected math.sin path");
             outputVal = math::SinOp::create(b, loc, inputVal);

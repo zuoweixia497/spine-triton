@@ -1,8 +1,8 @@
 //===----------------------------------------------------------------------===//
 //
 // SPDX-FileCopyrightText: Copyright (c) 2025 SpacemiT. ALL rights reserved.
-// SPDX-FileCopyrightText: Copyright (c) Microsoft Corporation. All rights reserved.
-// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) Microsoft Corporation. All rights
+// reserved. SPDX-License-Identifier: MIT
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,7 +33,6 @@
 using namespace mlir;
 using namespace triton;
 
-#define GEN_PASS_CLASSES
 #include "triton-shared/Conversion/TritonArithToLinalg/Passes.h.inc"
 
 void mlir::triton::populateTritonArithToLinalgCanonicalizationPatterns(
@@ -52,7 +51,8 @@ void mlir::triton::populateTritonTensorPtrConversionPatterns(
 
 void mlir::triton::populateTritonArithToLinalgConversionPatterns(
     bool pidsToFuncArgs, bool addptrToLinalg, bool assertToCf,
-    RewritePatternSet &patterns, mlir::triton::TritonLinalgTypeConverter &converter) {
+    RewritePatternSet &patterns,
+    mlir::triton::TritonLinalgTypeConverter &converter) {
 
   if (pidsToFuncArgs) {
     patterns.add<GetProgramIDConverter, GetNumProgramsConverter>(
@@ -85,7 +85,7 @@ void mlir::triton::populateTritonArithToLinalgConversionPatterns(
   // patterns.add<CumSumConverter>(patterns.getContext());
   patterns.add<ReshapeConverter>(patterns.getContext());
   patterns.add<ConvertExternElementwise>(patterns.getContext());
-  patterns.add<ConvertExternIsNaNOrInf>(patterns.getContext());
+  patterns.add<ConvertExternSpecialMath>(patterns.getContext());
 
   populateExternElementwiseOpToMLIROps(patterns);
 

@@ -50,15 +50,56 @@
 using namespace mlir;
 using namespace mlir::triton;
 
-#define GEN_PASS_CLASSES
 #include "triton-shared/Conversion/TritonArithToLinalg/Passes.h.inc"
 
 static const std::string WRAP_SIDE_BY_SIDE = "wrap_side_by_side";
 static const std::string WRAP_STACKED = "wrap_stacked";
 
+static Value unwrapSubviewSource(Value source) {
+  while (true) {
+    if (auto castOp = source.getDefiningOp<memref::CastOp>()) {
+      source = castOp.getSource();
+      continue;
+    }
+    if (auto unrealizedCast =
+            source.getDefiningOp<UnrealizedConversionCastOp>()) {
+      if (unrealizedCast.getInputs().size() == 1 &&
+          !unrealizedCast->hasAttr(WRAP_SIDE_BY_SIDE) &&
+          !unrealizedCast->hasAttr(WRAP_STACKED)) {
+        Type inType = unrealizedCast.getInputs()[0].getType();
+        Type outType = unrealizedCast.getResult(0).getType();
+        // Only peel no-op memref<->memref materialization casts. If the cast
+        // is bridging from a non-memref type (for example ptr-like) to memref,
+        // keep it, otherwise getSubview may receive a non-memref source and
+        // crash on cast<MemRefType>.
+        if (isa<BaseMemRefType>(inType) && isa<BaseMemRefType>(outType)) {
+          source = unrealizedCast.getInputs()[0];
+          continue;
+        }
+      }
+    }
+    break;
+  }
+  return source;
+}
+
 static memref::SubViewOp getSubview(int rank, ArrayRef<OpFoldResult> dims,
                                     Value source, Location loc, OpBuilder &b) {
-  auto sourceType = cast<MemRefType>(source.getType());
+  source = unwrapSubviewSource(source);
+  auto sourceBaseType = dyn_cast<BaseMemRefType>(source.getType());
+  assert(sourceBaseType && "getSubview expects a memref-typed source");
+
+  MemRefType sourceType;
+  if (auto rankedType = dyn_cast<MemRefType>(sourceBaseType)) {
+    sourceType = rankedType;
+  } else {
+    auto unrankedType = cast<UnrankedMemRefType>(sourceBaseType);
+    SmallVector<int64_t> dynamicShape(rank, ShapedType::kDynamic);
+    sourceType = MemRefType::get(dynamicShape, unrankedType.getElementType(),
+                                 AffineMap(), unrankedType.getMemorySpace());
+    source = memref::CastOp::create(b, loc, sourceType, source);
+  }
+
   SmallVector<OpFoldResult> offsets(rank, b.getIndexAttr(0));
   SmallVector<OpFoldResult> strides(rank, b.getIndexAttr(1));
   auto dstType =
@@ -84,9 +125,16 @@ static Type getElementTypeBlockPtr(tts::MakeTensorPtrOp op) {
   return shapedType.getElementType();
 }
 
+static Attribute getBridgeMemorySpace(Value basePtr) {
+  if (auto memrefType = dyn_cast<BaseMemRefType>(basePtr.getType()))
+    return memrefType.getMemorySpace();
+  return Attribute();
+}
+
 static MemRefType getResultMemrefType(tts::MakeTensorPtrOp op, int64_t offset,
                                       ArrayRef<int64_t> staticStrides,
-                                      ArrayRef<int64_t> resultShape) {
+                                      ArrayRef<int64_t> resultShape,
+                                      Attribute memorySpace = Attribute()) {
   auto layout = StridedLayoutAttr::get(op.getContext(), offset, staticStrides);
   Type elemType;
   if (op.isBlockPtr()) {
@@ -94,20 +142,21 @@ static MemRefType getResultMemrefType(tts::MakeTensorPtrOp op, int64_t offset,
   } else {
     elemType = getElementTypeStructuredPtr(op);
   }
-  return MemRefType::get(resultShape, elemType, layout);
+  return MemRefType::get(resultShape, elemType, layout, memorySpace);
 }
 
 static MemRefType getResultMemrefType(tts::MakeGatherScatterTensorPtrOp op,
                                       int64_t offset,
                                       ArrayRef<int64_t> staticStrides,
-                                      ArrayRef<int64_t> resultShape) {
+                                      ArrayRef<int64_t> resultShape,
+                                      Attribute memorySpace = Attribute()) {
   auto layout = StridedLayoutAttr::get(op.getContext(), offset, staticStrides);
 
   auto ptrType = cast<triton::PointerType>(op.getType());
   Type elemType = ptrType.getPointeeType();
 
   Type realEltTy = cast<RankedTensorType>(elemType).getElementType();
-  return MemRefType::get(resultShape, realEltTy, layout);
+  return MemRefType::get(resultShape, realEltTy, layout, memorySpace);
 }
 
 // If there are dimensions with size 1 and stride 0, replace 0 stride with
@@ -181,9 +230,9 @@ static Value rewriteGatherScatterPtrElement(
                                              gatherDim, rewriter);
 
   auto staticTargetOffset = getIntAttr(targetOffset);
-  auto resultType =
-      getResultMemrefType(op, staticTargetOffset.value_or(ShapedType::kDynamic),
-                          staticStrides, resultShape);
+  auto resultType = getResultMemrefType(
+      op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
+      resultShape, getBridgeMemorySpace(basePtr));
 
   std::vector<int64_t> staticSizes = op.getSizes();
   staticSizes[gatherDim] = 1;
@@ -195,6 +244,39 @@ static Value rewriteGatherScatterPtrElement(
       mixedStrides);
 
   return castOp.getResult();
+}
+
+static bool hasWraparoundGatherOffset(tts::MakeGatherScatterTensorPtrOp op,
+                                      int gatherDim,
+                                      ConversionPatternRewriter &rewriter) {
+  Value gatherOffset = op.getGatherScatterOffset();
+  if (!gatherOffset)
+    return false;
+
+  auto offsetTy = dyn_cast<RankedTensorType>(gatherOffset.getType());
+  if (!offsetTy || offsetTy.getRank() != 1)
+    return false;
+
+  auto fromElements = gatherOffset.getDefiningOp<tensor::FromElementsOp>();
+  if (!fromElements)
+    return false;
+
+  auto mixedSizes = op.getMixedSizes();
+  if (gatherDim >= static_cast<int>(mixedSizes.size()))
+    return false;
+  Value gatherDimSize = getValueOrCreateConstantIndexOp(rewriter, op.getLoc(),
+                                                        mixedSizes[gatherDim]);
+
+  bool sawRem = false;
+  for (Value element : fromElements.getElements()) {
+    auto rem = element.getDefiningOp<arith::RemSIOp>();
+    if (!rem)
+      return false;
+    if (rem.getRhs() != gatherDimSize)
+      return false;
+    sawRem = true;
+  }
+  return sawRem;
 }
 
 // Fill load destination with other value for mask.
@@ -257,7 +339,8 @@ private:
 
   static MemRefType getResultMemrefType(tts::MakeTensorPtrOp op, int64_t offset,
                                         ArrayRef<int64_t> staticStrides,
-                                        ArrayRef<int64_t> resultShape) {
+                                        ArrayRef<int64_t> resultShape,
+                                        Attribute memorySpace = Attribute()) {
     auto layout =
         StridedLayoutAttr::get(op.getContext(), offset, staticStrides);
     Type elemType;
@@ -266,7 +349,7 @@ private:
     } else {
       elemType = getElementTypeStructuredPtr(op);
     }
-    return MemRefType::get(resultShape, elemType, layout);
+    return MemRefType::get(resultShape, elemType, layout, memorySpace);
   }
 
   std::pair<memref::ReinterpretCastOp, memref::ReinterpretCastOp>
@@ -328,7 +411,8 @@ private:
             // should be the same as the original column.
             // The last chunk may be smaller due to
             // wrapping around.
-            ShapedType::kDynamic});
+            ShapedType::kDynamic},
+        getBridgeMemorySpace(adaptor.getBase()));
 
     Value rowSize = arith::ConstantOp::create(
         rewriter, loc, rewriter.getIndexAttr(op.getSizes()[0]));
@@ -434,7 +518,8 @@ private:
 
             // Col stays the same, which is resultShape[1], but mlir doesn't
             // allow this anymore. So we put dynamic instead.
-            ShapedType::kDynamic});
+            ShapedType::kDynamic},
+        getBridgeMemorySpace(adaptor.getBase()));
 
     Value rowSize = arith::ConstantOp::create(
         rewriter, loc, rewriter.getIndexAttr(op.getSizes()[0]));
@@ -490,7 +575,7 @@ private:
     ArrayRef<int64_t> resultShape = cast<ShapedType>(op.getType()).getShape();
     auto resultType = getResultMemrefType(
         op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
-        resultShape);
+        resultShape, getBridgeMemorySpace(adaptor.getBase()));
 
     auto castOp = memref::ReinterpretCastOp::create(
         rewriter, op.getLoc(), resultType, adaptor.getBase(), targetOffset,
@@ -542,12 +627,14 @@ private:
       if (mixSizes.size() == 1) {
         resultType = getResultMemrefType(
             op, staticTargetOffset.value_or(ShapedType::kDynamic),
-            staticStrides, ShapedType::kDynamic);
+            staticStrides, ShapedType::kDynamic,
+            getBridgeMemorySpace(adaptor.getBase()));
       } else {
         resultType = getResultMemrefType(
             op, ShapedType::kDynamic,
             SmallVector<int64_t>(resultShape.size(), ShapedType::kDynamic),
-            SmallVector<int64_t>(mixSizes.size(), ShapedType::kDynamic));
+            SmallVector<int64_t>(mixSizes.size(), ShapedType::kDynamic),
+            getBridgeMemorySpace(adaptor.getBase()));
       }
       castOp = memref::ReinterpretCastOp::create(
           rewriter, op.getLoc(), resultType, adaptor.getBase(), targetOffset,
@@ -556,7 +643,7 @@ private:
     } else {
       auto resultType = getResultMemrefType(
           op, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
-          resultShape);
+          resultShape, getBridgeMemorySpace(adaptor.getBase()));
       castOp = memref::ReinterpretCastOp::create(
           rewriter, op.getLoc(), resultType, adaptor.getBase(), targetOffset,
           mixSizes, mixedStrides);
@@ -818,7 +905,8 @@ private:
     if (auto unrealizedCast =
             dyn_cast_or_null<UnrealizedConversionCastOp>(ptrDefiningOp)) {
       if (!unrealizedCast->hasAttr(WRAP_SIDE_BY_SIDE) &&
-          !unrealizedCast->hasAttr(WRAP_STACKED)) {
+          !unrealizedCast->hasAttr(WRAP_STACKED) &&
+          isa<BaseMemRefType>(unrealizedCast.getInputs()[0].getType())) {
         // Unwrap to use the source memref directly. Do NOT erase the
         // unrealized materialization created by the conversion framework;
         // removing it can cause assertion failures when it is an
@@ -1013,6 +1101,23 @@ private:
     auto alloc = memref::AllocOp::create(
         rewriter, loc, MemRefType::get(tensorType.getShape(), elemType));
 
+    // Keep masked-load default semantics: masked-out lanes read as zero
+    // when `other` is not provided. Place fill immediately after alloc.
+    if (!op.getOther()) {
+      Value zeroValue;
+      if (auto floatType = dyn_cast<FloatType>(elemType)) {
+        const llvm::fltSemantics &semantics = floatType.getFloatSemantics();
+        zeroValue = arith::ConstantFloatOp::create(rewriter, loc, floatType,
+                                                   APFloat::getZero(semantics));
+      } else if (auto intType = dyn_cast<IntegerType>(elemType)) {
+        zeroValue = arith::ConstantIntOp::create(rewriter, loc, intType, 0);
+      } else {
+        llvm_unreachable("Unsupported element type used for fill");
+      }
+      linalg::FillOp::create(rewriter, loc, ValueRange{zeroValue},
+                             ValueRange{alloc});
+    }
+
     SmallVector<OpFoldResult> mixedDims = op.getMixedMaskDims();
 
     // Fill load destination with other value
@@ -1028,7 +1133,8 @@ private:
     if (auto unrealizedCast =
             dyn_cast_or_null<UnrealizedConversionCastOp>(ptrDefiningOp)) {
       if (!unrealizedCast->hasAttr(WRAP_SIDE_BY_SIDE) &&
-          !unrealizedCast->hasAttr(WRAP_STACKED)) {
+          !unrealizedCast->hasAttr(WRAP_STACKED) &&
+          isa<BaseMemRefType>(unrealizedCast.getInputs()[0].getType())) {
         // Unwrap to the source memref; do NOT erase the unrealized
         // conversion materialization here.
         ptr = unrealizedCast.getInputs()[0];
@@ -1098,6 +1204,7 @@ private:
             .getResult();
 
     int gatherDim = ptr.getGatherScatterDim();
+    bool hasWraparound = hasWraparoundGatherOffset(ptr, gatherDim, rewriter);
 
     auto offsets = ptr.getMixedOffsets();
     auto strides = ptr.getMixedStrides();
@@ -1165,6 +1272,27 @@ private:
     Value inductionVar = loop.getInductionVar();
     auto gatherOffsetElt = tensor::ExtractOp::create(
         rewriter, loc, gatherOffset, ValueRange{inductionVar});
+
+    if (hasWraparound) {
+      SmallVector<Value> srcIndices;
+      auto baseMixedOffsets = ptr.getMixedOffsets();
+      for (int i = 0, e = ptr.getSizes().size(); i < e; ++i) {
+        Value idx =
+            getValueOrCreateConstantIndexOp(rewriter, loc, baseMixedOffsets[i]);
+        if (i == gatherDim)
+          idx = arith::AddIOp::create(rewriter, loc, idx,
+                                      gatherOffsetElt.getResult());
+        srcIndices.push_back(idx);
+      }
+
+      SmallVector<Value> dstIndices(resultType.getRank(), lowerBound);
+      dstIndices[gatherDim] = inductionVar;
+
+      Value loaded =
+          memref::LoadOp::create(rewriter, loc, memRefPtr, srcIndices);
+      memref::StoreOp::create(rewriter, loc, loaded, alloc, dstIndices);
+      return success();
+    }
 
     // reinterpret_cast to current row as memRefPtr[gatherOffsetElt].
     Value srcPtr = rewriteGatherScatterPtrElement(staticSizes, ptr, memRefPtr,
@@ -1260,6 +1388,7 @@ private:
             .getResult();
 
     int gatherDim = ptr.getGatherScatterDim();
+    bool hasWraparound = hasWraparoundGatherOffset(ptr, gatherDim, rewriter);
 
     auto offsets = ptr.getMixedOffsets();
     auto strides = ptr.getMixedStrides();
@@ -1308,6 +1437,29 @@ private:
 
     auto gatherOffsetElt = tensor::ExtractOp::create(
         rewriter, loc, gatherOffset, ValueRange{inductionVar});
+
+    if (hasWraparound) {
+      SmallVector<Value> srcIndices(
+          cast<RankedTensorType>(stVal.getType()).getRank(), lowerBound);
+      srcIndices[gatherDim] = inductionVar;
+      Value storeVal =
+          tensor::ExtractOp::create(rewriter, loc, stVal, srcIndices);
+
+      SmallVector<Value> dstIndices;
+      auto baseMixedOffsets = ptr.getMixedOffsets();
+      for (int i = 0, e = ptr.getSizes().size(); i < e; ++i) {
+        Value idx =
+            getValueOrCreateConstantIndexOp(rewriter, loc, baseMixedOffsets[i]);
+        if (i == gatherDim)
+          idx = arith::AddIOp::create(rewriter, loc, idx,
+                                      gatherOffsetElt.getResult());
+        dstIndices.push_back(idx);
+      }
+
+      memref::StoreOp::create(rewriter, loc, storeVal, memRefPtr, dstIndices);
+      rewriter.eraseOp(op);
+      return success();
+    }
 
     // Create extract_slice stVal[inductionVar].
     unsigned rank = ptr.getSizes().size();
@@ -1374,13 +1526,45 @@ public:
     Value storeValue = op.getValue();
     auto storeValueType = cast<RankedTensorType>(storeValue.getType());
     auto rank = storeValueType.getRank();
+    auto ptrMemRefType = cast<MemRefType>(ptr.getType());
+
+    // Handle scalar tensor store into scalar-pointer bridge memref.
+    // PtrToMemrefConverter currently maps !tt.ptr<T> to memref<?xT, ...>.
+    // For stores like tl.store(ptr, scalar), the value is lowered as a rank-0
+    // tensor but the destination memref remains rank-1. Materializing a
+    // rank-0 tensor directly into a rank-1 memref is rejected by
+    // bufferization.materialize_in_destination, so lower this case to an
+    // explicit memref.store at index 0.
+    // When a mask is present the store is guarded by scf.if(maskDim > 0).
+    if (rank == 0 && ptrMemRefType.getRank() == 1) {
+      Value scalar =
+          tensor::ExtractOp::create(rewriter, loc, storeValue, ValueRange{});
+      Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+
+      if (op.hasMask()) {
+        auto mixedDims = op.getMixedMaskDims();
+        Value maskDim =
+            getValueOrCreateConstantIndexOp(rewriter, loc, mixedDims[0]);
+        Value zeroDim = arith::ConstantIndexOp::create(rewriter, loc, 0);
+        Value cond = arith::CmpIOp::create(
+            rewriter, loc, arith::CmpIPredicate::sgt, maskDim, zeroDim);
+        auto ifOp = scf::IfOp::create(rewriter, loc, TypeRange{}, cond,
+                                      /*withElseRegion=*/false);
+        rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+        memref::StoreOp::create(rewriter, loc, scalar, ptr, ValueRange{zero});
+      } else {
+        memref::StoreOp::create(rewriter, loc, scalar, ptr, ValueRange{zero});
+      }
+
+      rewriter.eraseOp(op);
+      return success();
+    }
 
     // Handle element type mismatch due to tt.bitcast on pointer tensors.
     // When tt.bitcast changes the pointee type (e.g., !tt.ptr<i1> ->
     // !tt.ptr<i8>), the store value type may differ from the memref element
     // type. We need to convert the store value to match the memref's element
     // type.
-    auto ptrMemRefType = cast<MemRefType>(ptr.getType());
     Type storeElemType = storeValueType.getElementType();
     Type ptrElemType = ptrMemRefType.getElementType();
 

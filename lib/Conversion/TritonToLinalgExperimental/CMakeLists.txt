@@ -26,7 +26,6 @@ add_triton_library(TritonToLinalgExperimental
   MLIRTensorDialect
   MLIRTransforms
   MLIRSupport
-  TPtrIR
   TritonIR
   TritonTransforms
   TritonSharedAnalysis
@@ -40,5 +39,6 @@ add_triton_library(TritonToLinalgExperimental
   UnstructuredToMemref
   AddTargetDescription
   XSMTToLinalg
+  TLEToLinalg
   ProtonIR
 )

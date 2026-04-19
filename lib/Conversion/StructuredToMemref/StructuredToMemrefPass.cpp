@@ -9,7 +9,6 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "triton-shared/Conversion/StructuredToMemref/StructuredToMemref.h"
-#include "triton-shared/Dialect/TPtr/IR/TPtrDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
@@ -28,6 +27,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Ptr/IR/PtrAttrs.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/Triton/IR/Types.h"
@@ -45,6 +45,72 @@ namespace triton {
 } // namespace mlir
 
 namespace {
+
+struct ReifyMemrefUnrealizedCast
+    : public OpRewritePattern<UnrealizedConversionCastOp> {
+  using OpRewritePattern<UnrealizedConversionCastOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(UnrealizedConversionCastOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getInputs().size() != 1 || op->getNumResults() != 1)
+      return failure();
+
+    auto input = op.getInputs().front();
+    auto inputType = dyn_cast<BaseMemRefType>(input.getType());
+    auto resultType = dyn_cast<BaseMemRefType>(op.getResult(0).getType());
+    if (!inputType || !resultType)
+      return failure();
+
+    if (input.getType() == op.getResult(0).getType()) {
+      rewriter.replaceOp(op, input);
+      return success();
+    }
+
+    if (auto rankedInputType = dyn_cast<MemRefType>(input.getType())) {
+      if (auto rankedResultType =
+              dyn_cast<MemRefType>(op.getResult(0).getType())) {
+        if (!memref::CastOp::areCastCompatible(rankedInputType,
+                                               rankedResultType))
+          return failure();
+        rewriter.replaceOpWithNewOp<memref::CastOp>(op, rankedResultType,
+                                                    input);
+        return success();
+      }
+      if (auto unrankedResultType =
+              dyn_cast<UnrankedMemRefType>(op.getResult(0).getType())) {
+        rewriter.replaceOpWithNewOp<memref::CastOp>(op, unrankedResultType,
+                                                    input);
+        return success();
+      }
+      return failure();
+    }
+
+    if (auto unrankedInputType =
+            dyn_cast<UnrankedMemRefType>(input.getType())) {
+      if (auto rankedResultType =
+              dyn_cast<MemRefType>(op.getResult(0).getType())) {
+        if (!memref::CastOp::areCastCompatible(unrankedInputType,
+                                               rankedResultType))
+          return failure();
+        rewriter.replaceOpWithNewOp<memref::CastOp>(op, rankedResultType,
+                                                    input);
+        return success();
+      }
+      if (auto unrankedResultType =
+              dyn_cast<UnrankedMemRefType>(op.getResult(0).getType())) {
+        rewriter.replaceOpWithNewOp<memref::CastOp>(op, unrankedResultType,
+                                                    input);
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+static ptr::MemorySpaceAttrInterface getPtrBridgeMemorySpace(MLIRContext *ctx) {
+  return ptr::GenericSpaceAttr::get(ctx);
+}
 
 class PtrToMemrefConverter : public TypeConverter {
 public:
@@ -66,7 +132,8 @@ public:
       auto layout = StridedLayoutAttr::get(ctx, /*offset=*/ShapedType::kDynamic,
                                            dynStrides);
 
-      return MemRefType::get(shape, pointeeType, layout, /*memorySpace=*/0);
+      return MemRefType::get(shape, pointeeType, layout,
+                             getPtrBridgeMemorySpace(ctx));
     });
     addConversion([](triton::PointerType ptrType) -> Type {
       MLIRContext *ctx = ptrType.getContext();
@@ -81,10 +148,16 @@ public:
         auto layout = StridedLayoutAttr::get(
             ctx, /*offset=*/ShapedType::kDynamic, dynStrides);
 
-        return MemRefType::get(shape, elementType, layout, /*memorySpace=*/0);
+        return MemRefType::get(shape, elementType, layout,
+                               getPtrBridgeMemorySpace(ctx));
       }
 
-      return UnrankedMemRefType::get(pointeeType, /*memorySpace=*/0);
+      SmallVector<int64_t> dynStrides(/*Size=*/1, ShapedType::kDynamic);
+      auto layout =
+          StridedLayoutAttr::get(ctx,
+                                 /*offset=*/ShapedType::kDynamic, dynStrides);
+      return MemRefType::get({ShapedType::kDynamic}, pointeeType, layout,
+                             getPtrBridgeMemorySpace(ctx));
     });
     addConversion([](xsmt::BufferType bufTy) -> Type {
       MLIRContext *ctx = bufTy.getContext();
@@ -116,6 +189,10 @@ public:
                                  ValueRange inputs, Location loc) -> Value {
       if (inputs.size() != 1)
         return nullptr;
+      if (isa<triton::PointerType>(inputs[0].getType()))
+        return UnrealizedConversionCastOp::create(builder, loc, resultType,
+                                                  inputs)
+            .getResult(0);
       auto inputType = dyn_cast<MemRefType>(inputs[0].getType());
       if (!inputType)
         return nullptr;
@@ -147,13 +224,12 @@ class StructuredToMemrefPass
 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry
-        .insert<tptr::TPtrDialect, func::FuncDialect, arith::ArithDialect,
-                math::MathDialect, linalg::LinalgDialect, affine::AffineDialect,
-                scf::SCFDialect, tensor::TensorDialect,
-                bufferization::BufferizationDialect, triton::TritonDialect,
-                ttx::TritonTilingExtDialect, memref::MemRefDialect,
-                xsmt::XSMTDialect, xsmt_async::XSMTAsyncDialect>();
+    registry.insert<func::FuncDialect, arith::ArithDialect, math::MathDialect,
+                    linalg::LinalgDialect, affine::AffineDialect,
+                    scf::SCFDialect, tensor::TensorDialect,
+                    bufferization::BufferizationDialect, triton::TritonDialect,
+                    ttx::TritonTilingExtDialect, memref::MemRefDialect,
+                    xsmt::XSMTDialect, xsmt_async::XSMTAsyncDialect>();
   }
 
   void runOnOperation() override {
@@ -188,6 +264,12 @@ public:
 
     if (failed(
             applyPartialConversion(moduleOp, target, std::move(patterns0)))) {
+      signalPassFailure();
+    }
+
+    RewritePatternSet cleanupPatterns(&getContext());
+    cleanupPatterns.add<ReifyMemrefUnrealizedCast>(&getContext());
+    if (failed(applyPatternsGreedily(moduleOp, std::move(cleanupPatterns)))) {
       signalPassFailure();
     }
 
