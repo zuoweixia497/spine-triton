@@ -294,7 +294,32 @@ void init_triton_tle_ir(py::module &&m) {
             return op.getResult();
           },
           py::arg("input"), py::arg("tile"), py::arg("index"),
-          "Create insert_tile operation");
+          "Create insert_tile operation")
+      .def(
+          "create_tle_to_tensor",
+          [](TritonOpBuilder &self, Value &buffer) -> Value {
+            auto op = self.create<tle::ToTensorOp>(buffer);
+            return op.getResult();
+          },
+          py::arg("buffer"), "Create tle.to_tensor operation")
+      .def(
+          "create_tle_to_buffer",
+          [](TritonOpBuilder &self, Value &tensor, Value &buffer) -> Value {
+            auto op = self.create<tle::ToBufferOp>(tensor, buffer);
+            return op.getResult();
+          },
+          py::arg("tensor"), py::arg("buffer"),
+          "Create tle.to_buffer operation")
+      .def(
+          "create_tle_local_ptr",
+          [](TritonOpBuilder &self, Type resultType, Value &buffer,
+             std::vector<Value> &indices) -> Value {
+            auto op = self.create<tle::LocalPtrOp>(resultType, buffer,
+                                                   ValueRange(indices));
+            return op.getResult();
+          },
+          py::arg("result_type"), py::arg("buffer"), py::arg("indices"),
+          "Create tle.local_ptr operation");
 }
 
 void init_triton_spine_triton(py::module &&m) {

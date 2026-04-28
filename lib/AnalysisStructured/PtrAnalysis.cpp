@@ -19,6 +19,7 @@
 
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "triton-shared/Dialect/TLE/IR/TLEDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -34,6 +35,7 @@
 #include "llvm/Support/LogicalResult.h"
 #include <cassert>
 #include <cstddef>
+#include <numeric>
 #include <optional>
 #include <queue>
 #include <string>
@@ -650,6 +652,184 @@ PtrState::createTTSMakeGatherScatterTensorPtrOp(OpBuilder &builder,
   return op;
 }
 
+static OpFoldResult expandIndexAttrToShapedType(OpFoldResult ofr,
+                                                Type shapedType, Location loc,
+                                                OpBuilder &builder) {
+  auto intAttr = getIntAttr(ofr);
+  if (!intAttr)
+    return ofr;
+
+  auto tensorType = dyn_cast<RankedTensorType>(shapedType);
+  if (!tensorType)
+    return ofr;
+
+  Type elementType = tensorType.getElementType();
+  Attribute scalarAttr;
+  if (isa<IndexType>(elementType)) {
+    scalarAttr = builder.getIndexAttr(*intAttr);
+  } else if (auto intType = dyn_cast<IntegerType>(elementType)) {
+    scalarAttr = builder.getIntegerAttr(intType, *intAttr);
+  } else {
+    return ofr;
+  }
+
+  auto denseAttr = DenseElementsAttr::get(tensorType, scalarAttr);
+  return arith::ConstantOp::create(builder, loc, denseAttr).getResult();
+}
+
+static Value stripIndexCasts(Value value) {
+  while (auto cast = value.getDefiningOp<arith::IndexCastOp>())
+    value = cast.getIn();
+  return value;
+}
+
+static Value castToIndexLike(Value value, Location loc, OpBuilder &builder) {
+  if (value.getType().isIndex())
+    return value;
+
+  Type indexType = builder.getIndexType();
+  if (auto tensorTy = dyn_cast<RankedTensorType>(value.getType()))
+    indexType = RankedTensorType::get(tensorTy.getShape(), indexType);
+  return arith::IndexCastOp::create(builder, loc, indexType, value).getResult();
+}
+
+static bool matchBroadcastedRange(Value idx, int64_t expectedAxis,
+                                  SmallVectorImpl<int64_t> &broadcastShape,
+                                  int64_t &rangeStart, int64_t &rangeEnd) {
+  idx = stripIndexCasts(idx);
+  auto idxTy = dyn_cast<RankedTensorType>(idx.getType());
+  if (!idxTy || idxTy.getRank() != 2)
+    return false;
+
+  auto broadcastDef = idx.getDefiningOp<triton::BroadcastOp>();
+  if (!broadcastDef)
+    return false;
+
+  broadcastShape.assign(idxTy.getShape().begin(), idxTy.getShape().end());
+
+  Value src = stripIndexCasts(broadcastDef.getSrc());
+  auto srcTy = dyn_cast<RankedTensorType>(src.getType());
+  if (!srcTy || srcTy.getRank() != 2)
+    return false;
+
+  auto expandDef = src.getDefiningOp<triton::ExpandDimsOp>();
+  if (!expandDef)
+    return false;
+
+  if (expandDef.getAxis() != expectedAxis)
+    return false;
+
+  Value range = stripIndexCasts(expandDef.getSrc());
+  auto rangeDef = range.getDefiningOp<triton::MakeRangeOp>();
+  if (!rangeDef)
+    return false;
+
+  rangeStart = rangeDef.getStart();
+  rangeEnd = rangeDef.getEnd();
+  return true;
+}
+
+static bool isCanonical2DStructuredTile(Value rowIdx, Value colIdx) {
+  SmallVector<int64_t> rowShape;
+  SmallVector<int64_t> colShape;
+  int64_t rowStart = 0, rowEnd = 0, colStart = 0, colEnd = 0;
+
+  if (!matchBroadcastedRange(rowIdx, /*expectedAxis=*/1, rowShape, rowStart,
+                             rowEnd))
+    return false;
+  if (!matchBroadcastedRange(colIdx, /*expectedAxis=*/0, colShape, colStart,
+                             colEnd))
+    return false;
+
+  if (rowShape != colShape || rowShape.size() != 2)
+    return false;
+
+  return rowStart == 0 && colStart == 0 && rowEnd == rowShape[0] &&
+         colEnd == colShape[1];
+}
+
+static bool isCanonicalColumnRange(Value colIdx) {
+  SmallVector<int64_t> shape;
+  int64_t start = 0, end = 0;
+  if (!matchBroadcastedRange(colIdx, /*expectedAxis=*/0, shape, start, end) ||
+      shape.size() != 2)
+    return false;
+  return start == 0 && end == shape[1];
+}
+
+static void setStructuredLocalTileState(ArrayRef<Value> indices,
+                                        PtrState &state, OpBuilder &builder) {
+  for (auto [i, idx] : llvm::enumerate(indices)) {
+    auto idxTy = cast<RankedTensorType>(idx.getType());
+    state.offsets[i] = builder.getIndexAttr(0);
+    state.origiOffsets[i] = builder.getIndexAttr(0);
+    state.sizes[i] = builder.getIndexAttr(idxTy.getShape()[i]);
+    state.shape[i] = builder.getIndexAttr(0);
+  }
+}
+
+static LogicalResult setRowGatherLocalTileState(ArrayRef<Value> indices,
+                                                PtrState &state, Location loc,
+                                                OpBuilder &builder) {
+  Value rowIdx = castToIndexLike(indices[0], loc, builder);
+
+  if (auto rowTy = dyn_cast<RankedTensorType>(rowIdx.getType());
+      rowTy && rowTy.getRank() == 2) {
+    auto m = rowTy.getShape()[0];
+    SmallVector<OpFoldResult> sliceOffsets{builder.getIndexAttr(0),
+                                           builder.getIndexAttr(0)};
+    SmallVector<OpFoldResult> sliceSizes{builder.getIndexAttr(m),
+                                         builder.getIndexAttr(1)};
+    SmallVector<OpFoldResult> sliceStrides{builder.getIndexAttr(1),
+                                           builder.getIndexAttr(1)};
+    auto rowSlice = tensor::ExtractSliceOp::create(
+        builder, loc, rowIdx, sliceOffsets, sliceSizes, sliceStrides);
+    SmallVector<ReassociationExprs, 1> reassoc(1);
+    reassoc[0].push_back(builder.getAffineDimExpr(0));
+    reassoc[0].push_back(builder.getAffineDimExpr(1));
+    rowIdx =
+        tensor::CollapseShapeOp::create(
+            builder, loc, RankedTensorType::get({m}, rowTy.getElementType()),
+            rowSlice, reassoc)
+            .getResult();
+  }
+
+  OpFoldResult rowOffset =
+      mulOFRs(rowIdx,
+              expandIndexAttrToShapedType(state.strides[0], rowIdx.getType(),
+                                          loc, builder),
+              loc, builder);
+
+  if (auto rowOffsetValue = dyn_cast<Value>(rowOffset)) {
+    if (auto rowOffsetTy = dyn_cast<RankedTensorType>(rowOffsetValue.getType());
+        rowOffsetTy && isa<IndexType>(rowOffsetTy.getElementType())) {
+      auto intOffsetTy =
+          RankedTensorType::get(rowOffsetTy.getShape(), builder.getI64Type());
+      rowOffset =
+          arith::IndexCastOp::create(builder, loc, intOffsetTy, rowOffsetValue)
+              .getResult();
+    }
+  }
+
+  state.offsets[0] = rowOffset;
+  state.origiOffsets[0] = rowOffset;
+  for (size_t i = 1; i < indices.size(); ++i) {
+    state.offsets[i] = builder.getIndexAttr(0);
+    state.origiOffsets[i] = builder.getIndexAttr(0);
+    state.shape[i] = builder.getIndexAttr(0);
+  }
+  return success();
+}
+
+static void setTensorIndexOffsets(ArrayRef<Value> indices, PtrState &state,
+                                  Location loc, OpBuilder &builder) {
+  for (auto [i, idx] : llvm::enumerate(indices)) {
+    Value indexLike = castToIndexLike(idx, loc, builder);
+    state.offsets[i] = indexLike;
+    state.origiOffsets[i] = indexLike;
+  }
+}
+
 LogicalResult PtrAnalysis::visitOperandAdd(arith::AddIOp addOp, PtrState &state,
                                            const Location loc,
                                            OpBuilder &builder) {
@@ -1228,10 +1408,20 @@ LogicalResult PtrAnalysis::visitOperandAlloc(xsmt::AllocOp allocOp,
 
   auto indexTy = builder.getIndexType();
 
-  for (auto size : shapeDims) {
+  // Compute row-major strides: stride[i] = product(shape[i+1:])
+  SmallVector<int64_t> strideDims;
+  for (size_t i = 0; i < shapeDims.size(); i++) {
+    int64_t stride = 1;
+    for (size_t j = i + 1; j < shapeDims.size(); j++) {
+      stride *= shapeDims[j];
+    }
+    strideDims.push_back(stride);
+  }
+
+  for (size_t i = 0; i < shapeDims.size(); i++) {
     state.offsets.push_back(builder.getIndexAttr(0));
-    state.sizes.push_back(builder.getIndexAttr(size));
-    state.strides.push_back(builder.getIndexAttr(1));
+    state.sizes.push_back(builder.getIndexAttr(shapeDims[i]));
+    state.strides.push_back(builder.getIndexAttr(strideDims[i]));
     state.shape.push_back(builder.getIndexAttr(0));
   }
 
@@ -1271,6 +1461,72 @@ PtrAnalysis::visitOperandSubviewPack(xsmt::SubviewPackOp subviewPackOp,
                               "temporarily not lowering");
     return failure();
   }
+  return success();
+}
+
+LogicalResult PtrAnalysis::visitOperandLocalPtr(tle::LocalPtrOp localPtrOp,
+                                                PtrState &state,
+                                                const Location loc,
+                                                OpBuilder &builder) {
+  // tle.local_ptr creates pointers into a local buffer (from xsmt.alloc).
+  // We need to track the buffer's PtrState and apply the indices as offsets.
+
+  Value buffer = localPtrOp.getBuffer();
+  auto indices = localPtrOp.getIndices();
+
+  // First, visit the buffer operand to get its PtrState.
+  if (failed(visitOperand(buffer, state, loc, builder))) {
+    localPtrOp->emitRemark(
+        "PtrAnalysis: failed to visit buffer operand in tle.local_ptr");
+    return failure();
+  }
+
+  // If no indices, this is a full-view pointer (no offset adjustment needed).
+  if (indices.empty()) {
+    return success();
+  }
+
+  // With indices, we need to adjust offsets based on the index tensors.
+  // For tensor indices like [%row_ids, %col_ids], these become the offsets.
+  // The indices are already in the right form for PtrState.offsets.
+  if (indices.size() != state.offsets.size()) {
+    localPtrOp->emitRemark(
+        "PtrAnalysis: index count mismatch in tle.local_ptr");
+    return failure();
+  }
+
+  SmallVector<Value> indexValues(indices.begin(), indices.end());
+
+  bool hasTensorIndex = llvm::any_of(
+      indices, [](Value idx) { return isa<RankedTensorType>(idx.getType()); });
+
+  if (hasTensorIndex) {
+    if (indices.size() != 2) {
+      localPtrOp->emitRemark(
+          "PtrAnalysis: tensor-index local_ptr currently only supports 2D "
+          "local-tile patterns");
+      return failure();
+    }
+
+    if (isCanonical2DStructuredTile(indices[0], indices[1])) {
+      setStructuredLocalTileState(indexValues, state, builder);
+      return success();
+    }
+
+    if (isCanonicalColumnRange(indices[1]))
+      return setRowGatherLocalTileState(indexValues, state, loc, builder);
+
+    setTensorIndexOffsets(indexValues, state, loc, builder);
+    return success();
+  }
+
+  for (size_t i = 0; i < indices.size(); ++i) {
+    Value idx = castToIndexLike(indices[i], loc, builder);
+    state.offsets[i] = mulOFRs(idx, state.strides[i], loc, builder);
+    state.shape[i] = builder.getIndexAttr(0);
+    state.origiOffsets[i] = state.offsets[i];
+  }
+
   return success();
 }
 
@@ -1347,6 +1603,8 @@ LogicalResult PtrAnalysis::visitOperand(Value operand, PtrState &state,
         return visitOperandSubview(subviewOp, state, loc, builder);
       } else if (auto subviewPackOp = dyn_cast<xsmt::SubviewPackOp>(op)) {
         return visitOperandSubviewPack(subviewPackOp, state, loc, builder);
+      } else if (auto localPtrOp = dyn_cast<tle::LocalPtrOp>(op)) {
+        return visitOperandLocalPtr(localPtrOp, state, loc, builder);
       } else {
         op->emitRemark("Unexpected defining op for triton pointer operand");
         return failure();
@@ -1471,6 +1729,54 @@ LogicalResult PtrAnalysis::rewriteAddptrOp(triton::AddPtrOp op) {
     ptrMap.map(op.getResult(), op.getResult());
   }
   return success();
+}
+
+static bool isRankedTensorOfPointers(Type type) {
+  auto tensorType = dyn_cast<RankedTensorType>(type);
+  return tensorType && isa<triton::PointerType>(tensorType.getElementType());
+}
+
+static bool isSingleNonStructuredDim(const PtrState &state) {
+  int nonStructuredDims = 0;
+  for (int32_t i = 0; i < state.getRank(); ++i) {
+    if (!state.dimIsStructured(i))
+      ++nonStructuredDims;
+  }
+  return nonStructuredDims == 1;
+}
+
+LogicalResult PtrAnalysis::rewriteLocalPtrOp(tle::LocalPtrOp op) {
+  OpBuilder builder(op);
+
+  PtrState state;
+  if (failed(visitOperandLocalPtr(op, state, op.getLoc(), builder)))
+    return failure();
+
+  knownPtrs[op.getResult()] = state;
+
+  if (!isRankedTensorOfPointers(op.getResult().getType())) {
+    ptrMap.map(op.getResult(), op.getResult());
+    return success();
+  }
+
+  if (state.isStructured()) {
+    auto maketptrOp = state.createTTSMakeTensorPtrOp(
+        builder, state.origiOffsets, op.getLoc());
+    ptrMap.map(op.getResult(), maketptrOp.getResult());
+    return success();
+  }
+
+  if (enableMakeGatherScatterTensorPtr && isSingleNonStructuredDim(state)) {
+    auto maketptrOp =
+        state.createTTSMakeGatherScatterTensorPtrOp(builder, op.getLoc());
+    ptrMap.map(op.getResult(), maketptrOp.getResult());
+    return success();
+  }
+
+  op->emitRemark("PtrAnalysis: tle.local_ptr with multiple tensor indices is "
+                 "not representable as current structured/gather-scatter "
+                 "tensor pointer");
+  return failure();
 }
 
 LogicalResult PtrAnalysis::rewriteMakeTensorPtrOp(
@@ -2349,6 +2655,13 @@ LogicalResult PtrAnalysis::rewriteOp(Operation *rootOp, bool useUnsafeMask) {
         .Case<triton::AdvanceOp>([&](auto advance) {
           if (rewriteAdvanceOp(advance).failed()) {
             advance->emitRemark("PtrAnalysis: Failed to rewrite AdvanceOp");
+          }
+          return WalkResult::advance();
+        })
+        .Case<tle::LocalPtrOp>([&](auto localPtr) {
+          if (rewriteLocalPtrOp(localPtr).failed()) {
+            localPtr->emitRemark(
+                "PtrAnalysis: Failed to rewrite tle.local_ptr");
           }
           return WalkResult::advance();
         })

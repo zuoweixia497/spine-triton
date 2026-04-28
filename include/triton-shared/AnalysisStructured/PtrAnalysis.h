@@ -15,6 +15,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
+#include "triton-shared/Dialect/TLE/IR/TLEDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -204,6 +205,8 @@ public:
   LogicalResult visitOperand(Value operand, PtrState &state, const Location loc,
                              OpBuilder &builder);
 
+  LogicalResult rewriteLocalPtrOp(tle::LocalPtrOp op);
+
   // Operand is a result of an scf.for. Such cases occur when there are multiple
   // levels of nested loops where the results of the inner scf.for (pointer) are
   // yielded by the outer loop.
@@ -353,6 +356,10 @@ public:
   LogicalResult visitOperandSubviewPack(xsmt::SubviewPackOp subviewPackOp,
                                         PtrState &state, const Location loc,
                                         OpBuilder &builder);
+
+  LogicalResult visitOperandLocalPtr(tle::LocalPtrOp localPtrOp,
+                                     PtrState &state, const Location loc,
+                                     OpBuilder &builder);
 
   LogicalResult
   visitOperandBufferTensorViewOp(xsmt::BufferTensorViewOp BufferTensorViewOp,

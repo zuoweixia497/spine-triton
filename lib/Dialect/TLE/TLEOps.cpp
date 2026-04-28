@@ -20,6 +20,13 @@
 using namespace mlir;
 using namespace mlir::tle;
 
+static RankedTensorType getTensorPointeeType(Type type) {
+  auto ptrTy = dyn_cast<triton::PointerType>(type);
+  if (!ptrTy)
+    return {};
+  return dyn_cast<RankedTensorType>(ptrTy.getPointeeType());
+}
+
 // ============================================================================
 // TLE Dialect initialization
 // ============================================================================
@@ -28,6 +35,181 @@ void mlir::tle::TLEDialect::initialize() {
 #define GET_OP_LIST
 #include "triton-shared/Dialect/TLE/IR/TLEOps.cpp.inc"
       >();
+}
+
+// ============================================================================
+// ToTensorOp Builder / Verification
+// ============================================================================
+void ToTensorOp::build(OpBuilder &builder, OperationState &state,
+                       Value buffer) {
+  auto resultType = getTensorPointeeType(buffer.getType());
+  state.addOperands(buffer);
+  state.addTypes(resultType);
+}
+
+LogicalResult ToTensorOp::verify() {
+  auto pointeeTy = getTensorPointeeType(getBuffer().getType());
+  if (!pointeeTy)
+    return emitOpError("buffer must be a pointer to ranked tensor");
+
+  auto resultTy = cast<RankedTensorType>(getResult().getType());
+  if (resultTy != pointeeTy)
+    return emitOpError("result type must match buffer pointee tensor type");
+
+  return success();
+}
+
+// ============================================================================
+// ToBufferOp Builder / Verification
+// ============================================================================
+void ToBufferOp::build(OpBuilder &builder, OperationState &state, Value tensor,
+                       Value buffer) {
+  state.addOperands(tensor);
+  state.addOperands(buffer);
+  state.addTypes(buffer.getType());
+}
+
+LogicalResult ToBufferOp::verify() {
+  auto tensorTy = cast<RankedTensorType>(getTensor().getType());
+  auto pointeeTy = getTensorPointeeType(getBuffer().getType());
+  if (!pointeeTy)
+    return emitOpError("buffer must be a pointer to ranked tensor");
+
+  if (tensorTy != pointeeTy)
+    return emitOpError("tensor type must match buffer pointee tensor type");
+
+  if (getResult().getType() != getBuffer().getType())
+    return emitOpError("result type must match buffer type");
+
+  return success();
+}
+
+// ============================================================================
+// LocalPtrOp Builder / Verification / Assembly
+// ============================================================================
+LogicalResult LocalPtrOp::verify() {
+  auto bufferTy = getTensorPointeeType(getBuffer().getType());
+  if (!bufferTy)
+    return emitOpError("buffer must be a pointer to ranked tensor");
+
+  auto indices = getIndices();
+  int64_t rank = bufferTy.getRank();
+
+  // No indices: result must be a tensor of pointers matching buffer shape.
+  if (indices.empty()) {
+    auto resultTy = dyn_cast<RankedTensorType>(getResult().getType());
+    if (!resultTy)
+      return emitOpError("no-index mode requires tensor-of-pointers result");
+    if (resultTy.getShape() != bufferTy.getShape())
+      return emitOpError("no-index result shape must match buffer shape");
+    return success();
+  }
+
+  // Index count must match buffer rank.
+  if (static_cast<int64_t>(indices.size()) != rank)
+    return emitOpError("expected ")
+           << rank << " indices, got " << indices.size();
+
+  // Classify: all scalar or all tensor (same shape).
+  bool allScalar = true;
+  bool allTensor = true;
+  ArrayRef<int64_t> tensorShape;
+  for (auto idx : indices) {
+    if (auto tensorTy = dyn_cast<RankedTensorType>(idx.getType())) {
+      allScalar = false;
+      if (tensorShape.empty()) {
+        tensorShape = tensorTy.getShape();
+      } else if (tensorTy.getShape() != tensorShape) {
+        return emitOpError("all tensor indices must have identical shapes");
+      }
+    } else {
+      allTensor = false;
+    }
+  }
+
+  if (!allScalar && !allTensor)
+    return emitOpError("indices must be either all scalar or all tensor");
+
+  if (allScalar) {
+    // Result must be a scalar pointer.
+    if (isa<RankedTensorType>(getResult().getType()))
+      return emitOpError("scalar indices require scalar pointer result");
+  } else {
+    // Result must be a tensor of pointers with matching shape.
+    auto resultTy = dyn_cast<RankedTensorType>(getResult().getType());
+    if (!resultTy)
+      return emitOpError("tensor indices require tensor-of-pointers result");
+    if (resultTy.getShape() != tensorShape)
+      return emitOpError("result shape must match index tensor shape");
+  }
+
+  return success();
+}
+
+void LocalPtrOp::print(OpAsmPrinter &printer) {
+  printer << " " << getBuffer();
+  if (!getIndices().empty()) {
+    printer << "[";
+    llvm::interleaveComma(getIndices(), printer);
+    printer << "]";
+  }
+  printer.printOptionalAttrDict((*this)->getAttrs());
+  printer << " : " << getBuffer().getType() << " -> " << getResult().getType();
+}
+
+ParseResult LocalPtrOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand buffer;
+  SmallVector<OpAsmParser::UnresolvedOperand> indices;
+  Type bufferType, resultType;
+
+  if (parser.parseOperand(buffer))
+    return failure();
+
+  // Optional [indices].
+  if (succeeded(parser.parseOptionalLSquare())) {
+    if (parser.parseOperandList(indices) || parser.parseRSquare())
+      return failure();
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes) || parser.parseColon() ||
+      parser.parseType(bufferType) || parser.parseArrow() ||
+      parser.parseType(resultType))
+    return failure();
+
+  // Resolve buffer operand.
+  if (parser.resolveOperand(buffer, bufferType, result.operands))
+    return failure();
+
+  // Resolve index operands: infer types from result.
+  if (!indices.empty()) {
+    auto ptrTy = dyn_cast<triton::PointerType>(bufferType);
+    if (!ptrTy)
+      return failure();
+    auto tensorTy = dyn_cast<RankedTensorType>(ptrTy.getPointeeType());
+    if (!tensorTy)
+      return failure();
+
+    // Check if result is tensor (tensor indices) or scalar (scalar indices).
+    if (auto resTensorTy = dyn_cast<RankedTensorType>(resultType)) {
+      // Tensor indices: each index is tensor<shape x i32>.
+      auto idxTy = RankedTensorType::get(
+          resTensorTy.getShape(), IntegerType::get(parser.getContext(), 32));
+      for (auto &idx : indices) {
+        if (parser.resolveOperand(idx, idxTy, result.operands))
+          return failure();
+      }
+    } else {
+      // Scalar indices: each index is i32.
+      auto idxTy = IntegerType::get(parser.getContext(), 32);
+      for (auto &idx : indices) {
+        if (parser.resolveOperand(idx, idxTy, result.operands))
+          return failure();
+      }
+    }
+  }
+
+  result.addTypes(resultType);
+  return success();
 }
 
 // ============================================================================

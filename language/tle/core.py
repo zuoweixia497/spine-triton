@@ -1,14 +1,213 @@
 # spine-triton TLE (Triton Language Extension)
-# Migrated from FlagTree tle/core.py for spine-triton backend.
+# TLE core APIs for spine-triton backend.
 # - cumsum: removed (not needed for spine-triton)
 # - load: interface preserved, implementation pending
+# - copy: synchronous copy implemented as tl.load + tl.store
+# - local_ptr: buffer + indices → pointer tensor (IR op: tle.local_ptr)
+# - to_tensor / to_buffer: explicit tensor/buffer bridge operations
 # - extract_tile / insert_tile: fully migrated
 import builtins
 import triton.language.core as tl
+from triton.language.extra import smt
+from typing import Sequence
+
+from triton.language.core import constexpr, tensor
 
 # -----------------------
 # Non-Atomic Memory Operations
 # -----------------------
+
+
+@tl.builtin
+def alloc(shape, dtype=None, type=None, scope="l2", _semantic=None):
+    """Allocate a tensor in a TLE-compatible memory scope.
+
+    This is the TLE compatibility entry for spine-triton.  The first
+    implementation intentionally reuses ``smt.alloc`` so it produces the same
+    ``xsmt.alloc`` IR and keeps the existing scope/address-space mapping:
+    ``global -> 10``, ``tcm -> 11``, ``l2 -> 12``, ``fragment -> 13``.
+
+    Both ``dtype=`` and ``type=`` spellings are accepted.  If both are
+    provided they must be identical.
+    """
+    if dtype is None:
+        dtype = tl.float32 if type is None else type
+    elif type is not None and dtype != type:
+        raise ValueError("tle.alloc got both dtype and type with different values")
+
+    return smt.alloc(shape=shape, type=dtype, scope=scope, _semantic=_semantic)
+
+
+@tl.builtin
+def local_ptr(buffer, indices=None, _semantic=None):
+    """Materialize local-buffer pointers from a buffer and optional indices.
+
+    Given a pointer-to-block buffer (e.g. from ``tle.alloc`` / ``smt.alloc``)
+    and optional index operands, produce a pointer value that can be consumed
+    by ``tl.load`` / ``tl.store``.
+
+    Three index modes are supported:
+
+    - ``indices=None``: full-view pointer tensor covering the entire buffer
+      shape.
+    - All scalar indices: scalar pointer into the buffer.
+    - All tensor indices (same shape): block pointer tensor of that shape.
+
+    Args:
+        buffer: A pointer-to-block tensor value (``TT_TensorPtr``).
+        indices: ``None``, or a tuple/list of integer scalars/tensors.
+            Length must equal the buffer rank.  Tensor indices must all
+            share the same shape.
+    """
+    # --- validate buffer ---
+    if not isinstance(buffer, tl.tensor):
+        raise ValueError(f"tle.local_ptr: buffer must be a tl.tensor, got {type(buffer)}")
+    buf_type = buffer.type
+    if not buf_type.is_ptr():
+        raise ValueError("tle.local_ptr: buffer must be a pointer type")
+    pointee = buf_type.element_ty
+    if not pointee.is_block():
+        raise ValueError("tle.local_ptr: buffer must be a pointer to a block tensor")
+
+    elem_dtype = pointee.element_ty
+    address_space = buf_type.address_space
+    buffer_shape = tuple(int(d) for d in pointee.shape)
+    rank = len(buffer_shape)
+
+    # --- unwrap indices ---
+    if indices is not None:
+        indices = tl._unwrap_if_constexpr(indices)
+        if hasattr(indices, 'values'):  # tl.tuple
+            indices = tuple(indices.values)
+        elif isinstance(indices, (tuple, list)):
+            indices = tuple(indices)
+        else:
+            raise ValueError("tle.local_ptr: indices must be a tuple/list or None")
+
+        if len(indices) != rank:
+            raise ValueError(f"tle.local_ptr: expected {rank} indices, got {len(indices)}")
+
+    # --- classify index mode ---
+    idx_tensors = []
+    if indices is None:
+        # No-index mode: full-view pointer tensor.
+        all_scalar = (rank == 0)
+        view_shape = buffer_shape if rank > 0 else None
+    else:
+        view_shape = None
+        scalar_flags = []
+        for idx in indices:
+            idx_t = idx if isinstance(idx, tl.tensor) else _semantic.to_tensor(idx)
+            if not idx_t.dtype.is_int():
+                raise ValueError("tle.local_ptr: indices must be integer typed")
+            is_scalar = not idx_t.type.is_block()
+            scalar_flags.append(is_scalar)
+            if not is_scalar:
+                shape_i = tuple(int(d) for d in idx_t.type.shape)
+                if view_shape is None:
+                    view_shape = shape_i
+                elif shape_i != view_shape:
+                    raise ValueError("tle.local_ptr: all tensor indices must have identical shapes")
+            idx_tensors.append(idx_t)
+
+        all_scalar = all(scalar_flags)
+        all_tensor = all(not f for f in scalar_flags)
+        if not all_scalar and not all_tensor:
+            raise ValueError("tle.local_ptr: indices must be either all scalar or all tensor")
+
+    # --- determine result type ---
+    ptr_dtype = tl.pointer_type(elem_dtype, address_space)
+    if indices is None and rank == 0:
+        # rank-0 buffer, no indices → scalar pointer
+        result_type = ptr_dtype
+    elif all_scalar if indices is not None else False:
+        result_type = ptr_dtype
+    else:
+        # tensor of pointers
+        result_type = tl.block_type(ptr_dtype, list(view_shape))
+
+    # --- create IR op ---
+    result_ir_type = result_type.to_ir(_semantic.builder)
+    handles = [idx.handle for idx in idx_tensors]
+    output = _semantic.builder.create_tle_local_ptr(result_ir_type, buffer.handle, handles)
+    return tl.tensor(output, result_type)
+
+
+@tl.builtin
+def copy(
+    src,
+    dst,
+    shape,
+    offsets: Sequence[constexpr | tensor] = None,
+    _semantic=None,
+) -> None:
+    """Synchronously copy data from ``src`` to ``dst``.
+
+    This keeps the current spine-triton behavior (load then store) while the
+    API surface matches FlagTree TLE definition.
+    """
+    if not isinstance(shape, (tuple, list)):
+        if hasattr(shape, '__iter__'):
+            shape = tuple(shape)
+        else:
+            raise ValueError(f"Shape parameter must be tuple or list, but got {type(shape)}")
+
+    if offsets is not None and not isinstance(offsets, (tuple, list)):
+        if hasattr(offsets, '__iter__'):
+            offsets = tuple(offsets)
+        else:
+            raise ValueError(f"Offsets parameter must be tuple or list, but got {type(offsets)}")
+
+    value = tl.load(
+        src,
+        _semantic=_semantic,
+    )
+    return tl.store(
+        dst,
+        value,
+        _semantic=_semantic,
+    )
+
+
+@tl.builtin
+def to_tensor(buf, _semantic=None):
+    """Convert a TLE buffer value to tensor world explicitly.
+
+    Pointer-to-block values produced by ``tle.alloc``/``smt.alloc`` are lowered
+    as explicit ``tle.to_tensor`` bridge ops. Plain tensor values are returned
+    unchanged so callers may use this helper at API boundaries.
+    """
+    if isinstance(buf, tl.tensor):
+        if buf.type.is_ptr() and buf.type.element_ty.is_block():
+            output = _semantic.builder.create_tle_to_tensor(buf.handle)
+            return tl.tensor(output, buf.type.element_ty)
+        return buf
+
+    return _semantic.to_tensor(buf)
+
+
+@tl.builtin
+def to_buffer(tensor, dst=None, _semantic=None):
+    """Convert a tensor-world value to an explicit TLE buffer bridge.
+
+    When ``dst`` is provided, it must be a pointer-to-block destination and the
+    bridge materializes ``tensor`` into that buffer. Without ``dst``, an existing
+    pointer-to-block value is treated as already being in buffer world.
+    """
+    if dst is None:
+        if isinstance(tensor, tl.tensor) and tensor.type.is_ptr() and tensor.type.element_ty.is_block():
+            return tensor
+        raise ValueError("tle.to_buffer requires a destination buffer for tensor values")
+
+    tensor = _semantic.to_tensor(tensor)
+    if not isinstance(dst, tl.tensor) or not dst.type.is_ptr() or not dst.type.element_ty.is_block():
+        raise ValueError("tle.to_buffer destination must be a pointer to a block tensor")
+
+    if tensor.type != dst.type.element_ty:
+        raise ValueError(f"tle.to_buffer type mismatch: tensor={tensor.type}, destination={dst.type.element_ty}")
+
+    output = _semantic.builder.create_tle_to_buffer(tensor.handle, dst.handle)
+    return tl.tensor(output, dst.type)
 
 
 @tl.builtin

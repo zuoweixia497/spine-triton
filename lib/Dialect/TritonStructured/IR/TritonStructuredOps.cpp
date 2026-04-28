@@ -189,6 +189,8 @@ void MakeTensorPtrOp::build(OpBuilder &b, OperationState &state, Value base,
   Type resType;
   auto basePtr = cast<triton::PointerType>(base.getType());
   auto elemType = basePtr.getPointeeType();
+  if (auto shapedType = dyn_cast<ShapedType>(elemType))
+    elemType = shapedType.getElementType();
   // non-block pointer
   if (order.empty()) {
     resType = RankedTensorType::get(sizes, basePtr);
@@ -226,6 +228,8 @@ void MakeGatherScatterTensorPtrOp::build(OpBuilder &b, OperationState &state,
   Type resType;
   auto basePtr = cast<triton::PointerType>(base.getType());
   auto elemType = basePtr.getPointeeType();
+  if (auto shapedType = dyn_cast<ShapedType>(elemType))
+    elemType = shapedType.getElementType();
 
   resType = triton::PointerType::get(RankedTensorType::get(sizes, elemType),
                                      basePtr.getAddressSpace());

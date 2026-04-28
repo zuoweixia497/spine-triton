@@ -45,6 +45,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <optional>
 
 #define DEBUG_TYPE "structured-to-memref"
 
@@ -278,6 +279,181 @@ static bool hasWraparoundGatherOffset(tts::MakeGatherScatterTensorPtrOp op,
     sawRem = true;
   }
   return sawRem;
+}
+
+static Value stripIndexCasts(Value value) {
+  while (auto cast = value.getDefiningOp<arith::IndexCastOp>())
+    value = cast.getIn();
+  return value;
+}
+
+static std::optional<int64_t> getConstIntLike(Value value) {
+  value = stripIndexCasts(value);
+  if (auto cst = value.getDefiningOp<arith::ConstantOp>()) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
+      return intAttr.getInt();
+    if (auto dense = dyn_cast<DenseIntElementsAttr>(cst.getValue())) {
+      if (dense.isSplat())
+        return dense.getSplatValue<APInt>().getSExtValue();
+    }
+  }
+  return std::nullopt;
+}
+
+// Returns the linear step when gather_offset is a 1D zero-based arithmetic
+// progression [0, step, 2*step, ..., (N-1)*step]. This allows lowering
+// gather/scatter to a single strided materialization.
+static std::optional<int64_t>
+isZeroBasedLinearGatherOffset(Value gatherOffset, unsigned expectedSize) {
+  Value base = stripIndexCasts(gatherOffset);
+
+  if (auto mul = base.getDefiningOp<arith::MulIOp>()) {
+    auto lhs = stripIndexCasts(mul.getLhs());
+    auto rhs = stripIndexCasts(mul.getRhs());
+    if (auto lhsStep = getConstIntLike(lhs)) {
+      if (auto rhsLinear = isZeroBasedLinearGatherOffset(rhs, expectedSize))
+        return (*lhsStep) * (*rhsLinear);
+    }
+    if (auto rhsStep = getConstIntLike(rhs)) {
+      if (auto lhsLinear = isZeroBasedLinearGatherOffset(lhs, expectedSize))
+        return (*rhsStep) * (*lhsLinear);
+    }
+  }
+
+  if (auto add = base.getDefiningOp<arith::AddIOp>()) {
+    auto lhs = stripIndexCasts(add.getLhs());
+    auto rhs = stripIndexCasts(add.getRhs());
+    if (auto lhsCst = getConstIntLike(lhs); lhsCst && *lhsCst == 0)
+      return isZeroBasedLinearGatherOffset(rhs, expectedSize);
+    if (auto rhsCst = getConstIntLike(rhs); rhsCst && *rhsCst == 0)
+      return isZeroBasedLinearGatherOffset(lhs, expectedSize);
+  }
+
+  if (Operation *def = base.getDefiningOp()) {
+    if (auto rangeOp = dyn_cast<triton::MakeRangeOp>(def)) {
+      int64_t start = rangeOp.getStart();
+      int64_t end = rangeOp.getEnd();
+      if (start == 0 && end - start == static_cast<int64_t>(expectedSize))
+        return 1;
+      return std::nullopt;
+    }
+  }
+
+  if (auto cst = base.getDefiningOp<arith::ConstantOp>()) {
+    if (auto dense = dyn_cast<DenseIntElementsAttr>(cst.getValue())) {
+      auto shapedTy = dyn_cast<ShapedType>(dense.getType());
+      if (!shapedTy || shapedTy.getRank() != 1)
+        return std::nullopt;
+      if (static_cast<unsigned>(shapedTy.getShape()[0]) != expectedSize)
+        return std::nullopt;
+      std::optional<int64_t> step;
+      int64_t i = 0;
+      for (APInt v : dense.getValues<APInt>()) {
+        int64_t value = v.getSExtValue();
+        if (i == 0) {
+          if (value != 0)
+            return std::nullopt;
+        } else if (i == 1) {
+          step = value;
+        } else if (!step || value != i * (*step)) {
+          return std::nullopt;
+        }
+        ++i;
+      }
+      return step.value_or(1);
+    }
+  }
+
+  if (auto fromElements = base.getDefiningOp<tensor::FromElementsOp>()) {
+    if (fromElements.getElements().size() != expectedSize)
+      return std::nullopt;
+    std::optional<int64_t> step;
+    for (auto [i, element] : llvm::enumerate(fromElements.getElements())) {
+      auto cst = getConstIntLike(element);
+      if (!cst)
+        return std::nullopt;
+      int64_t idx = static_cast<int64_t>(i);
+      if (idx == 0) {
+        if (*cst != 0)
+          return std::nullopt;
+      } else if (idx == 1) {
+        step = *cst;
+      } else if (!step || *cst != idx * (*step)) {
+        return std::nullopt;
+      }
+    }
+    return step.value_or(1);
+  }
+
+  return std::nullopt;
+}
+
+static SmallVector<OpFoldResult>
+scaleGatherDimStride(ArrayRef<OpFoldResult> mixedStrides, int gatherDim,
+                     int64_t gatherStep, ConversionPatternRewriter &rewriter,
+                     Location loc) {
+  SmallVector<OpFoldResult> scaledStrides(mixedStrides.begin(),
+                                          mixedStrides.end());
+  if (gatherDim < 0 || gatherDim >= static_cast<int>(scaledStrides.size()) ||
+      gatherStep == 1)
+    return scaledStrides;
+
+  OpFoldResult stride = scaledStrides[gatherDim];
+  if (auto strideAttr = getIntAttr(stride)) {
+    scaledStrides[gatherDim] =
+        rewriter.getIndexAttr((*strideAttr) * gatherStep);
+    return scaledStrides;
+  }
+
+  Value strideVal = getValueOrCreateConstantIndexOp(rewriter, loc, stride);
+  Value stepVal = arith::ConstantIndexOp::create(rewriter, loc, gatherStep);
+  scaledStrides[gatherDim] =
+      arith::MulIOp::create(rewriter, loc, strideVal, stepVal).getResult();
+  return scaledStrides;
+}
+
+template <typename PtrOp>
+static bool matchLinearGatherFastPath(PtrOp ptr, Value gatherOffset,
+                                      int gatherDim, unsigned offsetSize,
+                                      bool hasMask, bool hasWraparound,
+                                      int64_t &gatherStep) {
+  if (hasMask || hasWraparound || gatherDim < 0 ||
+      gatherDim >= static_cast<int>(ptr.getSizes().size()) ||
+      static_cast<unsigned>(ptr.getSizes()[gatherDim]) != offsetSize)
+    return false;
+
+  auto maybeStep = isZeroBasedLinearGatherOffset(gatherOffset, offsetSize);
+  if (!maybeStep)
+    return false;
+
+  gatherStep = *maybeStep;
+  return true;
+}
+
+template <typename PtrOp>
+static Value createLinearGatherView(PtrOp ptr, Value memRefPtr,
+                                    ArrayRef<OpFoldResult> mixedStrides,
+                                    int gatherDim, Location loc,
+                                    ConversionPatternRewriter &rewriter) {
+  SmallVector<int64_t> staticStrides;
+  SmallVector<Value> dynamicStrides;
+  dispatchIndexOpFoldResults(mixedStrides, dynamicStrides, staticStrides);
+
+  auto offsets = ptr.getMixedOffsets();
+  auto targetOffset =
+      accumulateTargetOffset(loc, offsets, mixedStrides, gatherDim, rewriter);
+  auto staticTargetOffset = getIntAttr(targetOffset);
+
+  std::vector<int64_t> staticSizes = ptr.getSizes();
+  SmallVector<Value> dynSizes;
+  auto sizes = mlir::getMixedValues(staticSizes, dynSizes, rewriter);
+
+  auto resultType = getResultMemrefType(
+      ptr, staticTargetOffset.value_or(ShapedType::kDynamic), staticStrides,
+      staticSizes, getBridgeMemorySpace(memRefPtr));
+
+  return memref::ReinterpretCastOp::create(rewriter, loc, resultType, memRefPtr,
+                                           targetOffset, sizes, mixedStrides);
 }
 
 // Fill load destination with other value for mask.
@@ -1215,6 +1391,21 @@ private:
     int gatherDim = ptr.getGatherScatterDim();
     bool hasWraparound = hasWraparoundGatherOffset(ptr, gatherDim, rewriter);
 
+    int64_t gatherStep = 0;
+    if (matchLinearGatherFastPath(ptr, gatherOffset, gatherDim, offsetSize,
+                                  op.hasMask(), hasWraparound, gatherStep)) {
+      auto mixedStrides =
+          scaleGatherDimStride(getMixedStridesForMemref(ptr, rewriter),
+                               gatherDim, gatherStep, rewriter, loc);
+      Value srcPtr = createLinearGatherView(ptr, memRefPtr, mixedStrides,
+                                            gatherDim, loc, rewriter);
+      Value tensor = bufferization::ToTensorOp::create(
+          rewriter, op.getLoc(), op.getType(), srcPtr, true /* restrict */,
+          true /* writable */);
+      rewriter.replaceOp(op, tensor);
+      return success();
+    }
+
     auto offsets = ptr.getMixedOffsets();
     auto strides = ptr.getMixedStrides();
 
@@ -1399,6 +1590,22 @@ private:
 
     int gatherDim = ptr.getGatherScatterDim();
     bool hasWraparound = hasWraparoundGatherOffset(ptr, gatherDim, rewriter);
+
+    int64_t gatherStep = 0;
+    if (matchLinearGatherFastPath(ptr, gatherOffset, gatherDim, offsetSize,
+                                  op.hasMask(), hasWraparound, gatherStep)) {
+      auto mixedStrides =
+          scaleGatherDimStride(getMixedStridesForMemref(ptr, rewriter),
+                               gatherDim, gatherStep, rewriter, loc);
+      Value dstPtr = createLinearGatherView(ptr, memRefPtr, mixedStrides,
+                                            gatherDim, loc, rewriter);
+
+      auto storeOp = bufferization::MaterializeInDestinationOp::create(
+          rewriter, op.getLoc(), stVal, dstPtr);
+      storeOp.setWritable(true);
+      rewriter.eraseOp(op);
+      return success();
+    }
 
     auto offsets = ptr.getMixedOffsets();
     auto strides = ptr.getMixedStrides();

@@ -8,6 +8,7 @@
 #include "triton-shared/Analysis/OpFoldResultUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpDefinition.h"
@@ -279,15 +280,13 @@ OpFoldResult mulOFRs(const OpFoldResult lhs, const OpFoldResult rhs,
 
   auto lhsValue = dyn_cast<Value>(lhs);
   if (lhsValue) {
-    if (auto lhsOp = lhsValue.getDefiningOp<arith::ConstantOp>()) {
-      lhsIntAttr = cast<IntegerAttr>(lhsOp.getValue()).getInt();
-    }
+    if (auto lhsOp = lhsValue.getDefiningOp<arith::ConstantOp>())
+      lhsIntAttr = getIntAttr(lhsOp.getValue());
   }
   auto rhsValue = dyn_cast<Value>(rhs);
   if (rhsValue) {
-    if (auto rhsOp = rhsValue.getDefiningOp<arith::ConstantOp>()) {
-      rhsIntAttr = cast<IntegerAttr>(rhsOp.getValue()).getInt();
-    }
+    if (auto rhsOp = rhsValue.getDefiningOp<arith::ConstantOp>())
+      rhsIntAttr = getIntAttr(rhsOp.getValue());
   }
 
   // shortcut for special cases

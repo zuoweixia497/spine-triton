@@ -4,6 +4,8 @@
 // SPDX-License-Identifier: MIT
 //
 // TLE → Linalg/Tensor lowering patterns:
+//   tle.to_tensor    → bufferization.to_tensor
+//   tle.to_buffer    → bufferization.materialize_in_destination
 //   tle.extract_tile → tensor.extract_slice
 //   tle.insert_tile  → tensor.insert_slice
 //
@@ -14,16 +16,219 @@
 #include "triton-shared/Dialect/TLE/IR/TLEOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "triton/Dialect/Triton/IR/Types.h"
 
 #define DEBUG_TYPE "tle-to-linalg"
 
 using namespace mlir;
 
 namespace {
+
+MemRefType getMemRefTypeFromTensorPtr(Type type) {
+  auto ptrTy = dyn_cast<triton::PointerType>(type);
+  if (!ptrTy)
+    return {};
+
+  auto tensorTy = dyn_cast<RankedTensorType>(ptrTy.getPointeeType());
+  if (!tensorTy)
+    return {};
+
+  return MemRefType::get(tensorTy.getShape(), tensorTy.getElementType(), {},
+                         ptrTy.getAddressSpace());
+}
+
+// ============================================================================
+// ToTensorOp → bufferization.to_tensor
+// ============================================================================
+struct ToTensorOpPattern : public OpRewritePattern<mlir::tle::ToTensorOp> {
+  using OpRewritePattern<mlir::tle::ToTensorOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::tle::ToTensorOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value buffer = op.getBuffer();
+    auto memrefTy = getMemRefTypeFromTensorPtr(buffer.getType());
+    if (!memrefTy)
+      return failure();
+
+    auto cast =
+        UnrealizedConversionCastOp::create(rewriter, loc, memrefTy, buffer);
+    auto toTensor = bufferization::ToTensorOp::create(
+        rewriter, loc, op.getResult().getType(), cast.getResult(0),
+        /*restrict=*/true, /*writable=*/true);
+
+    rewriter.replaceOp(op, toTensor.getResult());
+    return success();
+  }
+};
+
+// ============================================================================
+// ToBufferOp → bufferization.materialize_in_destination
+// ============================================================================
+struct ToBufferOpPattern : public OpRewritePattern<mlir::tle::ToBufferOp> {
+  using OpRewritePattern<mlir::tle::ToBufferOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::tle::ToBufferOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value buffer = op.getBuffer();
+    auto memrefTy = getMemRefTypeFromTensorPtr(buffer.getType());
+    if (!memrefTy)
+      return failure();
+
+    auto cast =
+        UnrealizedConversionCastOp::create(rewriter, loc, memrefTy, buffer);
+    auto materialize = bufferization::MaterializeInDestinationOp::create(
+        rewriter, loc, op.getTensor(), cast.getResult(0));
+    materialize.setWritable(true);
+
+    auto resultCast = UnrealizedConversionCastOp::create(
+        rewriter, loc, op.getResult().getType(), materialize.getResult());
+    rewriter.replaceOp(op, resultCast.getResult(0));
+    return success();
+  }
+};
+
+// ============================================================================
+// LocalPtrOp lowering
+//
+// Converts tle.local_ptr into memref-level operations:
+//   - No indices:     bufferization.to_tensor (full view)
+//   - Scalar indices: memref.load (scalar element access)
+//   - Tensor indices: linalg.generic (gather-style element access)
+//
+// At this point in the pipeline (after StructuredToMemref), the buffer
+// operand has been converted from TT_TensorPtr to memref via an
+// UnrealizedConversionCast.  We look through the cast to get the memref.
+// ============================================================================
+struct LocalPtrOpPattern : public OpRewritePattern<mlir::tle::LocalPtrOp> {
+  using OpRewritePattern<mlir::tle::LocalPtrOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(mlir::tle::LocalPtrOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value buffer = op.getBuffer();
+    auto memrefTy = getMemRefTypeFromTensorPtr(buffer.getType());
+    if (!memrefTy)
+      return failure();
+
+    auto cast =
+        UnrealizedConversionCastOp::create(rewriter, loc, memrefTy, buffer);
+    Value memrefVal = cast.getResult(0);
+    auto indices = op.getIndices();
+
+    if (indices.empty()) {
+      // No-index mode: full-view → bufferization.to_tensor.
+      auto tensorTy =
+          RankedTensorType::get(memrefTy.getShape(), memrefTy.getElementType());
+      auto toTensor = bufferization::ToTensorOp::create(
+          rewriter, loc, tensorTy, memrefVal,
+          /*restrict=*/true, /*writable=*/true);
+
+      // Bridge back to the original result type (pointer tensor) via cast.
+      auto resultCast = UnrealizedConversionCastOp::create(
+          rewriter, loc, op.getResult().getType(), toTensor.getResult());
+      rewriter.replaceOp(op, resultCast.getResult(0));
+      return success();
+    }
+
+    // Classify: all scalar or all tensor.
+    bool allScalar = true;
+    for (auto idx : indices) {
+      if (isa<RankedTensorType>(idx.getType())) {
+        allScalar = false;
+        break;
+      }
+    }
+
+    if (allScalar) {
+      // Scalar indices → memref.load.
+      SmallVector<Value> indexVals;
+      for (auto idx : indices) {
+        Value idxVal = idx;
+        if (!idxVal.getType().isIndex())
+          idxVal = arith::IndexCastOp::create(rewriter, loc,
+                                              rewriter.getIndexType(), idxVal);
+        indexVals.push_back(idxVal);
+      }
+      auto loadOp = memref::LoadOp::create(rewriter, loc, memrefVal, indexVals);
+
+      // Bridge scalar element back to pointer result type via cast.
+      auto resultCast = UnrealizedConversionCastOp::create(
+          rewriter, loc, op.getResult().getType(), loadOp.getResult());
+      rewriter.replaceOp(op, resultCast.getResult(0));
+      return success();
+    }
+
+    // Tensor indices → linalg.generic gather.
+    auto resultTensorTy = dyn_cast<RankedTensorType>(op.getResult().getType());
+    if (!resultTensorTy)
+      return failure();
+
+    auto elemTy = memrefTy.getElementType();
+    auto outputTensorTy =
+        RankedTensorType::get(resultTensorTy.getShape(), elemTy);
+    int64_t rank = resultTensorTy.getRank();
+
+    // Create init tensor for the output.
+    auto emptyOp = tensor::EmptyOp::create(rewriter, loc,
+                                           outputTensorTy.getShape(), elemTy);
+
+    // Build indexing maps: each index tensor is identity-mapped.
+    SmallVector<AffineMap> indexingMaps;
+    auto identityMap = rewriter.getMultiDimIdentityMap(rank);
+    for (size_t i = 0; i < indices.size(); ++i)
+      indexingMaps.push_back(identityMap);
+    indexingMaps.push_back(identityMap); // output
+
+    SmallVector<utils::IteratorType> iteratorTypes(
+        rank, utils::IteratorType::parallel);
+
+    // Cast index tensors to index type if needed.
+    SmallVector<Value> indexTensors;
+    auto indexTensorTy = RankedTensorType::get(resultTensorTy.getShape(),
+                                               rewriter.getIndexType());
+    for (auto idx : indices) {
+      Value idxVal = idx;
+      auto idxTy = dyn_cast<RankedTensorType>(idxVal.getType());
+      if (!idxTy)
+        return failure();
+      if (!idxTy.getElementType().isIndex()) {
+        // Use linalg.generic to cast element-wise, or arith.index_cast on
+        // tensor.  For simplicity, use arith.index_cast (tensor-level).
+        idxVal =
+            arith::IndexCastOp::create(rewriter, loc, indexTensorTy, idxVal);
+      }
+      indexTensors.push_back(idxVal);
+    }
+
+    auto genericOp = linalg::GenericOp::create(
+        rewriter, loc, outputTensorTy, /*inputs=*/indexTensors,
+        /*outputs=*/ValueRange{emptyOp.getResult()}, indexingMaps,
+        iteratorTypes, [&](OpBuilder &b, Location loc, ValueRange args) {
+          // args[0..rank-1] are index values from index tensors.
+          // args[rank] is the output element (unused init).
+          SmallVector<Value> loadIndices;
+          for (size_t i = 0; i < indices.size(); ++i)
+            loadIndices.push_back(args[i]);
+          auto loaded = memref::LoadOp::create(b, loc, memrefVal, loadIndices);
+          linalg::YieldOp::create(b, loc, loaded.getResult());
+        });
+
+    // Bridge tensor result back to pointer-tensor result type via cast.
+    auto resultCast = UnrealizedConversionCastOp::create(
+        rewriter, loc, op.getResult().getType(), genericOp.getResult(0));
+    rewriter.replaceOp(op, resultCast.getResult(0));
+    return success();
+  }
+};
 
 // ============================================================================
 // Helper: delinearize a tile index into per-dimension offsets.
@@ -183,6 +388,9 @@ struct InsertTileOpPattern : public OpRewritePattern<mlir::tle::InsertTileOp> {
 // ============================================================================
 void mlir::triton::populateTLEToLinalgConversionPatterns(
     RewritePatternSet &patterns) {
+  patterns.add<ToTensorOpPattern>(patterns.getContext());
+  patterns.add<ToBufferOpPattern>(patterns.getContext());
+  patterns.add<LocalPtrOpPattern>(patterns.getContext());
   patterns.add<ExtractTileOpPattern>(patterns.getContext());
   patterns.add<InsertTileOpPattern>(patterns.getContext());
 }
