@@ -179,9 +179,9 @@ def triton_mm(a, b):
         SUB_BLK_M=8,
         SUB_BLK_N=64,
         SUB_BLK_K=256,
-        MICRO_M=16,
+        MICRO_M=32,
         MICRO_N=32,
-        MICRO_K=8,
+        MICRO_K=32,
     )
     return c
 
