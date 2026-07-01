@@ -11,7 +11,7 @@ Public API:
 """
 
 from .types import In, InOut
-from .runtime import spine_raw, SpineLinalgJITFunction
+from .runtime import spine_raw, spine_kernel, SpineLinalgJITFunction, SpineDSLJITFunction
 from .call_registry import call
 from .builtins import splat, load_vec, store_vec, store_scalar, fma, extf, reduce_add, matmul
 from .builtins import load_tile, pad_vec, extract_elem
@@ -22,7 +22,9 @@ from .builtins import range as range  # noqa: A001 (shadows builtin intentionall
 
 __all__ = [
     "spine_raw",
+    "spine_kernel",
     "SpineLinalgJITFunction",
+    "SpineDSLJITFunction",
     "In",
     "InOut",
     "call",

@@ -1,5 +1,15 @@
 from __future__ import annotations
-from triton.language.core import builtin
+
+try:
+    from triton.language.core import builtin
+except Exception:  # noqa: BLE001
+    # Codegen (make_linalg / the DSL executor) is independent of the Triton
+    # runtime; only call() below actually needs the @builtin hook. Allow the
+    # package to import in triton-less environments (e.g. offline codegen
+    # tests) — call() will still fail clearly if invoked without a real
+    # _semantic.builder.
+    def builtin(fn):  # type: ignore[misc]
+        return fn
 
 
 @builtin

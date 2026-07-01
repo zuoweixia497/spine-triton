@@ -56,6 +56,54 @@ _REGISTRY: dict[str, type] = {
 }
 
 
+class SpineDSLJITFunction:
+    """Wrapper for a direct-op DSL kernel (dsl.py + executor.py).
+
+    Same external contract as SpineLinalgJITFunction (make_linalg() + __name__),
+    so spine_raw.call() injects it through the unchanged create_tle_dsl_region
+    path. The body is run by SpineDSLExecutor instead of the marker codegen.
+    """
+
+    def __init__(self, fn: Callable) -> None:
+        self._fn = fn
+        self._mlir_text: str | None = None
+        self.__triton_builtin__ = True
+
+    @property
+    def __name__(self) -> str:
+        return self._fn.__name__
+
+    def make_linalg(self) -> str:
+        if self._mlir_text is None:
+            from .executor import SpineDSLExecutor
+            body = SpineDSLExecutor(self._fn).generate()
+            self._mlir_text = "module {{\n{}\n}}\n".format(body)
+        return self._mlir_text
+
+    def __repr__(self) -> str:
+        return f"SpineDSLJITFunction({self._fn.__name__!r})"
+
+
+_REGISTRY["dsl"] = SpineDSLJITFunction
+
+
+def spine_kernel(fn: Callable) -> SpineDSLJITFunction:
+    """Decorator for a direct-op DSL kernel (the FlagTree-style writing surface).
+
+    Equivalent to @spine_raw(name="dsl"). Usage:
+
+        from spine_raw import spine_kernel, In, InOut
+        from spine_raw.dsl import alloc_tcm_2d, batch_macc, srange, ...
+
+        @spine_kernel
+        def mv_macc_block(B: In[...], ..., C: InOut[...]):
+            buf0 = alloc_tcm_2d(32, 64, "f16")
+            ...
+    """
+    return SpineDSLJITFunction(fn)
+
+
+
 def spine_raw(*, name: str = "linalg") -> Callable:
     """Decorator: mark a Python function as a raw Linalg MLIR kernel.
 
