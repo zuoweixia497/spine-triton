@@ -18,33 +18,18 @@ def mv_macc_block(
     nk:  In["index"],
     C:   InOut["memref<*xf32, #ptr.generic_space>"],
 ):
-    buf0 = sr_mod.alloc_tcm_2d(32, 64, "f16")
-    buf1 = sr_mod.alloc_tcm_2d(32, 64, "f16")
-    buf2 = sr_mod.alloc_tcm_2d(32, 64, "f16")
-    buf3 = sr_mod.alloc_tcm_2d(32, 64, "f16")
-    acc0 = sr_mod.splat_2d(0.0, 1, 64, "f32")
-    acc1 = sr_mod.splat_2d(0.0, 1, 64, "f32")
-    acc2 = sr_mod.splat_2d(0.0, 1, 64, "f32")
-    acc3 = sr_mod.splat_2d(0.0, 1, 64, "f32")
+    NSUB = 4
+    bufs = [sr_mod.alloc_tcm_2d(32, 64, "f16") for _ in range(NSUB)]
+    accs = [sr_mod.splat_2d(0.0, 1, 64, "f32") for _ in range(NSUB)]
     for kb in sr_mod.range(nk):
         koff = kb * 32
         lhs = sr_mod.view_2d(B, 1, 32, "f16", koff)
-        sr_mod.pack_2d_t_into(buf0, A, col,       32, 64, M, "f16", koff)
-        sr_mod.pack_2d_t_into(buf1, A, col + 64,  32, 64, M, "f16", koff)
-        sr_mod.pack_2d_t_into(buf2, A, col + 128, 32, 64, M, "f16", koff)
-        sr_mod.pack_2d_t_into(buf3, A, col + 192, 32, 64, M, "f16", koff)
-        r0 = sr_mod.load_2d(buf0, 32, 64, "f16")
-        r1 = sr_mod.load_2d(buf1, 32, 64, "f16")
-        r2 = sr_mod.load_2d(buf2, 32, 64, "f16")
-        r3 = sr_mod.load_2d(buf3, 32, 64, "f16")
-        acc0 = sr_mod.batch_macc(lhs, r0, acc0)
-        acc1 = sr_mod.batch_macc(lhs, r1, acc1)
-        acc2 = sr_mod.batch_macc(lhs, r2, acc2)
-        acc3 = sr_mod.batch_macc(lhs, r3, acc3)
-    sr_mod.store_2d_at(C, col,       1, 64, acc0)
-    sr_mod.store_2d_at(C, col + 64,  1, 64, acc1)
-    sr_mod.store_2d_at(C, col + 128, 1, 64, acc2)
-    sr_mod.store_2d_at(C, col + 192, 1, 64, acc3)
+        for i in range(NSUB):                        # compile-time unroll → 4 份
+            sr_mod.pack_2d_t_into(bufs[i], A, col + i * 64, 32, 64, M, "f16", koff)
+            r = sr_mod.load_2d(bufs[i], 32, 64, "f16")
+            accs[i] = sr_mod.batch_macc(lhs, r, accs[i])
+    for i in range(NSUB):
+        sr_mod.store_2d_at(C, col + i * 64, 1, 64, accs[i])
 
 
 @triton.jit(do_not_specialize=["M", "NK"])

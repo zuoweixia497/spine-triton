@@ -15,6 +15,7 @@ BinOps, and the spine_raw builtins (splat/load_vec/.../batch_macc/pack_2d_t...).
 from __future__ import annotations
 
 import ast
+import copy
 import inspect
 import textwrap
 from typing import Callable
@@ -79,6 +80,235 @@ _BIN_FLOAT = {ast.Add: "addf", ast.Mult: "mulf", ast.Sub: "subf"}
 
 
 # ---------------------------------------------------------------------------
+# Compile-time unroll pre-pass
+# ---------------------------------------------------------------------------
+
+_MISSING = object()
+
+
+class _UnrollTransformer(ast.NodeTransformer):
+    """Expand the compile-time (Python-native) layer before MLIR codegen.
+
+    Native ``for i in range(N):`` loops and list comprehensions ``[e for _ in
+    range(N)]`` are the eDSL's *compile-time* fan-out (docs §11.2 方案1 /
+    §10.6 ``tle.unroll``), as opposed to ``spine_raw.range(n)`` which lowers to
+    a runtime ``scf.for``. This pass rewrites the AST so that after it runs the
+    body contains only the primitives the codegen already understands:
+
+      - ``NSUB = 4``                       → folded into a static int, dropped
+      - ``xs = [f() for _ in range(N)]``   → xs__e0 = f(); ... xs__e{N-1} = f()
+      - ``for i in range(N): body``        → body[i=0]; body[i=1]; ...  (unrolled)
+      - ``xs[i]`` / ``xs[i] = e``          → the element name xs__e{i}
+      - constant int arithmetic (``i*64``) → folded, with x+0 / x*1 / x*0 elided
+
+    Everything else (``spine_raw.range`` loops, op calls, dynamic index math) is
+    left byte-identical, so existing goldens are unaffected.
+    """
+
+    def __init__(self):
+        self.statics: dict[str, int] = {}      # name -> compile-time int
+        self.lists: dict[str, list[str]] = {}  # name -> per-element var names
+
+    def run(self, func_node: ast.FunctionDef) -> ast.FunctionDef:
+        func_node.body = self._xform_stmts(func_node.body)
+        ast.fix_missing_locations(func_node)
+        return func_node
+
+    # -- statements ---------------------------------------------------------
+
+    def _xform_stmts(self, stmts: list) -> list:
+        out = []
+        for s in stmts:
+            out.extend(self._xform_stmt(s))
+        return out
+
+    def _xform_stmt(self, s) -> list:
+        if isinstance(s, ast.Assign) and len(s.targets) == 1:
+            tgt = s.targets[0]
+            if isinstance(tgt, ast.Name):
+                if isinstance(s.value, ast.ListComp):
+                    return self._expand_listcomp(tgt.id, s.value)
+                if isinstance(s.value, ast.List):
+                    return self._expand_list_literal(tgt.id, s.value)
+                value = self._xform_expr(s.value)
+                if _is_const_int(value):
+                    self.statics[tgt.id] = value.value
+                    return []
+                if value is s.value:
+                    return [s]
+                return [ast.copy_location(ast.Assign(targets=s.targets, value=value), s)]
+            if isinstance(tgt, ast.Subscript):
+                name, idx = self._resolve_subscript(tgt)
+                value = self._xform_expr(s.value)
+                new_tgt = ast.copy_location(ast.Name(id=self.lists[name][idx], ctx=ast.Store()), tgt)
+                return [ast.copy_location(ast.Assign(targets=[new_tgt], value=value), s)]
+
+        if isinstance(s, ast.For):
+            if _is_builtin_range(s.iter):
+                return self._unroll_for(s)
+            # spine_raw.range(...) → runtime scf.for: keep, but transform body.
+            s.iter = self._xform_expr(s.iter)
+            s.body = self._xform_stmts(s.body)
+            return [s]
+
+        if isinstance(s, ast.Expr):
+            s.value = self._xform_expr(s.value)
+            return [s]
+
+        return [s]
+
+    def _unroll_for(self, s: ast.For) -> list:
+        assert isinstance(s.target, ast.Name), "unroll loop target must be a name"
+        lv = s.target.id
+        values = self._range_values(s.iter)
+        out = []
+        for v in values:
+            saved = self.statics.get(lv, _MISSING)
+            self.statics[lv] = v
+            for st in s.body:
+                out.extend(self._xform_stmt(copy.deepcopy(st)))
+            if saved is _MISSING:
+                self.statics.pop(lv, None)
+            else:
+                self.statics[lv] = saved
+        return out
+
+    def _expand_listcomp(self, name: str, lc: ast.ListComp) -> list:
+        assert len(lc.generators) == 1 and not lc.generators[0].ifs, \
+            "spine_raw list comprehension must be a single plain 'for _ in range(N)'"
+        gen = lc.generators[0]
+        assert isinstance(gen.target, ast.Name), "comprehension target must be a name"
+        cv = gen.target.id
+        values = self._range_values(gen.iter)
+        elem_names, out = [], []
+        for i, v in enumerate(values):
+            saved = self.statics.get(cv, _MISSING)
+            self.statics[cv] = v
+            elt = self._xform_expr(copy.deepcopy(lc.elt))
+            if saved is _MISSING:
+                self.statics.pop(cv, None)
+            else:
+                self.statics[cv] = saved
+            ename = f"{name}__e{i}"
+            elem_names.append(ename)
+            out.append(ast.copy_location(
+                ast.Assign(targets=[ast.Name(id=ename, ctx=ast.Store())], value=elt), lc))
+        self.lists[name] = elem_names
+        return out
+
+    def _expand_list_literal(self, name: str, node: ast.List) -> list:
+        elem_names, out = [], []
+        for i, e in enumerate(node.elts):
+            elt = self._xform_expr(copy.deepcopy(e))
+            ename = f"{name}__e{i}"
+            elem_names.append(ename)
+            out.append(ast.copy_location(
+                ast.Assign(targets=[ast.Name(id=ename, ctx=ast.Store())], value=elt), node))
+        self.lists[name] = elem_names
+        return out
+
+    # -- expressions --------------------------------------------------------
+
+    def _xform_expr(self, node):
+        if isinstance(node, ast.Name):
+            if node.id in self.statics:
+                return ast.copy_location(ast.Constant(value=self.statics[node.id]), node)
+            return node
+        if isinstance(node, ast.Constant):
+            return node
+        if isinstance(node, ast.BinOp):
+            return self._xform_binop(node)
+        if isinstance(node, ast.Subscript):
+            if isinstance(node.value, ast.Name) and node.value.id in self.lists:
+                name, idx = self._resolve_subscript(node)
+                return ast.copy_location(
+                    ast.Name(id=self.lists[name][idx], ctx=ast.Load()), node)
+            return node
+        if isinstance(node, ast.Call):
+            new_args = [self._xform_expr(a) for a in node.args]
+            new_kws = [ast.keyword(arg=k.arg, value=self._xform_expr(k.value))
+                       for k in node.keywords]
+            if (all(na is oa for na, oa in zip(new_args, node.args))
+                    and all(nk.value is ok.value for nk, ok in zip(new_kws, node.keywords))):
+                return node
+            return ast.copy_location(
+                ast.Call(func=node.func, args=new_args, keywords=new_kws), node)
+        return node
+
+    def _xform_binop(self, node: ast.BinOp):
+        l = self._xform_expr(node.left)
+        r = self._xform_expr(node.right)
+        op = type(node.op)
+        if _is_const_int(l) and _is_const_int(r):
+            folded = _fold_int(l.value, op, r.value)
+            if folded is not None:
+                return ast.copy_location(ast.Constant(value=folded), node)
+        # arithmetic identities so unrolled i=0 offsets stay clean (col + 0 → col)
+        if op is ast.Add:
+            if _is_const_int(r) and r.value == 0:
+                return l
+            if _is_const_int(l) and l.value == 0:
+                return r
+        elif op is ast.Sub:
+            if _is_const_int(r) and r.value == 0:
+                return l
+        elif op is ast.Mult:
+            if _is_const_int(r) and r.value == 0 or _is_const_int(l) and l.value == 0:
+                return ast.copy_location(ast.Constant(value=0), node)
+            if _is_const_int(r) and r.value == 1:
+                return l
+            if _is_const_int(l) and l.value == 1:
+                return r
+        if l is node.left and r is node.right:
+            return node
+        return ast.copy_location(ast.BinOp(left=l, op=node.op, right=r), node)
+
+    # -- helpers ------------------------------------------------------------
+
+    def _resolve_subscript(self, node: ast.Subscript) -> tuple:
+        assert isinstance(node.value, ast.Name), "only simple list subscripts supported"
+        name = node.value.id
+        idx_expr = self._xform_expr(node.slice)
+        assert _is_const_int(idx_expr), \
+            f"list index into {name!r} must be a compile-time constant"
+        idx = idx_expr.value
+        assert name in self.lists, f"{name!r} is not a compile-time list"
+        assert 0 <= idx < len(self.lists[name]), \
+            f"index {idx} out of range for list {name!r}"
+        return name, idx
+
+    def _range_values(self, node) -> list:
+        assert _is_builtin_range(node), "expected a native range(...)"
+        args = [self._xform_expr(a) for a in node.args]
+        for a in args:
+            assert _is_const_int(a), "range() bounds must be compile-time constants"
+        vals = [a.value for a in args]
+        return list(range(*vals))
+
+
+def _is_const_int(node) -> bool:
+    return (isinstance(node, ast.Constant) and isinstance(node.value, int)
+            and not isinstance(node.value, bool))
+
+
+def _is_builtin_range(node) -> bool:
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "range")
+
+
+def _fold_int(a: int, op, b: int):
+    if op is ast.Add:
+        return a + b
+    if op is ast.Sub:
+        return a - b
+    if op is ast.Mult:
+        return a * b
+    if op is ast.FloorDiv and b != 0:
+        return a // b
+    return None
+
+
+# ---------------------------------------------------------------------------
 # SpineMLIRCodeGenerator
 # ---------------------------------------------------------------------------
 
@@ -115,6 +345,10 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
         if not func_nodes:
             raise ValueError(f"No function definition found in {fn.__name__!r}")
 
+        # Compile-time layer: expand native range() unroll / list comprehensions
+        # into the flat primitives the codegen understands (docs §11.2 方案1).
+        func_node = _UnrollTransformer().run(func_nodes[0])
+
         # Detect all aliases for the spine_raw module in the function's globals
         try:
             import spine_raw as _sr_mod
@@ -131,7 +365,7 @@ class SpineMLIRCodeGenerator(ast.NodeVisitor):
                     aliases.add(k)
         self._aliases = aliases or {"spine_raw", "sr"}
 
-        return self._gen_func(func_nodes[0], fn)
+        return self._gen_func(func_node, fn)
 
     # ------------------------------------------------------------------
     # Environment
